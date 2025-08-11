@@ -38,8 +38,8 @@ class TrainPipeline:
         self.az_player = AlphaZeroPlayer(self.net, c_puct=self.c_puct,
                                          n_playout=self.n_playout, alpha=self.dirichlet_alpha, is_selfplay=1)
         self.mtime = 0
-    
-    def data_collector(self, n_games=1):
+        
+    def load_weights(self):
         r = requests.get(f'http://{host}:{port}/weights?ts={self.mtime}')
         if r.status_code == 200:
             weights = pickle.loads(r.content)
@@ -47,17 +47,23 @@ class TrainPipeline:
             self.net.load_state_dict(weights)
             self.net.to(self.device)
             self.mtime = float(r.headers['X-Timestamp'])
-            print(f"权重已更新")
+            print("Parameters updated.")
         elif r.status_code == 304:
-            print("权重未更新")
+            print("Parameters not updated.")
+    
+    @staticmethod
+    def push_data(data):
+        payload = pickle.dumps(data, protocol=pickle.HIGHEST_PROTOCOL)
+        resp = requests.post(f'http://{host}:{port}/upload', headers=headers, data=payload)
+        
+    def data_collector(self, n_games=1):
+        self.load_weights()
         data = []
         for _ in trange(n_games):
             _, play_data = self.game.start_self_play(self.az_player, temp=self.temp, first_n_steps=self.first_n_steps)
             play_data = list(play_data)
             data.append(play_data)
-        payload = pickle.dumps(data, protocol=pickle.HIGHEST_PROTOCOL)
-        resp = requests.post(f'http://{host}:{port}/upload', headers=headers, data=payload)
-        print(resp.json())
+        self.push_data(data)
 
 
 if __name__ == '__main__':
