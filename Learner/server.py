@@ -7,10 +7,15 @@ import logging
 import threading
 import numpy as np
 from pipeline import TrainPipeline
-from flask import Flask, request, jsonify
-
-
 from ReplayBuffer import ReplayBuffer
+from flask import Flask, request, jsonify
+import argparse
+
+parser = argparse.ArgumentParser(description='AlphaZero Training Server')
+parser.add_argument('--host', '-H', type=str, default='0.0.0.0', help='Host IP')
+parser.add_argument('--port', '-P' '-p', type=int, default=7718, help='Port number')
+args = parser.parse_args()
+
 
 inbox = queue.Queue()
 
@@ -19,9 +24,11 @@ app = Flask(__name__)
 
 def data_collector(self):
     episode_len = []
+    flag = 0
     while inbox.empty():
-        print('Waiting data')
-        time.sleep(1)
+        if flag == 0:
+            print('Waiting data')
+            flag += 1
     while not inbox.empty():
         play_data = inbox.get()
         for data in play_data:
@@ -38,9 +45,8 @@ def upload():
     raw_data = request.data
     data = pickle.loads(raw_data)
     for d in data:
-        print(f'Receive from {request.remote_addr}:{request.environ.get('REMOTE_PORT')}, length: {len(data)}')
+        print(f'Receive from {request.remote_addr}:{request.environ.get('REMOTE_PORT')}')
         inbox.put(d)
-    print(inbox.qsize())
     return jsonify({'status': 'success'})
 
 
@@ -62,16 +68,19 @@ def weights():
 
 
 if __name__ == '__main__':
+    log_file = 'flask_access.log'
+    with open(log_file, 'w'):
+        pass
     pipeline = TrainPipeline()
     buffer = ReplayBuffer(3, pipeline.buffer_size, 7, 6, 7, device=pipeline.device)
     pipeline.init_buffer(buffer)
     t = threading.Thread(target=pipeline, daemon=True)
     t.start()
-    
-    handler = logging.FileHandler('flask_access.log', encoding='utf-8')
+
+    handler = logging.FileHandler(log_file, encoding='utf-8')
     handler.setLevel(logging.INFO)
     log = logging.getLogger('werkzeug')
     log.setLevel(logging.INFO)
     log.handlers = [handler]
     app.logger.handlers = [handler]
-    app.run(host='0.0.0.0', port=9999, debug=False, use_reloader=False)
+    app.run(host=args.host, port=args.port, debug=False, use_reloader=False)
