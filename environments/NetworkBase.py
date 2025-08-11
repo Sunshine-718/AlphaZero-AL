@@ -26,28 +26,27 @@ class Base(ABC, nn.Module):
     def train_step(self, dataloader, augment):
         p_l, v_l = [], []
         self.train()
-        for _ in range(3):
-            for batch in dataloader:
-                state, prob, _, winner, *_ = augment(batch)
-                value = deepcopy(winner)
-                value[value == -1] = 2
-                value = value.view(-1,).long()
-                value_oppo = deepcopy(winner)
-                value_oppo[value_oppo == 1] = -2
-                value_oppo = (-value_oppo).view(-1,).long()
-                state_oppo = deepcopy(state)
-                state_oppo[:, -1, :, :] = -state_oppo[:, -1, :, :]
-                self.opt.zero_grad()
-                log_p_pred, value_pred = self(state)
-                _, value_oppo_pred = self(state_oppo)
-                v_loss = F.nll_loss(value_pred, value)
-                v_loss += F.nll_loss(value_oppo_pred, value_oppo)
-                p_loss = torch.mean(torch.sum(-prob * log_p_pred, dim=1))
-                loss = p_loss + v_loss
-                loss.backward()
-                self.opt.step()
-                p_l.append(p_loss.item())
-                v_l.append(v_loss.item())
+        for batch in dataloader:
+            state, prob, _, winner, *_ = augment(batch)
+            value = deepcopy(winner)
+            value[value == -1] = 2
+            value = value.view(-1,).long()
+            value_oppo = deepcopy(winner)
+            value_oppo[value_oppo == 1] = -2
+            value_oppo = (-value_oppo).view(-1,).long()
+            state_oppo = deepcopy(state)
+            state_oppo[:, -1, :, :] = -state_oppo[:, -1, :, :]
+            self.opt.zero_grad()
+            log_p_pred, value_pred = self(state)
+            _, value_oppo_pred = self(state_oppo)
+            v_loss = F.nll_loss(value_pred, value)
+            v_loss += F.nll_loss(value_oppo_pred, value_oppo)
+            p_loss = torch.mean(torch.sum(-prob * log_p_pred, dim=1))
+            loss = p_loss + v_loss
+            loss.backward()
+            self.opt.step()
+            p_l.append(p_loss.item())
+            v_l.append(v_loss.item())
         self.eval()
         with torch.no_grad():
             _, new_v = self(state)

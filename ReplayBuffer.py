@@ -32,7 +32,7 @@ class ReplayBuffer:
             self.replay_ratio = replay_ratio
             self.device = device
             self.balance_done_value = balance_done_value
-            self.current_capacity = 2500
+            self.current_capacity = capacity
             self._ptr = 0
 
     def __len__(self):
@@ -94,8 +94,7 @@ class ReplayBuffer:
 
     def dataloader(self, batch_size):
         total_samples = self.__len__()
-        max_samples = min(
-            int(total_samples * self.replay_ratio), 10000, total_samples)
+        max_samples = int(total_samples * self.replay_ratio)
         if total_samples <= 1000:
             max_samples = total_samples
         if max_samples <= 0:
