@@ -2,11 +2,10 @@
 # -*- coding: utf-8 -*-
 # Written by: Sunshine
 # Created on: 10/Aug/2024  23:47
-import torch
 import numpy as np
 from abc import abstractmethod, ABC
-from utils import policy_value_fn, softmax
-from MCTS import MCTS, MCTS_AZ
+from src.utils import policy_value_fn, softmax
+from .MCTS import MCTS, MCTS_AZ
 
 
 class Player(ABC):

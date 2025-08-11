@@ -1,10 +1,10 @@
 import torch
 import requests
 import pickle
-from game import Game
+from src.game import Game
 from copy import deepcopy
-from environments import load
-from player import AlphaZeroPlayer
+from src.environments import load
+from src.player import AlphaZeroPlayer
 from tqdm.auto import trange
 import argparse
 import signal

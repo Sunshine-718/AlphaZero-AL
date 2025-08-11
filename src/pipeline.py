@@ -1,11 +1,11 @@
 import os
 import torch
 import numpy as np
-from utils import Elo
-from game import Game
+from .utils import Elo
+from .game import Game
 from copy import deepcopy
-from environments import load
-from player import MCTSPlayer, AlphaZeroPlayer, NetworkPlayer
+from .environments import load
+from .player import MCTSPlayer, AlphaZeroPlayer, NetworkPlayer
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import trange
 

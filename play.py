@@ -4,9 +4,9 @@
 # Created on: 20/Jul/2024  22:31
 import torch
 import argparse
-from environments import load
-from game import Game
-from player import Human, AlphaZeroPlayer, NetworkPlayer
+from src.environments import load
+from src.game import Game
+from src.player import Human, AlphaZeroPlayer, NetworkPlayer
 
 parser = argparse.ArgumentParser(description='Play connect four against AlphaZero!')
 parser.add_argument('-x', action='store_true', help='Play as X')
