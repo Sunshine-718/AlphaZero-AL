@@ -1,9 +1,0 @@
-numba
-numpy
-tqdm
-tensorboard
-Cython
-einops
-pyqt5
-torch-tb-profiler
-scikit-learn
