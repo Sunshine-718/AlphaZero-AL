@@ -1,6 +1,4 @@
-import os
 import torch
-import numpy as np
 import requests
 import pickle
 from game import Game
@@ -46,7 +44,7 @@ class TrainPipeline:
         if r.status_code == 200:
             weights = pickle.loads(r.content)
             self.net.to('cpu')
-            self.net.load(weights)
+            self.net.load_state_dict(weights)
             self.net.to(self.device)
             self.mtime = float(r.headers['X-Timestamp'])
             print(f"权重已更新")
@@ -64,6 +62,9 @@ class TrainPipeline:
 
 if __name__ == '__main__':
     pipeline = TrainPipeline()
-    while True:
-        pipeline.data_collector()
+    try:
+        while True:
+            pipeline.data_collector()
+    except Exception as e:
+        print(e)
             

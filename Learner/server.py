@@ -1,14 +1,15 @@
-from flask import Flask, request, jsonify
+import os
+import time
+import torch
 import queue
 import pickle
+import logging
 import threading
-import time
-import signal
-import sys
-from pipeline import TrainPipeline
 import numpy as np
-import torch
-import os
+from pipeline import TrainPipeline
+from flask import Flask, request, jsonify
+
+
 from ReplayBuffer import ReplayBuffer
 
 inbox = queue.Queue()
@@ -37,7 +38,7 @@ def upload():
     raw_data = request.data
     data = pickle.loads(raw_data)
     for d in data:
-        print(f'Receive from {request.remote_addr}:{request.environ.get('REMOTE_PORT')}\n', len(d))
+        print(f'Receive from {request.remote_addr}:{request.environ.get('REMOTE_PORT')}, length: {len(data)}')
         inbox.put(d)
     print(inbox.qsize())
     return jsonify({'status': 'success'})
@@ -59,10 +60,18 @@ def weights():
     else:
         return '', 304
 
+
 if __name__ == '__main__':
     pipeline = TrainPipeline()
     buffer = ReplayBuffer(3, pipeline.buffer_size, 7, 6, 7, device=pipeline.device)
     pipeline.init_buffer(buffer)
     t = threading.Thread(target=pipeline, daemon=True)
     t.start()
+    
+    handler = logging.FileHandler('flask_access.log', encoding='utf-8')
+    handler.setLevel(logging.INFO)
+    log = logging.getLogger('werkzeug')
+    log.setLevel(logging.INFO)
+    log.handlers = [handler]
+    app.logger.handlers = [handler]
     app.run(host='0.0.0.0', port=9999, debug=False, use_reloader=False)
