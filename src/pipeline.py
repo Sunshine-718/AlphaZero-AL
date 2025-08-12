@@ -10,7 +10,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import trange
 
 class TrainPipeline:
-    def __init__(self, env_name='Connect4', model='CNN', name='AZ', play_batch_size=1):
+    def __init__(self, env_name='Connect4', model='CNN', name='AZ', play_batch_size=1, config=None):
         collection = ('Connect4', )  # NBTTT implementation not yet finished.
         if env_name not in collection:
             raise ValueError(f'Environment does not exist, available env: {collection}')
@@ -20,10 +20,9 @@ class TrainPipeline:
         self.game = Game(self.env)
         self.name = f'{name}_{env_name}'
         self.params = './params'
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.global_step = 0
         self.play_batch_size = play_batch_size
-        for key, value in self.module.training_config.items():
+        for key, value in config.items():
             setattr(self, key, value)
         self.buffer = None
         if model == 'CNN':
@@ -105,7 +104,6 @@ class TrainPipeline:
         print(f'\tDirichlet alpha: {self.dirichlet_alpha}')
         print(f'\tBuffer size: {self.buffer_size}')
         print(f'\tBatch size: {self.batch_size}')
-        print(f'\tRandom steps: {self.first_n_steps}')
         print(f'\tTemperature: {self.temp}')
         print('=' * 50)
 
@@ -139,7 +137,7 @@ class TrainPipeline:
             writer.add_scalar('Metric/Entropy', entropy, self.global_step)
             writer.add_scalar('Metric/Episode length', self.episode_len, self.global_step)
 
-            if (self.global_step) % 10 != 0:
+            if (self.global_step) % self.interval != 0:
                 continue
 
             print(f'current self-play batch: {self.global_step + 1}')

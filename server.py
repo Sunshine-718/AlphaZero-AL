@@ -13,7 +13,41 @@ import argparse
 parser = argparse.ArgumentParser(description='AlphaZero Training Server')
 parser.add_argument('--host', '-H', type=str, default='0.0.0.0', help='Host IP')
 parser.add_argument('--port', '-P' '-p', type=int, default=7718, help='Port number')
+parser.add_argument('-n', type=int, default=100,
+                    help='Number of simulations before AlphaZero make an action')
+parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
+parser.add_argument('-c', '--c_init', type=float, default=1.25, help='C_puct init')
+parser.add_argument('-a', '--alpha', type=float, default=0.7, help='Dirichlet alpha')
+parser.add_argument('-b', '--batch_size', type=int, default=512, help='Batch size')
+parser.add_argument('-B', '--buffer_size', type=int, default=200000, help='Buffer size')
+parser.add_argument('--mcts_n', type=int, default=1000, help='MCTS n_playout')
+parser.add_argument('--n_play', type=int, default=1, help='n_playout')
+parser.add_argument('-t', '--temp', type=float, default=1, help='Softmax temperature')
+parser.add_argument('--n_step', type=int, default=10, help='N steps to decay temperature')
+parser.add_argument('--thres', type=float, default=0.65, help='Win rate threshold')
+parser.add_argument('--num_eval', type=int, default=50, help='Number of evaluation.')
+parser.add_argument('-m', '--model', type=str, default='CNN', help='Model type (CNN)')
+parser.add_argument('-d', '--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device type')
+parser.add_argument('-e', '--env', '--environment', type=str, default='Connect4', help='Environment name')
+parser.add_argument('--interval', type=int, default=10, help='Eval interval')
+parser.add_argument('--name', type=str, default='AZ', help='Name of AlphaZero')
 args = parser.parse_args()
+
+config = {
+    "lr": args.lr,
+    "temp": args.temp,
+    "c_puct": args.c_init,
+    "n_playout": args.n,
+    "buffer_size": args.buffer_size,
+    "batch_size": args.batch_size,
+    "pure_mcts_n_playout": args.mcts_n,
+    "dirichlet_alpha": args.alpha,
+    "init_elo": 1500,
+    "num_eval": args.num_eval,
+    "win_rate_threshold": args.thres,
+    "interval": args.interval,
+    "device": args.device
+    }
 
 
 inbox = queue.Queue()
@@ -26,7 +60,7 @@ def data_collector(self):
     flag = 0
     while inbox.empty():
         if flag == 0:
-            print('Waiting data')
+            print('Pending...')
             flag += 1
     while not inbox.empty():
         play_data = inbox.get()
@@ -44,7 +78,7 @@ def upload():
     raw_data = request.data
     data = pickle.loads(raw_data)
     for d in data:
-        print(f'Received from {request.remote_addr}:{request.environ.get('REMOTE_PORT')}')
+        print(f'Received data from {request.remote_addr}:{request.environ.get('REMOTE_PORT')}')
         inbox.put(d)
     return jsonify({'status': 'success'})
 
@@ -56,6 +90,8 @@ def weights():
         client_ts = float(request.args.get('ts', 0))
     except ValueError:
         client_ts = 0
+    if client_ts == 0:
+        print(f'Client {request.remote_addr}:{request.environ.get('REMOTE_PORT')} connected.')
     if mtime > client_ts and os.path.exists(pipeline.current):
         params = torch.load(pipeline.current, map_location='cpu')
         return pickle.dumps(params, protocol=pickle.HIGHEST_PROTOCOL), 200, {
@@ -70,7 +106,7 @@ if __name__ == '__main__':
     log_file = 'flask_access.log'
     with open(log_file, 'w'):
         pass
-    pipeline = TrainPipeline()
+    pipeline = TrainPipeline(args.env, args.model, args.name, args.n_play, config)
     buffer = ReplayBuffer(3, pipeline.buffer_size, 7, 6, 7, device=pipeline.device)
     pipeline.init_buffer(buffer)
     t = threading.Thread(target=pipeline, daemon=True)

@@ -8,6 +8,7 @@ from src.player import AlphaZeroPlayer
 from tqdm.auto import trange
 import argparse
 import signal
+import time
 
 
 running = True
@@ -23,17 +24,23 @@ parser.add_argument('-n', type=int, default=100,
                     help='Number of simulations before AlphaZero make an action')
 parser.add_argument('--host', '-H', type=str, default='127.0.0.1', help='Host IP')
 parser.add_argument('--port', '-P', '-p', type=int, default=7718, help='Port number')
+parser.add_argument('-c', '--c_init', type=float, default=1.25, help='C_puct init')
+parser.add_argument('-a', '--alpha', type=float, default=0.7, help='Dirichlet alpha')
+parser.add_argument('--n_play', type=int, default=1, help='n_playout')
+parser.add_argument('-t', '--temp', '--temperature', type=float, default=1, help='Softmax temperature')
+parser.add_argument('--n_step', type=int, default=10, help='N steps to decay temperature')
+parser.add_argument('-m', '--model', type=str, default='CNN', help='Model type (CNN)')
+parser.add_argument('-d', '--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device type')
+parser.add_argument('-e', '--env', '--environment', type=str, default='Connect4', help='Environment name')
+parser.add_argument('--retry', type=int, default=3, help='Retry times')
 
 args = parser.parse_args()
 
-
-host = args.host
-port = args.port
 headers = {'Content-Type': 'application/octet-stream'}
 
 
 class TrainPipeline:
-    def __init__(self, env_name='Connect4', model='CNN', name='AZ', play_batch_size=1):
+    def __init__(self, env_name=args.env):
         collection = ('Connect4', )  # NBTTT implementation not yet finished.
         if env_name not in collection:
             raise ValueError(f'Environment does not exist, available env: {collection}')
@@ -41,54 +48,51 @@ class TrainPipeline:
         self.module = load(env_name)
         self.env = self.module.Env()
         self.game = Game(self.env)
-        self.name = f'{name}_{env_name}'
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        self.global_step = 0
-        self.play_batch_size = play_batch_size
-        for key, value in self.module.training_config.items():
-            setattr(self, key, value)
-        self.buffer = None
-        if model == 'CNN':
-            self.net = self.module.CNN(lr=0, device=self.device)
-        elif model == 'ViT':
-            self.net = self.module.ViT(lr=0, device=self.device)
+        if args.model == 'CNN':
+            self.net = self.module.CNN(lr=0, device=args.device)
+        elif args.model == 'ViT':
+            self.net = self.module.ViT(lr=0, device=args.device)
         else:
-            raise ValueError(f'Unknown model type: {model}')
-        self.az_player = AlphaZeroPlayer(self.net, c_puct=self.c_puct,
-                                         n_playout=args.n, alpha=self.dirichlet_alpha, is_selfplay=1)
+            raise ValueError(f'Unknown model type: {args.model}')
+        self.az_player = AlphaZeroPlayer(self.net, c_puct=args.c_init,
+                                         n_playout=args.n, alpha=args.alpha, is_selfplay=1)
         self.mtime = 0
         
     def load_weights(self):
-        r = requests.get(f'http://{host}:{port}/weights?ts={self.mtime}')
+        r = requests.get(f'http://{args.host}:{args.port}/weights?ts={self.mtime}')
         if r.status_code == 200:
+            if self.mtime == 0:
+                print('Server Connected, start collecting.')
             weights = pickle.loads(r.content)
             self.net.to('cpu')
             self.net.load_state_dict(weights)
-            self.net.to(self.device)
+            self.net.to(args.device)
             self.mtime = float(r.headers['X-Timestamp'])
 
     @staticmethod
     def push_data(data):
         payload = pickle.dumps(data, protocol=pickle.HIGHEST_PROTOCOL)
-        resp = requests.post(f'http://{host}:{port}/upload', headers=headers, data=payload)
+        resp = requests.post(f'http://{args.host}:{args.port}/upload', headers=headers, data=payload)
         
-    def data_collector(self, n_games=1):
+    def data_collector(self, n_games=args.n_play):
         self.load_weights()
         data = []
         for _ in range(n_games):
-            _, play_data = self.game.start_self_play(self.az_player, temp=self.temp, first_n_steps=self.first_n_steps)
+            _, play_data = self.game.start_self_play(self.az_player, temp=args.temp, first_n_steps=args.n_step)
             play_data = list(play_data)
             data.append(play_data)
         self.push_data(data)
 
 
 if __name__ == '__main__':
-    print(f'Running... n_playout: {args.n}')
     pipeline = TrainPipeline()
-    try:
-        while running:
-            pipeline.data_collector()
-    except Exception as e:
-        print(e)
+    for i in range(parser.retry):
+        try:
+            while running:
+                pipeline.data_collector()
+        except requests.exceptions.ConnectionError:
+            print(f'Server connection lost, retry{i + 1}')
+            time.sleep(1)
+            continue
     print('quit')
             
