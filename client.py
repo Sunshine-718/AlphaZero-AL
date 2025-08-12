@@ -86,7 +86,7 @@ class TrainPipeline:
 
 if __name__ == '__main__':
     pipeline = TrainPipeline()
-    for i in range(parser.retry):
+    for i in range(args.retry):
         try:
             while running:
                 pipeline.data_collector()
