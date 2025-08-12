@@ -40,7 +40,7 @@ from PyQt5.QtGui import QPainter
 from PyQt5.QtCore import Qt, QTimer
 import torch
 import torch.nn.functional as F
-from environments import load
+from src.environments import load
 from src.player import Human, AlphaZeroPlayer
 from src.game import Game
 
