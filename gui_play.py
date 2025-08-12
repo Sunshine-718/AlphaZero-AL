@@ -2,7 +2,7 @@
 import os
 from PyQt5.QtGui import QColor
 
-
+c_init = 1.25
 ENV_NAME = 'Connect4'
 NETWORK_DEFAULT = 'CNN'
 MODEL_NAME = 'AZ'
@@ -203,7 +203,7 @@ class Connect4GUI(QWidget):
 
         self.az_player = AlphaZeroPlayer(
             self.net,
-            c_puct=self.env_module.training_config['c_puct'],
+            c_puct=c_init,
             n_playout=self.n_playout,
             is_selfplay=0,
         )
