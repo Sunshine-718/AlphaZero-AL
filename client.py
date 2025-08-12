@@ -83,7 +83,7 @@ class TrainPipeline:
 
 
 if __name__ == '__main__':
-    print('Running...')
+    print(f'Running... n_playout: {args.n}')
     pipeline = TrainPipeline()
     try:
         while running:
