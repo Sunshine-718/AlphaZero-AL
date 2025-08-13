@@ -12,7 +12,7 @@ import argparse
 
 parser = argparse.ArgumentParser(description='AlphaZero Training Server')
 parser.add_argument('--host', '-H', type=str, default='0.0.0.0', help='Host IP')
-parser.add_argument('--port', '-P' '-p', type=int, default=7718, help='Port number')
+parser.add_argument('--port', '-P', '-p', type=int, default=7718, help='Port number')
 parser.add_argument('-n', type=int, default=100,
                     help='Number of simulations before AlphaZero make an action')
 parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
