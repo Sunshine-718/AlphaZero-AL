@@ -38,7 +38,7 @@ config = {
     "temp": args.temp,
     "c_puct": args.c_init,
     "n_playout": args.n,
-    "buffer_size": args.buffer_size,
+    "buffer_size": args.buf,
     "batch_size": args.batch_size,
     "pure_mcts_n_playout": args.mcts_n,
     "dirichlet_alpha": args.alpha,
@@ -75,8 +75,7 @@ TrainPipeline.data_collector = data_collector
 
 @app.route('/upload', methods=['POST'])
 def upload():
-    raw_data = request.data
-    data = pickle.loads(raw_data)
+    data = pickle.loads(request.data)
     for d in data:
         print(f'Received data from {request.remote_addr}:{request.environ.get('REMOTE_PORT')}')
         inbox.put(d)
