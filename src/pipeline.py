@@ -120,8 +120,6 @@ class TrainPipeline:
                                           f'MCTS_{self.pure_mcts_n_playout}': 1500}, 0)
         best_counter = 0
         while True:
-            if self.global_step % 500 == 0 and self.global_step != 0:
-                self.buffer.double()
             self.data_collector()
             p_loss, v_loss, entropy, grad_norm = float('inf'), float('inf'), float('inf'), float('inf')
             self.global_step += 1
