@@ -51,7 +51,7 @@ class CNN(Base):
                                          nn.LogSoftmax(dim=-1))
         self.device = device
         self.n_actions = out_dim
-        # self.opt = NAdam(self.parameters(), lr=lr, weight_decay=1e-4, decoupled_weight_decay=True)
+        # self.opt = NAdam(self.parameters(), lr=lr, weight_decay=0.01, decoupled_weight_decay=True)
         self.opt = SGD(self.parameters(), lr=lr, momentum=0.9, weight_decay=1e-4)
         self.to(self.device)
 
