@@ -53,8 +53,8 @@ class Base(ABC, nn.Module):
             _, next_value_oppo_pred = self(next_state_oppo)
             v_loss = F.nll_loss(value_pred, value)
             v_loss += F.nll_loss(value_oppo_pred, value_oppo)
-            v_loss += F.nll_loss(next_value_pred, value_oppo)
-            v_loss += F.nll_loss(next_value_oppo_pred, value)
+            v_loss += 0.1 * F.nll_loss(next_value_pred, value_oppo)
+            v_loss += 0.1 * F.nll_loss(next_value_oppo_pred, value)
             p_loss = torch.mean(torch.sum(-prob * log_p_pred, dim=1))
             loss = p_loss + v_loss
             loss.backward()
