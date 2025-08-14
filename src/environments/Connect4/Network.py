@@ -7,7 +7,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.optim import NAdam
+from torch.optim import NAdam, SGD
 from einops import rearrange
 from ..NetworkBase import Base
 from .config import network_config as config
@@ -51,7 +51,8 @@ class CNN(Base):
                                          nn.LogSoftmax(dim=-1))
         self.device = device
         self.n_actions = out_dim
-        self.opt = NAdam(self.parameters(), lr=lr, weight_decay=1e-4, decoupled_weight_decay=True)
+        # self.opt = NAdam(self.parameters(), lr=lr, weight_decay=1e-4, decoupled_weight_decay=True)
+        self.opt = SGD(self.parameters(), lr=lr, momentum=0.9, weight_decay=1e-4)
         self.to(self.device)
 
     def name(self):
