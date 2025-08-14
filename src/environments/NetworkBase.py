@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 # Written by: Sunshine
 # Created on: 09/Sep/2024  04:20
+import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -13,8 +14,15 @@ from sklearn.metrics import f1_score
 
 class Base(ABC, nn.Module):
     def save(self, path=None):
-        if path is not None:
-            torch.save(self.state_dict(), path)
+        while True:
+            try:
+                if path is not None:
+                    torch.save(self.state_dict(), path)
+                    break
+            except RuntimeError:
+                print('Failed to save parameters, retry...')
+                time.sleep(1)
+                continue
 
     def load(self, path=None):
         if path is not None:
