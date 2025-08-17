@@ -19,17 +19,19 @@ class Block(nn.Module):
         self.conv = nn.Sequential(nn.Conv2d(in_dim, out_dim, kernel_size=3, padding=1, bias=False),
                                   nn.BatchNorm2d(out_dim),
                                   nn.SiLU(True),
-                                  nn.Dropout2d(0.1),
                                   nn.Conv2d(out_dim, out_dim, kernel_size=1, padding=0, bias=False),
                                   nn.BatchNorm2d(out_dim))
-    
+        self.dropout = nn.Dropout2d(0.2)
+
     def forward(self, x):
-        return F.silu(x + self.conv(x))
+        return self.dropout(F.silu(x + self.conv(x)))
 
 
 class CNN(Base):
     def __init__(self, lr, in_dim=3, h_dim=config['h_dim'], out_dim=7, device='cpu'):
         super().__init__()
+        self.projection = nn.Sequential(nn.Conv2d(in_dim, h_dim, kernel_size=3, padding=1, bias=False),
+                                        nn.BatchNorm2d(h_dim))
         self.hidden = nn.Sequential(nn.Conv2d(in_dim, h_dim, kernel_size=3, padding=1, bias=False),
                                     nn.BatchNorm2d(h_dim),
                                     nn.SiLU(True),
@@ -37,22 +39,22 @@ class CNN(Base):
                                     Block(h_dim, h_dim),
                                     Block(h_dim, h_dim),
                                     Block(h_dim, h_dim))
-        self.policy_head = nn.Sequential(nn.Conv2d(h_dim, 3, kernel_size=1, bias=False),
+        self.policy_head = nn.Sequential(nn.Conv2d(h_dim * 2, 3, kernel_size=1, bias=False),
                                          nn.BatchNorm2d(3),
                                          nn.SiLU(True),
                                          nn.Flatten(),
                                          nn.Linear(3 * 6 * 7, out_dim),
                                          nn.LogSoftmax(dim=-1))
-        self.value_head = nn.Sequential(nn.Conv2d(h_dim, 1, kernel_size=1, bias=False),
-                                         nn.BatchNorm2d(1),
-                                         nn.SiLU(True),
-                                         nn.Flatten(),
-                                         nn.Linear(6 * 7, 3),
-                                         nn.LogSoftmax(dim=-1))
+        self.value_head = nn.Sequential(nn.Conv2d(h_dim * 2, 1, kernel_size=1, bias=False),
+                                        nn.BatchNorm2d(1),
+                                        nn.SiLU(True),
+                                        nn.Flatten(),
+                                        nn.Linear(6 * 7, 3),
+                                        nn.LogSoftmax(dim=-1))
         self.device = device
         self.n_actions = out_dim
-        # self.opt = NAdam(self.parameters(), lr=lr, weight_decay=0.01, decoupled_weight_decay=True)
-        self.opt = SGD(self.parameters(), lr=lr, momentum=0.9, weight_decay=1e-4)
+        self.opt = NAdam(self.parameters(), lr=lr, weight_decay=0.01, decoupled_weight_decay=True)
+        # self.opt = SGD(self.parameters(), lr=lr, momentum=0.9, weight_decay=1e-4)
         self.to(self.device)
 
     def name(self):
@@ -60,22 +62,30 @@ class CNN(Base):
 
     def forward(self, x):
         hidden = self.hidden(x)
+        projection = self.projection(x)
+        hidden = torch.concat([hidden, projection], dim=1)
         log_prob = self.policy_head(hidden)
         value = self.value_head(hidden)
         return log_prob, value
-    
+
     def policy(self, state):
         self.eval()
         if isinstance(state, np.ndarray):
             state = torch.from_numpy(state).float().to(self.device)
         with torch.no_grad():
-            return self.policy_head(self.hidden(state)).exp().cpu().numpy()
-    
+            hidden = self.hidden(state)
+            projection = self.projection(state)
+            hidden = torch.concat([hidden, projection], dim=1)
+            return self.policy_head(hidden).exp().cpu().numpy()
+
     def value(self, state):
         self.eval()
         with torch.no_grad():
-            return self.value_head(self.hidden(state)).exp().cpu().numpy()
-    
+            hidden = self.hidden(state)
+            projection = self.projection(state)
+            hidden = torch.concat([hidden, projection], dim=1)
+            return self.value_head(hidden).exp().cpu().numpy()
+
     def predict(self, state, draw_factor=0.5):
         self.eval()
         with torch.no_grad():
@@ -137,7 +147,7 @@ class ViT(Base):
         log_prob = F.log_softmax(prob_logit, dim=-1)
         value_logit = self.value_head(cls_token)
         return log_prob, value_logit
-    
+
     def get_cls_token(self, x):
         x = self.patch_embed(x)
         x = self.transformer(x)
