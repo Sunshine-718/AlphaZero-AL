@@ -89,7 +89,7 @@ class ReplayBuffer:
     def dataloader(self, batch_size):
         total_samples = self.__len__()
         max_samples = int(total_samples * self.replay_ratio)
-        if total_samples <= 1000:
+        if total_samples <= 10000:
             max_samples = total_samples
         if max_samples <= 0:
             raise ValueError("No available data to sample.")
