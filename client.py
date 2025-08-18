@@ -39,7 +39,7 @@ args = parser.parse_args()
 headers = {'Content-Type': 'application/octet-stream'}
 
 
-class TrainPipeline:
+class Actor:
     def __init__(self, env_name=args.env):
         collection = ('Connect4', )  # NBTTT implementation not yet finished.
         if env_name not in collection:
@@ -85,7 +85,7 @@ class TrainPipeline:
 
 
 if __name__ == '__main__':
-    pipeline = TrainPipeline()
+    pipeline = Actor()
     for i in range(args.retry):
         try:
             while running:
