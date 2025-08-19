@@ -176,6 +176,8 @@ class Connect4GUI(QWidget):
             c_puct=None,
             n_playout=None,
             is_selfplay=0,
+            use_cache=True,
+            cache_size=10000
         )
         self.auto_reload_model()
         self.current_player = [None, self.human, self.az_player]
@@ -192,7 +194,7 @@ class Connect4GUI(QWidget):
         self.timer.setInterval(self.animation_interval)
         self.player_color = 1 if self.player_choice.currentText() == "Human (X)" else -1
 
-        device = 'cuda' if torch.cuda.is_available() else 'mps'
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
         net_class = getattr(self.env_module, self.network)
         net = net_class(lr=0, device=device)  # lr=0 → 推理模式
         net.eval()
