@@ -37,6 +37,7 @@ class TrainPipeline:
         self.az_player = AlphaZeroPlayer(self.net, c_puct=self.c_puct, n_playout=self.n_playout,
                                          alpha=self.dirichlet_alpha, is_selfplay=1,
                                          use_cache=self.use_cache, cache_size=self.cache_size)
+        self.update_best_net()
         self.elo = Elo(self.init_elo, 1500)
         if not os.path.exists('params'):
             os.makedirs('params')
@@ -91,6 +92,7 @@ class TrainPipeline:
             elif winner == 0:
                 win_rate += 0.5 / n_games
         if win_rate >= self.win_rate_threshold:
+            self.update_best_net()
             flag = True
         print('Complete.')
         return flag, win_rate
@@ -106,6 +108,9 @@ class TrainPipeline:
         print(f'\tBatch size: {self.batch_size}')
         print(f'\tTemperature: {self.temp}')
         print('=' * 50)
+    
+    def update_best_net(self):
+        self.best_net = deepcopy(self.net)
 
     def run(self):
         self.show_hyperparams()
