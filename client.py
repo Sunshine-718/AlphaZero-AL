@@ -32,7 +32,7 @@ parser.add_argument('-d', '--device', type=str, default='cuda' if torch.cuda.is_
 parser.add_argument('-e', '--env', '--environment', type=str, default='Connect4', help='Environment name')
 parser.add_argument('--retry', type=int, default=3, help='Retry times')
 parser.add_argument('--no-cache', action='store_false', dest='cache', help='Disable cache')
-parser.add_argument('--cache_size', type=int, default=10000, help='LRU cache max size')
+parser.add_argument('--cache_size', type=int, default=5000, help='LRU cache max size')
 
 args = parser.parse_args()
 
@@ -77,6 +77,7 @@ class Actor:
         resp = requests.post(f'http://{args.host}:{args.port}/upload', headers=headers, data=payload)
         
     def data_collector(self, n_games=args.n_play):
+        start = time.perf_counter()
         self.load_weights()
         data = []
         for _ in range(n_games):
@@ -84,6 +85,8 @@ class Actor:
             play_data = list(play_data)
             assert(len(play_data) <= 42)    # Only for Connect4
             data.append(play_data)
+        end = time.perf_counter()
+        print(f'Average step time: {(end - start) / len(data[0]): .2f}s')
         self.push_data(data)
 
 
