@@ -77,7 +77,6 @@ class Actor:
         resp = requests.post(f'http://{args.host}:{args.port}/upload', headers=headers, data=payload)
         
     def data_collector(self, n_games=args.n_play):
-        start = time.perf_counter()
         self.load_weights()
         data = []
         for _ in range(n_games):
@@ -85,8 +84,6 @@ class Actor:
             play_data = list(play_data)
             assert(len(play_data) <= 42)    # Only for Connect4
             data.append(play_data)
-        end = time.perf_counter()
-        print(f'Average step time: {(end - start) / len(data[0]): .2f}s')
         self.push_data(data)
 
 
