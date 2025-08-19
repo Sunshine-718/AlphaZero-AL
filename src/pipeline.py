@@ -7,7 +7,7 @@ from copy import deepcopy
 from .environments import load
 from .player import MCTSPlayer, AlphaZeroPlayer, NetworkPlayer
 from torch.utils.tensorboard import SummaryWriter
-from tqdm.auto import trange
+
 
 class TrainPipeline:
     def __init__(self, env_name='Connect4', model='CNN', name='AZ', play_batch_size=1, config=None):
@@ -34,9 +34,9 @@ class TrainPipeline:
         self.current = f'{self.params}/{self.name}_{self.net.name()}_current.pt'
         self.best = f'{self.params}/{self.name}_{self.net.name()}_best.pt'
         self.net.load(self.current)
-        self.az_player = AlphaZeroPlayer(self.net, c_puct=self.c_puct,
-                                         n_playout=self.n_playout, alpha=self.dirichlet_alpha, is_selfplay=1)
-        self.update_best_player()
+        self.az_player = AlphaZeroPlayer(self.net, c_puct=self.c_puct, n_playout=self.n_playout,
+                                         alpha=self.dirichlet_alpha, is_selfplay=1,
+                                         use_cache=self.use_cache, cache_size=self.cache_size)
         self.elo = Elo(self.init_elo, 1500)
         if not os.path.exists('params'):
             os.makedirs('params')
@@ -58,7 +58,8 @@ class TrainPipeline:
     def update_elo(self):
         print('Updating elo score...')
         self.net.eval()
-        current_az_player = AlphaZeroPlayer(self.net, self.c_puct, self.n_playout, self.dirichlet_alpha)
+        current_az_player = deepcopy(self.az_player)
+        current_az_player.is_selfplay = False
         current_az_player.eval()
         mcts_player = MCTSPlayer(1, self.pure_mcts_n_playout)
         winner = self.game.start_play(player1=current_az_player, player2=mcts_player, show=0)
@@ -90,7 +91,6 @@ class TrainPipeline:
             elif winner == 0:
                 win_rate += 0.5 / n_games
         if win_rate >= self.win_rate_threshold:
-            self.update_best_player()
             flag = True
         print('Complete.')
         return flag, win_rate
@@ -106,11 +106,6 @@ class TrainPipeline:
         print(f'\tBatch size: {self.batch_size}')
         print(f'\tTemperature: {self.temp}')
         print('=' * 50)
-
-    def update_best_player(self):
-        self.best_net = deepcopy(self.net)
-        self.best_player = AlphaZeroPlayer(self.best_net, c_puct=self.c_puct,
-                                           n_playout=self.n_playout, alpha=self.dirichlet_alpha)
 
     def run(self):
         self.show_hyperparams()

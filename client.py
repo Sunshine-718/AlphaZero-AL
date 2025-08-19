@@ -5,7 +5,6 @@ from src.game import Game
 from copy import deepcopy
 from src.environments import load
 from src.player import AlphaZeroPlayer
-from tqdm.auto import trange
 import argparse
 import signal
 import time
@@ -33,6 +32,8 @@ parser.add_argument('-m', '--model', type=str, default='CNN', help='Model type (
 parser.add_argument('-d', '--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device type')
 parser.add_argument('-e', '--env', '--environment', type=str, default='Connect4', help='Environment name')
 parser.add_argument('--retry', type=int, default=3, help='Retry times')
+parser.add_argument('--no-cache', action='store_false', dest='cache', help='Disable cache')
+parser.add_argument('--cache_size', type=int, default=10000, help='LRU cache max size')
 
 args = parser.parse_args()
 
@@ -54,8 +55,9 @@ class Actor:
             self.net = self.module.ViT(lr=0, device=args.device)
         else:
             raise ValueError(f'Unknown model type: {args.model}')
-        self.az_player = AlphaZeroPlayer(self.net, c_puct=args.c_init,
-                                         n_playout=args.n, alpha=args.alpha, is_selfplay=1)
+        self.az_player = AlphaZeroPlayer(self.net, c_puct=args.c_init, n_playout=args.n, 
+                                         alpha=args.alpha, is_selfplay=1, use_cache=args.cache,
+                                         cache_size=args.cache_size)
         self.mtime = 0
         
     def load_weights(self):
@@ -76,6 +78,7 @@ class Actor:
         resp = requests.post(f'http://{args.host}:{args.port}/upload', headers=headers, data=payload)
         
     def data_collector(self, n_games=args.n_play):
+        start = time.perf_counter()
         self.load_weights()
         data = []
         for _ in range(n_games):
@@ -83,6 +86,8 @@ class Actor:
             play_data = list(play_data)
             assert(len(play_data) <= 42)    # Only for Connect4
             data.append(play_data)
+        end = time.perf_counter()
+        print(f'Average step time: {(end - start) / len(data[0]) : .2f}s')
         self.push_data(data)
 
 

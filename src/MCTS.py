@@ -4,7 +4,7 @@
 # Created on: 20/Jun/2025  21:55
 import math
 import numpy as np
-from .LRU_cache import LRUCache
+from .Cache import LRUCache as Cache
 
 
 class TreeNode:
@@ -136,12 +136,14 @@ class MCTS:
 
 
 class MCTS_AZ(MCTS):
-    def __init__(self, policy_value_fn, c_init=1.5, n_playout=1000, alpha=None):
+    def __init__(self, policy_value_fn, c_init=1.5, n_playout=1000, alpha=None, use_cache=True, cache_size=10000):
         super().__init__(policy_value_fn, c_init, n_playout, alpha)
-        self.cache = LRUCache(100000)
+        self.cache = Cache(cache_size)
+        self.use_cache = use_cache
     
     def refresh_cache(self):
-        self.cache.refresh(self.policy.predict)
+        if self.use_cache:
+            self.cache.refresh(self.policy.predict)
 
     def playout(self, env):
         noise = None
@@ -150,11 +152,12 @@ class MCTS_AZ(MCTS):
         #
         valid = env_aug.valid_move()
         state = env_aug.current_state()
-        if state in self.cache:
+        if self.use_cache and (state in self.cache):
             probs, value = self.cache.get(state)
         else:
             probs, value = self.policy.predict(state)
-            self.cache.put(state, (probs, value))
+            if self.use_cache:
+                self.cache.put(state, (probs, value))
         probs = probs.flatten()[valid]
         probs /= sum(probs)
         action_probs = tuple(zip(valid, probs))

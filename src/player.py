@@ -82,9 +82,9 @@ class MCTSPlayer(Player):
 
 
 class AlphaZeroPlayer(MCTSPlayer):
-    def __init__(self, policy_value_fn, c_puct=1.5, n_playout=1000, alpha=None, is_selfplay=0):
+    def __init__(self, policy_value_fn, c_puct=1.5, n_playout=1000, alpha=None, is_selfplay=0, use_cache=True, cache_size=10000):
         self.pv_fn = policy_value_fn
-        self.mcts = MCTS_AZ(policy_value_fn, c_puct, n_playout, alpha)
+        self.mcts = MCTS_AZ(policy_value_fn, c_puct, n_playout, alpha, use_cache, cache_size)
         self.is_selfplay = is_selfplay
         try:
             self.n_actions = policy_value_fn.n_actions

@@ -27,27 +27,31 @@ parser.add_argument('--n_step', type=int, default=10, help='N steps to decay tem
 parser.add_argument('--thres', type=float, default=0.65, help='Win rate threshold')
 parser.add_argument('--num_eval', type=int, default=50, help='Number of evaluation.')
 parser.add_argument('-m', '--model', type=str, default='CNN', help='Model type (CNN)')
-parser.add_argument('-d', '--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device type')
+parser.add_argument('-d', '--device', type=str, default='cuda' if torch.cuda.is_available()
+                    else 'cpu', help='Device type')
 parser.add_argument('-e', '--env', '--environment', type=str, default='Connect4', help='Environment name')
 parser.add_argument('--interval', type=int, default=10, help='Eval interval')
 parser.add_argument('--name', type=str, default='AZ', help='Name of AlphaZero')
+parser.add_argument('--no-cache', action='store_false', dest='cache', help='Disable cache')
+parser.add_argument('--cache_size', type=int, default=10000, help='LRU cache max size')
+parser.add_argument('--pause', action='store_true', help='Pause')
 args = parser.parse_args()
 
-config = {
-    "lr": args.lr,
-    "temp": args.temp,
-    "c_puct": args.c_init,
-    "n_playout": args.n,
-    "buffer_size": args.buf,
-    "batch_size": args.batch_size,
-    "pure_mcts_n_playout": args.mcts_n,
-    "dirichlet_alpha": args.alpha,
-    "init_elo": 1500,
-    "num_eval": args.num_eval,
-    "win_rate_threshold": args.thres,
-    "interval": args.interval,
-    "device": args.device
-    }
+config = {"lr": args.lr,
+          "temp": args.temp,
+          "c_puct": args.c_init,
+          "n_playout": args.n,
+          "buffer_size": args.buf,
+          "batch_size": args.batch_size,
+          "pure_mcts_n_playout": args.mcts_n,
+          "dirichlet_alpha": args.alpha,
+          "init_elo": 1500,
+          "num_eval": args.num_eval,
+          "win_rate_threshold": args.thres,
+          "interval": args.interval,
+          "device": args.device,
+          "use_cache": args.cache,
+          "cache_size": args.cache_size}
 
 
 inbox = queue.Queue()
@@ -108,8 +112,9 @@ if __name__ == '__main__':
     pipeline = TrainPipeline(args.env, args.model, args.name, args.n_play, config)
     buffer = ReplayBuffer(3, pipeline.buffer_size, 7, 6, 7, device=pipeline.device)
     pipeline.init_buffer(buffer)
-    t = threading.Thread(target=pipeline, daemon=True)
-    t.start()
+    if not args.pause:
+        t = threading.Thread(target=pipeline, daemon=True)
+        t.start()
 
     handler = logging.FileHandler(log_file, encoding='utf-8')
     handler.setLevel(logging.INFO)
