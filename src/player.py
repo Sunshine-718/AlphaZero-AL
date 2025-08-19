@@ -86,7 +86,24 @@ class AlphaZeroPlayer(MCTSPlayer):
         self.pv_fn = policy_value_fn
         self.mcts = MCTS_AZ(policy_value_fn, c_puct, n_playout, alpha)
         self.is_selfplay = is_selfplay
+        try:
+            self.n_actions = policy_value_fn.n_actions
+        except AttributeError:
+            self.n_actions = None
+    
+    def reload(self, policy_value_fn, c_puct=None, n_playout=None, alpha=None, is_self_play=None):
+        self.pv_fn = policy_value_fn
+        self.mcts.policy = policy_value_fn
+        if c_puct is not None:
+            self.mcts.c_init = c_puct
+        if n_playout is not None:
+            self.mcts.n_playout = n_playout
+        if alpha is not None:
+            self.mcts.alpha = alpha
+        if is_self_play is not None:
+            self.is_selfplay = is_self_play
         self.n_actions = policy_value_fn.n_actions
+        self.mcts.refresh_cache()
     
     def to(self, device='cpu'):
         self.pv_fn.to(device)
