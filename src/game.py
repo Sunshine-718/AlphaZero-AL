@@ -17,9 +17,8 @@ class Game:
         while True:
             current_turn = self.env.turn
             player = players[current_turn]
-            action, probs, *_ = player.get_action(self.env)
+            action, *_ = player.get_action(self.env)
             player.reset_player()
-            prev_env = self.env.copy()
             self.env.step(action)
             if show:
                 self.env.show()
@@ -35,12 +34,10 @@ class Game:
     def start_self_play(self, player, temp=1, first_n_steps=5):
         self.env.reset()
         states, mcts_probs, current_players, next_states = [], [], [], []
-        # values = []
         steps = 0
         while True:
             temperature = 1e-3 if steps >= first_n_steps else temp
             action, probs = player.get_action(self.env, temperature)
-            # values.append(float(v_target))
             steps += 1
             states.append(self.env.current_state())
             mcts_probs.append(probs)

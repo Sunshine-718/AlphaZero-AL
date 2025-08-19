@@ -142,8 +142,7 @@ class MCTS_AZ(MCTS):
         env_aug, flipped = env.random_flip()
         #
         valid = env_aug.valid_move()
-        current_state = torch.from_numpy(env_aug.current_state()).float().to(self.policy.device)
-        probs, value = self.policy.predict(current_state)
+        probs, value = self.policy.predict(env_aug.current_state())
         probs = probs.flatten()[valid]
         probs /= sum(probs)
         action_probs = tuple(zip(valid, probs))

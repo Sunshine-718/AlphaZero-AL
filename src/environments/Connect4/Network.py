@@ -87,6 +87,7 @@ class CNN(Base):
             return self.value_head(hidden).exp().cpu().numpy()
 
     def predict(self, state, draw_factor=0.5):
+        state = torch.from_numpy(state).float().to(self.device)
         self.eval()
         with torch.no_grad():
             log_prob, value_log_prob = self.forward(state)

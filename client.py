@@ -80,6 +80,7 @@ class Actor:
         for _ in range(n_games):
             _, play_data = self.game.start_self_play(self.az_player, temp=args.temp, first_n_steps=args.n_step)
             play_data = list(play_data)
+            assert(len(play_data) <= 42)    # Only for Connect4
             data.append(play_data)
         self.push_data(data)
 
