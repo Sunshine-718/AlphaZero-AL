@@ -171,6 +171,12 @@ class Connect4GUI(QWidget):
         self.animation_color = None
 
         # 初始化 AlphaZero / Human 玩家
+        self.az_player = AlphaZeroPlayer(
+            None,
+            c_puct=None,
+            n_playout=None,
+            is_selfplay=0,
+        )
         self.auto_reload_model()
         self.current_player = [None, self.human, self.az_player]
 
@@ -186,7 +192,7 @@ class Connect4GUI(QWidget):
         self.timer.setInterval(self.animation_interval)
         self.player_color = 1 if self.player_choice.currentText() == "Human (X)" else -1
 
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        device = 'cuda' if torch.cuda.is_available() else 'mps'
         net_class = getattr(self.env_module, self.network)
         net = net_class(lr=0, device=device)  # lr=0 → 推理模式
         net.eval()
@@ -201,12 +207,7 @@ class Connect4GUI(QWidget):
         )
         self.net.load(model_path)
 
-        self.az_player = AlphaZeroPlayer(
-            self.net,
-            c_puct=c_init,
-            n_playout=self.n_playout,
-            is_selfplay=0,
-        )
+        self.az_player.reload(self.net, c_init, self.n_playout, 0)
         self.az_player.eval()
         self.human = Human()
 

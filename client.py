@@ -67,6 +67,7 @@ class Actor:
             self.net.to('cpu')
             self.net.load_state_dict(weights)
             self.net.to(args.device)
+            self.az_player.reload(self.net)
             self.mtime = float(r.headers['X-Timestamp'])
 
     @staticmethod

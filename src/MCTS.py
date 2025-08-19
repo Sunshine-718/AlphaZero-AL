@@ -3,8 +3,8 @@
 # Written by: Sunshine
 # Created on: 20/Jun/2025  21:55
 import math
-import torch
 import numpy as np
+from .LRU_cache import LRUCache
 
 
 class TreeNode:
@@ -136,13 +136,25 @@ class MCTS:
 
 
 class MCTS_AZ(MCTS):
+    def __init__(self, policy_value_fn, c_init=1.5, n_playout=1000, alpha=None):
+        super().__init__(policy_value_fn, c_init, n_playout, alpha)
+        self.cache = LRUCache(100000)
+    
+    def refresh_cache(self):
+        self.cache.refresh(self.policy.predict)
+
     def playout(self, env):
         noise = None
         node = self.select_leaf_node(env)
         env_aug, flipped = env.random_flip()
         #
         valid = env_aug.valid_move()
-        probs, value = self.policy.predict(env_aug.current_state())
+        state = env_aug.current_state()
+        if state in self.cache:
+            probs, value = self.cache.get(state)
+        else:
+            probs, value = self.policy.predict(state)
+            self.cache.put(state, (probs, value))
         probs = probs.flatten()[valid]
         probs /= sum(probs)
         action_probs = tuple(zip(valid, probs))

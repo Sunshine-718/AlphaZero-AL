@@ -19,13 +19,14 @@ parser.add_argument('--model', type=str, default='current', help='Model type')
 parser.add_argument('--network', type=str, default='CNN', help='Network type')
 parser.add_argument('--env', type=str, default='Connect4', help='env name')
 parser.add_argument('--name', type=str, default='AZ', help='Model name')
+parser.add_argument('-c', '--c_init', type=float, default=1.25, help='C_puct init')
+parser.add_argument('-a', '--alpha', type=float, default=0.7, help='Dirichlet alpha')
 
 args = parser.parse_args()
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 if __name__ == '__main__':
     module = load(args.env)
-    config = module.config.training_config
     try:
         env = module.Env()
         game = Game(env)
@@ -42,8 +43,8 @@ if __name__ == '__main__':
         if args.n == 0:
             az_player = NetworkPlayer(net)
         else:
-            az_player = AlphaZeroPlayer(net, c_puct=config['c_puct'],
-                                        n_playout=args.n, alpha=config['dirichlet_alpha'], is_selfplay=0)
+            az_player = AlphaZeroPlayer(net, c_puct=args.c_init,
+                                        n_playout=args.n, alpha=args.alpha, is_selfplay=0)
         az_player.eval()
 
         human = Human()
