@@ -55,13 +55,13 @@ class CNN(Base):
                                     Block(h_dim, h_dim),
                                     Block(h_dim, h_dim),
                                     Block(h_dim, h_dim))
-        self.policy_head = nn.Sequential(nn.Conv2d(h_dim, 3, kernel_size=1, bias=False),
-                                         nn.BatchNorm2d(3),
+        self.policy_head = nn.Sequential(nn.Conv2d(h_dim, h_dim, kernel_size=(6, 1), bias=False),
+                                         nn.BatchNorm2d(h_dim),
                                          nn.SiLU(True),
+                                         nn.Conv2d(h_dim, 1, kernel_size=1)
                                          nn.Flatten(),
-                                         nn.Linear(3 * 6 * 7, out_dim),
                                          nn.LogSoftmax(dim=-1))
-        self.value_head = nn.Sequential(nn.Conv2d(h_dim, 1, kernel_size=1, bias=False),
+        self.value_head = nn.Sequential(nn.Conv2d(h_dim, 1, kernel_size=(3, 3), padding=(1, 1), bias=False),
                                         nn.BatchNorm2d(1),
                                         nn.SiLU(True),
                                         nn.Flatten(),
