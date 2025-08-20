@@ -55,10 +55,10 @@ class CNN(Base):
                                     Block(h_dim, h_dim),
                                     Block(h_dim, h_dim),
                                     Block(h_dim, h_dim))
-        self.policy_head = nn.Sequential(nn.Conv2d(h_dim, h_dim, kernel_size=(6, 1), bias=False),
-                                         nn.BatchNorm2d(h_dim),
-                                         nn.SiLU(True),
-                                         nn.Conv2d(h_dim, 1, kernel_size=1),
+        self.policy_middle = nn.Sequential(nn.Conv2d(h_dim, h_dim, kernel_size=(6, 1), bias=False),
+                                           nn.BatchNorm2d(h_dim),
+                                           nn.SiLU(True))
+        self.policy_head = nn.Sequential(nn.Conv2d(h_dim, 1, kernel_size=1),
                                          nn.Flatten(),
                                          nn.LogSoftmax(dim=-1))
         self.value_head = nn.Sequential(nn.Conv2d(h_dim, 1, kernel_size=(3, 3), padding=(1, 1), bias=False),
@@ -70,6 +70,8 @@ class CNN(Base):
                                         nn.SiLU(True),
                                         nn.Linear(6 * 7, 3),
                                         nn.LogSoftmax(dim=-1))
+        self.positional_encoding = nn.Parameter(torch.zeros(1, h_dim, 1, 7))
+        torch.nn.init.normal_(self.positional_encoding, 0, 1e-2)
         self.device = device
         self.n_actions = out_dim
         self.opt = NAdam(self.parameters(), lr=lr, weight_decay=0.01, decoupled_weight_decay=True)
@@ -81,7 +83,8 @@ class CNN(Base):
 
     def forward(self, x):
         hidden = self.hidden(x)
-        log_prob = self.policy_head(hidden)
+        p_laten = self.policy_middle(hidden)
+        log_prob = self.policy_head(p_laten + self.positional_encoding)
         value = self.value_head(hidden)
         return log_prob, value
 
@@ -91,7 +94,8 @@ class CNN(Base):
             state = torch.from_numpy(state).float().to(self.device)
         with torch.no_grad():
             hidden = self.hidden(state)
-            return self.policy_head(hidden).exp().cpu().numpy()
+            p_laten = self.policy_middle(hidden)
+            return self.policy_head(p_laten + self.positional_encoding).exp().cpu().numpy()
 
     def value(self, state):
         self.eval()
