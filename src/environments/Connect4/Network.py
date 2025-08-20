@@ -23,12 +23,14 @@ class MaskedConv2d(nn.Conv2d):
 
 
 def mask(out_ch, in_ch, device='cpu'):
-    m = torch.tensor([[1, 0, 1, 0, 1],
-                      [0, 1, 1, 1, 0],
-                      [1, 1, 1, 1, 1],
-                      [0, 1, 1, 1, 0],
-                      [1, 0, 1, 0, 1]], dtype=torch.float32, device=device)
-    return m[None, None, :, :].expand(out_ch, in_ch, 5, 5).clone()
+    m = torch.tensor([[1, 0, 0, 1, 0, 0, 1],
+                      [0, 1, 0, 1, 0, 1, 0],
+                      [0, 0, 1, 1, 1, 0, 0],
+                      [1, 1, 1, 1, 1, 1, 1],
+                      [0, 0, 1, 1, 1, 0, 0],
+                      [0, 1, 0, 1, 0, 1, 0],
+                      [1, 0, 0, 1, 0, 0, 1]], dtype=torch.float32, device=device)
+    return m[None, None, :, :].expand(out_ch, in_ch, m.shape[0], m.shape[1]).clone()
 
 
 class Block(nn.Module):
@@ -48,7 +50,7 @@ class Block(nn.Module):
 class CNN(Base):
     def __init__(self, lr, in_dim=3, h_dim=config['h_dim'], out_dim=7, device='cpu'):
         super().__init__()
-        self.hidden = nn.Sequential(MaskedConv2d(in_dim, h_dim, mask=mask(h_dim, in_dim, device), kernel_size=5, padding=2),
+        self.hidden = nn.Sequential(MaskedConv2d(in_dim, h_dim, mask=mask(h_dim, in_dim, device), kernel_size=7, padding=3),
                                     nn.BatchNorm2d(h_dim),
                                     nn.SiLU(True),
                                     nn.Dropout2d(0.2),
