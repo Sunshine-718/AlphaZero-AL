@@ -65,6 +65,9 @@ class CNN(Base):
                                         nn.BatchNorm2d(1),
                                         nn.SiLU(True),
                                         nn.Flatten(),
+                                        nn.Linear(6 * 7, 6 * 7),
+                                        nn.LayerNorm(6 * 7),
+                                        nn.SiLU(True),
                                         nn.Linear(6 * 7, 3),
                                         nn.LogSoftmax(dim=-1))
         self.device = device
