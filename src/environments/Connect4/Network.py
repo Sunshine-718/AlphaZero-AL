@@ -13,39 +13,55 @@ from ..NetworkBase import Base
 from .config import network_config as config
 
 
+class MaskedConv2d(nn.Conv2d):
+    def __init__(self, *args, mask: torch.Tensor, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.register_buffer("mask", mask)
+
+    def forward(self, x):
+        return F.conv2d(x, self.weight * self.mask, self.bias, self.stride, self.padding, self.dilation, self.groups)
+
+
+def mask(out_ch, in_ch, device='cpu'):
+    m = torch.tensor([[1, 0, 1, 0, 1],
+                      [0, 1, 1, 1, 0],
+                      [1, 1, 1, 1, 1],
+                      [0, 1, 1, 1, 0],
+                      [1, 0, 1, 0, 1]], dtype=torch.float32, device=device)
+    return m[None, None, :, :].expand(out_ch, in_ch, 5, 5).clone()
+
+
 class Block(nn.Module):
     def __init__(self, in_dim, out_dim):
         super().__init__()
-        self.conv = nn.Sequential(nn.Conv2d(in_dim, out_dim, kernel_size=3, padding=1, bias=False),
+        self.conv = nn.Sequential(nn.Conv2d(in_dim, out_dim, kernel_size=1, padding=0, bias=False),
                                   nn.BatchNorm2d(out_dim),
                                   nn.SiLU(True),
-                                  nn.Conv2d(out_dim, out_dim, kernel_size=1, padding=0, bias=False),
-                                  nn.BatchNorm2d(out_dim))
+                                  nn.Conv2d(out_dim, out_dim, kernel_size=1, padding=0, bias=False))
         self.dropout = nn.Dropout2d(0.2)
+        self.norm = nn.BatchNorm2d(out_dim)
 
     def forward(self, x):
-        return self.dropout(F.silu(x + self.conv(x)))
+        return self.dropout(F.silu(self.norm(x + self.conv(x))))
 
 
 class CNN(Base):
     def __init__(self, lr, in_dim=3, h_dim=config['h_dim'], out_dim=7, device='cpu'):
         super().__init__()
-        self.projection = nn.Sequential(nn.Conv2d(in_dim, h_dim, kernel_size=3, padding=1, bias=False),
-                                        nn.BatchNorm2d(h_dim))
-        self.hidden = nn.Sequential(nn.Conv2d(in_dim, h_dim, kernel_size=3, padding=1, bias=False),
+        self.hidden = nn.Sequential(MaskedConv2d(in_dim, h_dim, mask=mask(h_dim, in_dim, device), kernel_size=5, padding=2),
                                     nn.BatchNorm2d(h_dim),
                                     nn.SiLU(True),
-                                    nn.Dropout2d(0.1),
+                                    nn.Dropout2d(0.2),
                                     Block(h_dim, h_dim),
                                     Block(h_dim, h_dim),
                                     Block(h_dim, h_dim))
-        self.policy_head = nn.Sequential(nn.Conv2d(h_dim * 2, 3, kernel_size=1, bias=False),
+        self.policy_head = nn.Sequential(nn.Conv2d(h_dim, 3, kernel_size=1, bias=False),
                                          nn.BatchNorm2d(3),
                                          nn.SiLU(True),
                                          nn.Flatten(),
                                          nn.Linear(3 * 6 * 7, out_dim),
                                          nn.LogSoftmax(dim=-1))
-        self.value_head = nn.Sequential(nn.Conv2d(h_dim * 2, 1, kernel_size=1, bias=False),
+        self.value_head = nn.Sequential(nn.Conv2d(h_dim, 1, kernel_size=1, bias=False),
                                         nn.BatchNorm2d(1),
                                         nn.SiLU(True),
                                         nn.Flatten(),
@@ -62,8 +78,6 @@ class CNN(Base):
 
     def forward(self, x):
         hidden = self.hidden(x)
-        projection = self.projection(x)
-        hidden = torch.concat([hidden, projection], dim=1)
         log_prob = self.policy_head(hidden)
         value = self.value_head(hidden)
         return log_prob, value
@@ -74,16 +88,12 @@ class CNN(Base):
             state = torch.from_numpy(state).float().to(self.device)
         with torch.no_grad():
             hidden = self.hidden(state)
-            projection = self.projection(state)
-            hidden = torch.concat([hidden, projection], dim=1)
             return self.policy_head(hidden).exp().cpu().numpy()
 
     def value(self, state):
         self.eval()
         with torch.no_grad():
             hidden = self.hidden(state)
-            projection = self.projection(state)
-            hidden = torch.concat([hidden, projection], dim=1)
             return self.value_head(hidden).exp().cpu().numpy()
 
     def predict(self, state, draw_factor=0.5):
