@@ -58,7 +58,7 @@ class CNN(Base):
         self.policy_head = nn.Sequential(nn.Conv2d(h_dim, h_dim, kernel_size=(6, 1), bias=False),
                                          nn.BatchNorm2d(h_dim),
                                          nn.SiLU(True),
-                                         nn.Conv2d(h_dim, 1, kernel_size=1)
+                                         nn.Conv2d(h_dim, 1, kernel_size=1),
                                          nn.Flatten(),
                                          nn.LogSoftmax(dim=-1))
         self.value_head = nn.Sequential(nn.Conv2d(h_dim, 1, kernel_size=(3, 3), padding=(1, 1), bias=False),
