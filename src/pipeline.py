@@ -117,8 +117,7 @@ class TrainPipeline:
         self.show_hyperparams()
 
         writer = SummaryWriter(filename_suffix=self.name)
-        writer.add_scalars('Metric/Elo', {f'AlphaZero_{self.n_playout}': self.init_elo,
-                                          f'MCTS_{self.pure_mcts_n_playout}': 1500}, 0)
+        
         best_counter = 0
         while True:
             self.data_collector()
