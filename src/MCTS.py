@@ -138,7 +138,7 @@ class MCTS:
 
 class MCTS_AZ(MCTS):
     def __init__(self, policy_value_fn, c_init, n_playout, discount, alpha, use_cache, cache_size):
-        super().__init__(policy_value_fn, c_init, n_playout, alpha, discount)
+        super().__init__(policy_value_fn, c_init, n_playout, discount, alpha)
         self.cache = Cache(cache_size)
         self.use_cache = use_cache
     

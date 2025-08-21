@@ -175,6 +175,7 @@ class Connect4GUI(QWidget):
             None,
             c_init=None,
             n_playout=None,
+            discount=0.99,
             is_selfplay=0,
             use_cache=True,
             cache_size=10000
@@ -209,7 +210,7 @@ class Connect4GUI(QWidget):
         )
         self.net.load(model_path)
 
-        self.az_player.reload(self.net, c_init, self.n_playout, 0)
+        self.az_player.reload(self.net, c_init, self.n_playout, is_self_play=0)
         self.az_player.eval()
         self.human = Human()
 
