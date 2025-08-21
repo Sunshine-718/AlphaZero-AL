@@ -13,8 +13,8 @@ Based on https://github.com/Sunshine-718/AlphaZero
 
 ## Environment
 
-[`Python 3.13`](https://www.python.org)
-[`torch 2.7.0`](https://pytorch.org)
+[`Python 3.13`](https://www.python.org)  
+[`torch 2.7.0`](https://pytorch.org)  
 
 <hr>
 
