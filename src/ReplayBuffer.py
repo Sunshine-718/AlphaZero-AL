@@ -39,7 +39,7 @@ class ReplayBuffer:
         return len(self.discount[~self.discount.isnan()])
 
     def is_full(self):
-        return self.__len__() >= len(self.state)
+        return len(self) >= len(self.state)
 
     def reset(self):
         self.state = torch.full_like(self.state, torch.nan, dtype=torch.float32)
@@ -83,11 +83,11 @@ class ReplayBuffer:
 
     def sample(self, batch_size):
         idx = torch.from_numpy(np.random.randint(
-            0, self.__len__(), batch_size, dtype=np.int64))
+            0, len(self), batch_size, dtype=np.int64))
         return self.get(idx)
 
     def dataloader(self, batch_size):
-        total_samples = self.__len__()
+        total_samples = len(self)
         max_samples = int(total_samples * self.replay_ratio) if len(self.state) > 10000 else min(total_samples, 10000)
         if total_samples <= 10000:
             max_samples = total_samples
@@ -146,7 +146,7 @@ class ReplayBuffer:
 
     def sample_balanced(self, batch_size):
         # 采样上限逻辑
-        total_samples = self.__len__()
+        total_samples = len(self)
         max_samples = int(total_samples * self.replay_ratio) if len(self.state) > 10000 else min(total_samples, 10000)
 
         winner = self.winner[:total_samples].squeeze()  # [N]
