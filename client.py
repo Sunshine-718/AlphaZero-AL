@@ -59,7 +59,7 @@ class Actor:
                                          discount=args.discount, alpha=args.alpha, is_selfplay=1, 
                                          use_cache=args.cache, cache_size=args.cache_size)
         self.mtime = 0
-        
+
     def load_weights(self):
         r = requests.get(f'http://{args.host}:{args.port}/weights?ts={self.mtime}')
         if r.status_code == 200:
@@ -76,7 +76,7 @@ class Actor:
     def push_data(data):
         payload = pickle.dumps(data, protocol=pickle.HIGHEST_PROTOCOL)
         resp = requests.post(f'http://{args.host}:{args.port}/upload', headers=headers, data=payload)
-        
+
     def data_collector(self, n_games=args.n_play):
         self.load_weights()
         data = []
@@ -99,4 +99,3 @@ if __name__ == '__main__':
             time.sleep(1)
             continue
     print('quit')
-            
