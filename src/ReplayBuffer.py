@@ -21,14 +21,14 @@ class ReplayBuffer:
                 (capacity, state_dim, row, col), torch.nan, dtype=torch.float32, device=device)
             self.prob = torch.full(
                 (capacity, action_dim), torch.nan, dtype=torch.float32, device=device)
-            self.value = torch.full((capacity, 1), torch.nan,
+            self.discount = torch.full((capacity, 1), torch.nan,
                                     dtype=torch.float32, device=device)
             self.winner = torch.full(
                 (capacity, 1), 0, dtype=torch.int32, device=device)
             self.next_state = torch.full_like(
                 self.state, torch.nan, dtype=torch.float32, device=device)
             self.done = torch.full_like(
-                self.value, torch.nan, dtype=torch.bool, device=device)
+                self.discount, torch.nan, dtype=torch.bool, device=device)
             self.replay_ratio = replay_ratio
             self.device = device
             self.balance_done_value = balance_done_value
@@ -36,7 +36,7 @@ class ReplayBuffer:
             self._ptr = 0
 
     def __len__(self):
-        return len(self.value[~self.value.isnan()])
+        return len(self.discount[~self.discount.isnan()])
 
     def is_full(self):
         return self.__len__() >= len(self.state)
@@ -44,7 +44,7 @@ class ReplayBuffer:
     def reset(self):
         self.state = torch.full_like(self.state, torch.nan, dtype=torch.float32)
         self.prob = torch.full_like(self.prob, torch.nan, dtype=torch.float32)
-        self.value = torch.full_like(self.value, torch.nan, dtype=torch.float32)
+        self.discount = torch.full_like(self.discount, torch.nan, dtype=torch.float32)
         self.winner = torch.full_like(self.winner, torch.nan, dtype=torch.int32)
         self.next_state = torch.full_like(self.next_state, torch.nan, dtype=torch.float32)
         self.done = torch.full_like(self.done, torch.nan, dtype=torch.bool)
@@ -54,13 +54,13 @@ class ReplayBuffer:
     def to(self, device='cpu'):
         self.state = self.state.to(device)
         self.prob = self.prob.to(device)
-        self.value = self.value.to(device)
+        self.discount = self.discount.to(device)
         self.winner = self.winner.to(device)
         self.next_state = self.next_state.to(device)
         self.done = self.done.to(device)
         self.device = device
 
-    def store(self, state, prob, value, winner, next_state, done):
+    def store(self, state, prob, discount, winner, next_state, done):
         idx = self._ptr
         self._ptr = (self._ptr + 1) % self.current_capacity
         if isinstance(state, np.ndarray):
@@ -69,7 +69,7 @@ class ReplayBuffer:
         if isinstance(prob, np.ndarray):
             prob = torch.from_numpy(prob).float().to(self.device)
         self.prob[idx] = prob
-        self.value[idx] = value
+        self.discount[idx] = discount
         self.winner[idx] = winner
         if isinstance(next_state, np.ndarray):
             next_state = torch.from_numpy(next_state).float().to(self.device)
@@ -78,7 +78,7 @@ class ReplayBuffer:
         return idx
 
     def get(self, indices):
-        return self.state[indices], self.prob[indices], self.value[indices], \
+        return self.state[indices], self.prob[indices], self.discount[indices], \
             self.winner[indices], self.next_state[indices], self.done[indices]
 
     def sample(self, batch_size):

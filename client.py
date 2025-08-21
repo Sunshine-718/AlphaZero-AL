@@ -25,6 +25,7 @@ parser.add_argument('--port', '-P', '-p', type=int, default=7718, help='Port num
 parser.add_argument('-c', '--c_init', type=float, default=1.25, help='C_puct init')
 parser.add_argument('-a', '--alpha', type=float, default=0.7, help='Dirichlet alpha')
 parser.add_argument('--n_play', type=int, default=1, help='n_playout')
+parser.add_argument('--discount', type=float, default=0.99, help='Discount factor')
 parser.add_argument('-t', '--temp', '--temperature', type=float, default=1, help='Softmax temperature')
 parser.add_argument('--n_step', type=int, default=10, help='N steps to decay temperature')
 parser.add_argument('-m', '--model', type=str, default='CNN', help='Model type (CNN)')
@@ -54,9 +55,9 @@ class Actor:
             self.net = self.module.ViT(lr=0, device=args.device)
         else:
             raise ValueError(f'Unknown model type: {args.model}')
-        self.az_player = AlphaZeroPlayer(self.net, c_puct=args.c_init, n_playout=args.n, 
-                                         alpha=args.alpha, is_selfplay=1, use_cache=args.cache,
-                                         cache_size=args.cache_size)
+        self.az_player = AlphaZeroPlayer(self.net, c_init=args.c_init, n_playout=args.n, 
+                                         discount=args.discount, alpha=args.alpha, is_selfplay=1, 
+                                         use_cache=args.cache, cache_size=args.cache_size)
         self.mtime = 0
         
     def load_weights(self):

@@ -34,8 +34,8 @@ class TrainPipeline:
         self.current = f'{self.params}/{self.name}_{self.net.name()}_current.pt'
         self.best = f'{self.params}/{self.name}_{self.net.name()}_best.pt'
         self.net.load(self.current)
-        self.az_player = AlphaZeroPlayer(self.net, c_puct=self.c_puct, n_playout=self.n_playout,
-                                         alpha=self.dirichlet_alpha, is_selfplay=1,
+        self.az_player = AlphaZeroPlayer(self.net, c_init=self.c_puct, n_playout=self.n_playout,
+                                         discount=self.discount, alpha=self.dirichlet_alpha, is_selfplay=1,
                                          use_cache=self.use_cache, cache_size=self.cache_size)
         self.update_best_net()
         self.elo = Elo(self.init_elo, 1500)
@@ -62,7 +62,7 @@ class TrainPipeline:
         current_az_player = deepcopy(self.az_player)
         current_az_player.is_selfplay = False
         current_az_player.eval()
-        mcts_player = MCTSPlayer(1, self.pure_mcts_n_playout)
+        mcts_player = MCTSPlayer(1, self.pure_mcts_n_playout, self.discount)
         winner = self.game.start_play(player1=current_az_player, player2=mcts_player, show=0)
         self.elo.update(1 if winner == 1 else 0.5 if winner == 0 else 0)
         winner = self.game.start_play(player1=mcts_player, player2=current_az_player, show=0)
@@ -103,6 +103,7 @@ class TrainPipeline:
         print(f'\tC_puct: {self.c_puct}')
         print(f'\tSimulation (AlphaZero): {self.n_playout}')
         print(f'\tSimulation (Benchmark): {self.pure_mcts_n_playout}')
+        print(f'\tDiscount: {self.discount}')
         print(f'\tDirichlet alpha: {self.dirichlet_alpha}')
         print(f'\tBuffer size: {self.buffer_size}')
         print(f'\tBatch size: {self.batch_size}')

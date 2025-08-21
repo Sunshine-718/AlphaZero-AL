@@ -35,7 +35,7 @@ class Base(ABC, nn.Module):
         p_l, v_l = [], []
         self.train()
         for batch in dataloader:
-            state, prob, _, winner, next_state, _ = augment(batch)
+            state, prob, discount, winner, next_state, _ = augment(batch)
             value = deepcopy(winner)
             value[value == -1] = 2
             value = value.view(-1,).long()
@@ -45,8 +45,8 @@ class Base(ABC, nn.Module):
             self.opt.zero_grad()
             log_p_pred, value_pred = self(state)
             _, next_value_pred = self(next_state)
-            v_loss = F.nll_loss(value_pred, value)
-            v_loss += F.nll_loss(next_value_pred, value_oppo)
+            v_loss = (F.nll_loss(value_pred, value, reduction='none') * discount).mean()
+            v_loss += (F.nll_loss(next_value_pred, value_oppo, reduction='none') * discount).mean()
             p_loss = torch.mean(torch.sum(-prob * log_p_pred, dim=1))
             loss = p_loss + v_loss
             loss.backward()

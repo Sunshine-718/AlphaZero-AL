@@ -22,6 +22,7 @@ parser.add_argument('-b', '--batch_size', type=int, default=512, help='Batch siz
 parser.add_argument('--buf', '--buffer_size', type=int, default=5000, help='Buffer size')
 parser.add_argument('--mcts_n', type=int, default=1000, help='MCTS n_playout')
 parser.add_argument('--n_play', type=int, default=1, help='n_playout')
+parser.add_argument('--discount', type=float, default=0.99, help='Discount factor')
 parser.add_argument('-t', '--temp', type=float, default=1, help='Softmax temperature')
 parser.add_argument('--n_step', type=int, default=10, help='N steps to decay temperature')
 parser.add_argument('--thres', type=float, default=0.65, help='Win rate threshold')
@@ -41,6 +42,7 @@ config = {"lr": args.lr,
           "temp": args.temp,
           "c_puct": args.c_init,
           "n_playout": args.n,
+          "discount": args.discount,
           "buffer_size": args.buf,
           "batch_size": args.batch_size,
           "pure_mcts_n_playout": args.mcts_n,

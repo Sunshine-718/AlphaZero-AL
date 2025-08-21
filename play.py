@@ -43,7 +43,7 @@ if __name__ == '__main__':
         if args.n == 0:
             az_player = NetworkPlayer(net)
         else:
-            az_player = AlphaZeroPlayer(net, c_puct=args.c_init,
+            az_player = AlphaZeroPlayer(net, c_init=args.c_init,
                                         n_playout=args.n, alpha=args.alpha, is_selfplay=0)
         az_player.eval()
 

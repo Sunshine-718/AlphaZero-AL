@@ -173,7 +173,7 @@ class Connect4GUI(QWidget):
         # 初始化 AlphaZero / Human 玩家
         self.az_player = AlphaZeroPlayer(
             None,
-            c_puct=None,
+            c_init=None,
             n_playout=None,
             is_selfplay=0,
             use_cache=True,

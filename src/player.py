@@ -68,9 +68,13 @@ class Human(Player):
 
 
 class MCTSPlayer(Player):
-    def __init__(self, c_puct=4, n_playout=2000):
+    def __init__(self, c_puct=4, n_playout=1000, discount=1):
         super().__init__()
-        self.mcts = MCTS(policy_value_fn, c_puct, n_playout)
+        self.mcts = MCTS(policy_value_fn, c_puct, n_playout, discount, None)
+    
+    @property
+    def discount(self):
+        return self.mcts.root.discount
 
     def reset_player(self):
         self.mcts.prune_root(-1)
@@ -82,9 +86,9 @@ class MCTSPlayer(Player):
 
 
 class AlphaZeroPlayer(MCTSPlayer):
-    def __init__(self, policy_value_fn, c_puct=1.5, n_playout=1000, alpha=None, is_selfplay=0, use_cache=True, cache_size=10000):
+    def __init__(self, policy_value_fn, c_init=1.25, n_playout=100, discount=None, alpha=None, is_selfplay=0, use_cache=True, cache_size=5000):
         self.pv_fn = policy_value_fn
-        self.mcts = MCTS_AZ(policy_value_fn, c_puct, n_playout, alpha, use_cache, cache_size)
+        self.mcts = MCTS_AZ(policy_value_fn, c_init, n_playout, discount, alpha, use_cache, cache_size)
         self.is_selfplay = is_selfplay
         try:
             self.n_actions = policy_value_fn.n_actions
