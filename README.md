@@ -1,6 +1,6 @@
 # AlphaZero-AL
 
-AlphaZero Actor-Learner framework
+AlphaZero Actor-Learner framework with transposition table
 Based on https://github.com/Sunshine-718/AlphaZero
 
 <hr>
@@ -13,8 +13,8 @@ Based on https://github.com/Sunshine-718/AlphaZero
 
 ## Environment
 
-`python 3.13`
-`torch 2.7.0`
+[`Python 3.13`](https://www.python.org)
+[`torch 2.7.0`](https://pytorch.org)
 
 <hr>
 
