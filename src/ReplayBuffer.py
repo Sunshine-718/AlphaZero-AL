@@ -146,19 +146,18 @@ class ReplayBuffer:
 
     def sample_balanced(self, batch_size):
         # 采样上限逻辑
-        current_len = self.__len__()
-        sample_size = min(current_len, min(int(len(self.state) * self.replay_ratio), 10000))
+        total_samples = self.__len__()
+        max_samples = int(total_samples * self.replay_ratio) if len(self.state) > 10000 else min(total_samples, 10000)
 
-        winner = self.winner[:current_len].squeeze()  # [N]
+        winner = self.winner[:total_samples].squeeze()  # [N]
         if not torch.allclose(winner, winner.round()):
             raise ValueError("ReplayBuffer的value数据非整数，平衡采样前需保证离散标签！")
         winner = winner.long()
         unique_vals = torch.unique(winner)
         n_types = unique_vals.numel()
         assert (n_types <= 3)
-        total = sample_size
-        n_per_type = total // n_types
-        remainder = total % n_types
+        n_per_type = max_samples // n_types
+        remainder = max_samples % n_types
 
         indices = []
         for i, val in enumerate(unique_vals):
