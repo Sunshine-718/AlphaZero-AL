@@ -10,7 +10,6 @@ import torch.nn.functional as F
 from torch.optim import NAdam, SGD
 from einops import rearrange
 from ..NetworkBase import Base
-from .config import network_config as config
 
 
 class MaskedConv2d(nn.Conv2d):
@@ -48,7 +47,7 @@ class Block(nn.Module):
 
 
 class CNN(Base):
-    def __init__(self, lr, in_dim=3, h_dim=config['h_dim'], out_dim=7, device='cpu'):
+    def __init__(self, lr, in_dim=3, h_dim=128, out_dim=7, device='cpu'):
         super().__init__()
         self.hidden = nn.Sequential(MaskedConv2d(in_dim, h_dim, mask=mask(h_dim, in_dim, device), kernel_size=7, padding=3),
                                     nn.BatchNorm2d(h_dim),

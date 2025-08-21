@@ -27,7 +27,7 @@ parser.add_argument('-a', '--alpha', type=float, default=0.7, help='Dirichlet al
 parser.add_argument('--n_play', type=int, default=1, help='n_playout')
 parser.add_argument('--discount', type=float, default=0.99, help='Discount factor')
 parser.add_argument('-t', '--temp', '--temperature', type=float, default=1, help='Softmax temperature')
-parser.add_argument('--n_step', type=int, default=10, help='N steps to decay temperature')
+parser.add_argument('--tempD', type=float, default=0.93, help='Temperature discount factor')
 parser.add_argument('-m', '--model', type=str, default='CNN', help='Model type (CNN)')
 parser.add_argument('-d', '--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device type')
 parser.add_argument('-e', '--env', '--environment', type=str, default='Connect4', help='Environment name')
@@ -81,9 +81,8 @@ class Actor:
         self.load_weights()
         data = []
         for _ in range(n_games):
-            _, play_data = self.game.start_self_play(self.az_player, temp=args.temp, first_n_steps=args.n_step)
+            _, play_data = self.game.self_play(self.az_player, temp_discount=args.tempD)
             play_data = list(play_data)
-            assert(len(play_data) <= 42)    # Only for Connect4
             data.append(play_data)
         self.push_data(data)
 

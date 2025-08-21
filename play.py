@@ -44,19 +44,19 @@ if __name__ == '__main__':
             az_player = NetworkPlayer(net)
         else:
             az_player = AlphaZeroPlayer(net, c_init=args.c_init,
-                                        n_playout=args.n, alpha=args.alpha, is_selfplay=0)
+                                        n_playout=args.n, discount=0.99, alpha=args.alpha, is_selfplay=0)
         az_player.eval()
 
         human = Human()
         
         if args.x and args.o:
-            game.start_play(human, human, show=1)
+            game.play(human, human, show=1)
         elif args.x:
-            game.start_play(human, az_player, show=1)
+            game.play(human, az_player, show=1)
         elif args.o:
-            game.start_play(az_player, human, show=1)
+            game.play(az_player, human, show=1)
         elif args.sp and not (args.x or args.o):
-            game.start_play(az_player, az_player, show=1)
+            game.play(az_player, az_player, show=1)
         else:
             raise AttributeError("Invalid argument(s).\nType 'python3 ./play.py -h' for help")
     except KeyboardInterrupt:

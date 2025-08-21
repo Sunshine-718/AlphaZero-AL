@@ -63,9 +63,9 @@ class TrainPipeline:
         current_az_player.is_selfplay = False
         current_az_player.eval()
         mcts_player = MCTSPlayer(1, self.pure_mcts_n_playout, self.discount)
-        winner = self.game.start_play(player1=current_az_player, player2=mcts_player, show=0)
+        winner = self.game.play(player1=current_az_player, player2=mcts_player, show=0)
         self.elo.update(1 if winner == 1 else 0.5 if winner == 0 else 0)
-        winner = self.game.start_play(player1=mcts_player, player2=current_az_player, show=0)
+        winner = self.game.play(player1=mcts_player, player2=current_az_player, show=0)
         print('Complete.')
         return self.elo.update(1 if winner == -1 else 0.5 if winner == 0 else 0)
 
@@ -80,13 +80,13 @@ class TrainPipeline:
         win_rate = 0
         flag = False
         for _ in range(n_games // 2):
-            winner = self.game.start_play(player1=current_player, player2=best_player, show=0)
+            winner = self.game.play(player1=current_player, player2=best_player, show=0)
             if winner == 1:
                 win_rate += 1 / n_games
             elif winner == 0:
                 win_rate += 0.5 / n_games
         for _ in range(n_games // 2):
-            winner = self.game.start_play(player1=best_player, player2=current_player, show=0)
+            winner = self.game.play(player1=best_player, player2=current_player, show=0)
             if winner == -1:
                 win_rate += 1 / n_games
             elif winner == 0:

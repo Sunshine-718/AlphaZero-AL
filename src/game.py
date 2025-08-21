@@ -9,7 +9,7 @@ class Game:
     def __init__(self, env):
         self.env = env
 
-    def start_play(self, player1, player2, show=1):
+    def play(self, player1, player2, show=1):
         self.env.reset()
         players = [None, player1, player2]
         if show:
@@ -31,12 +31,12 @@ class Game:
                         print('Game end. Draw')
                 return winner
 
-    def start_self_play(self, player, temp=1, first_n_steps=5):
+    def self_play(self, player, temp_discount=0.93):
         self.env.reset()
         states, mcts_probs, current_players, next_states = [], [], [], []
         steps = 0
         while True:
-            temperature = 1e-3 if steps >= first_n_steps else temp
+            temperature = pow(temp_discount, steps)
             action, probs = player.get_action(self.env, temperature)
             steps += 1
             states.append(self.env.current_state())
@@ -46,7 +46,7 @@ class Game:
             next_states.append(self.env.current_state())
             if self.env.done():
                 winner = self.env.winPlayer()
-                winner_z = np.zeros(len(current_players))
+                winner_z = np.zeros(len(current_players), dtype=np.int32)
                 if winner != 0:
                     winner_z[np.array(current_players) == winner] = 1
                     winner_z[np.array(current_players) != winner] = -1
