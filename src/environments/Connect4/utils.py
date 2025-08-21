@@ -108,7 +108,7 @@ def inspect(net, board=None):
     return probs0, value0, probs1, value1
 
 
-def instant_augment(batch):
+def augment(batch):
     state, prob, discount, winner, next_state, done = batch
 
     state_flipped = torch.flip(state, dims=[3])

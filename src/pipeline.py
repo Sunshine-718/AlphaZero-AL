@@ -51,7 +51,7 @@ class TrainPipeline:
     def policy_update(self):
         dataloader = self.buffer.dataloader(self.batch_size)
 
-        p_l, v_l, ent, g_n, f1 = self.net.train_step(dataloader, self.module.instant_augment)
+        p_l, v_l, ent, g_n, f1 = self.net.train_step(dataloader, self.module.augment)
 
         print(f'F1 score (new): {f1: .3f}')
         return p_l, v_l, ent, g_n, f1
