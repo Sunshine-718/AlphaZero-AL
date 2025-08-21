@@ -88,7 +88,7 @@ class ReplayBuffer:
 
     def dataloader(self, batch_size):
         total_samples = self.__len__()
-        max_samples = int(total_samples * self.replay_ratio)
+        max_samples = int(total_samples * self.replay_ratio) if len(self.state) > 10000 else min(total_samples, 10000)
         if total_samples <= 10000:
             max_samples = total_samples
         if max_samples <= 0:
