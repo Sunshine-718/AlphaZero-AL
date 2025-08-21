@@ -50,13 +50,13 @@ if __name__ == '__main__':
         human = Human()
         
         if args.x and args.o:
-            game.play(human, human, show=1)
+            game.play(human, human)
         elif args.x:
-            game.play(human, az_player, show=1)
+            game.play(human, az_player)
         elif args.o:
-            game.play(az_player, human, show=1)
+            game.play(az_player, human)
         elif args.sp and not (args.x or args.o):
-            game.play(az_player, az_player, show=1)
+            game.play(az_player, az_player)
         else:
             raise AttributeError("Invalid argument(s).\nType 'python3 ./play.py -h' for help")
     except KeyboardInterrupt:
