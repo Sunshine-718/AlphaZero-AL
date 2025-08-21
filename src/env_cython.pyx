@@ -1,9 +1,9 @@
 # cython: language_level=3
 # distutils: language = c++
-"""env_cython.pyx — 高性能 Connect‑Four 环境
+"""env_cython.pyx — 高性能 Connect-Four 环境
 -------------------------------------------------
 · 与原 Python 版 API 完全一致，便于无缝替换。
-· Cython 仅在局部使用 typed‑memory‑view 加速，
+· Cython 仅在局部使用 typed-memory-view 加速，
   避免在 cdef 类属性上声明 buffer type（Cython 限制）。
 · 兼容 Pickle，多进程共享。编译:  python setup.py build_ext --inplace
 """
@@ -15,7 +15,7 @@ cimport cython
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cdef class Env:
-    """6×7 Connect‑Four board. 玩家棋子: 1 / -1, 空: 0"""
+    """6*7 Connect-Four board. 玩家棋子: 1 / -1, 空: 0"""
 
     # —— 私有成员：仅存储 Python 对象，禁止 buffer type ——
     cdef np.ndarray _board          # 6×7 float32 ndarray（保持 Pickle 友好）
@@ -77,7 +77,7 @@ cdef class Env:
         return not np.any(self._board == 0)
 
     cpdef int check_winner(self):
-        """1 → 玩家1 获胜 • -1 → 玩家‑1 获胜 • 0 → 未分胜负"""
+        """1 → 玩家1 获胜 • -1 → 玩家-1 获胜 • 0 → 未分胜负"""
         cdef float[:, :] board = self._board  # typed‑memory‑view
         cdef int rows = board.shape[0]
         cdef int cols = board.shape[1]
@@ -141,7 +141,7 @@ cdef class Env:
             self.switch_turn()
 
     cpdef np.ndarray current_state(self):
-        """返回网络输入格式 (1, 3, 6, 7)"""
+        """返回网络输入格式 (1, 3, 6, 7)"""
         cdef np.ndarray[np.float32_t, ndim=4] state = np.zeros((1, 3, 6, 7), dtype=np.float32)
         state[0, 0] = self._board == 1
         state[0, 1] = self._board == -1
