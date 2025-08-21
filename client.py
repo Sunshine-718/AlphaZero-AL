@@ -32,8 +32,9 @@ parser.add_argument('-m', '--model', type=str, default='CNN', help='Model type (
 parser.add_argument('-d', '--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device type')
 parser.add_argument('-e', '--env', '--environment', type=str, default='Connect4', help='Environment name')
 parser.add_argument('--retry', type=int, default=3, help='Retry times')
-parser.add_argument('--no-cache', action='store_false', dest='cache', help='Disable cache')
-parser.add_argument('--cache_size', type=int, default=5000, help='LRU cache max size')
+# Turn off transposition table can save gpu memory, but will cause lower computation speed
+parser.add_argument('--no-cache', action='store_false', dest='cache', help='Disable transposition table')
+parser.add_argument('--cache_size', type=int, default=5000, help='LRU transposition table max size')
 
 args = parser.parse_args()
 

@@ -32,8 +32,8 @@ parser.add_argument('-d', '--device', type=str, default='cuda' if torch.cuda.is_
 parser.add_argument('-e', '--env', '--environment', type=str, default='Connect4', help='Environment name')
 parser.add_argument('--interval', type=int, default=10, help='Eval interval')
 parser.add_argument('--name', type=str, default='AZ', help='Name of AlphaZero')
-parser.add_argument('--no-cache', action='store_false', dest='cache', help='Disable cache')
-parser.add_argument('--cache_size', type=int, default=5000, help='LRU cache max size')
+parser.add_argument('--no-cache', action='store_false', dest='cache', help='Disable transposition table')
+parser.add_argument('--cache_size', type=int, default=5000, help='LRU transposition table max size')
 parser.add_argument('--pause', action='store_true', help='Pause')
 args = parser.parse_args()
 
