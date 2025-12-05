@@ -8,4 +8,7 @@ pyqt5
 torch-tb-profiler
 scikit-learn
 flask
+flask-socketio
+python-socketio
+eventlet
 requests

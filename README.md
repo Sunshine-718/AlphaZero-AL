@@ -13,8 +13,8 @@ Based on https://github.com/Sunshine-718/AlphaZero
 
 ## Environment
 
-[`Python 3.13`](https://www.python.org)  
-[`torch 2.7.0`](https://pytorch.org)  
+[`Python 3.13`](https://www.python.org)
+[`torch 2.7.0`](https://pytorch.org)
 
 <hr>
 
@@ -65,8 +65,8 @@ python3 server.py --host 0.0.0.0	# any host ip address you want
 ### Launch client:
 
 ```shell
-chmod +x ./run.sh
-./run.sh 5 --host 127.0.0.1 -n 100
+chmod +x ./client.sh
+./client.sh 5 --host 127.0.0.1 -n 100
 ```
 
 `5`: number of clients/actor.
