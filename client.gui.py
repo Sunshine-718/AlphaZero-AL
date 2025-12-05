@@ -6,9 +6,12 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QGroupBox, QLabel, QLineEdit, QPushButton,
     QTextEdit, QSpinBox, QDoubleSpinBox, QCheckBox, QSizePolicy,
-    QMessageBox
+    QMessageBox, QScrollArea, QFrame # 导入 QScrollArea 和 QFrame
 )
 from PyQt5.QtCore import QProcess, QSettings, Qt, pyqtSignal
+
+# 使用一个极大的数来标记参数在实际应用中没有上限
+UNBOUNDED_INT = 2000000000
 
 # --- QProcess Management ---
 
@@ -58,7 +61,7 @@ class ActorGUI(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("AlphaZero Actor Client Manager (PyQt5)")
+        self.setWindowTitle("AlphaZero Actor Client Manager")
         self.setGeometry(100, 100, 1000, 700)
         self.processes = {}
         self.settings = QSettings("AlphaZeroAL", "ActorClientGUI")
@@ -78,31 +81,42 @@ class ActorGUI(QMainWindow):
             if torch.cuda.is_available():
                 DEFAULT_DEVICE = 'cuda'
         except Exception:
-            self.append_log("Warning: Could not check CUDA availability. Default device set to 'cpu'.", 'warning')
+            pass
         # --- Determine Default Device END ---
 
-        # Define all parameters, their English labels, defaults, and widget types
-        self.params = {
-            # GUI Specific Parameter
-            'num_instances': {'label': 'Parallel Instances', 'type': QSpinBox, 'default': 1, 'range': (1, 100)},
-            # client.py Arguments
-            '-n': {'label': 'Simulations (MCTS)', 'type': QSpinBox, 'default': 100, 'range': (1, 100000)},
-            '--host': {'label': 'Server Host IP', 'type': QLineEdit, 'default': '127.0.0.1'},
-            '--port': {'label': 'Server Port', 'type': QSpinBox, 'default': 7718, 'range': (1, 65535)},
-            '--c_init': {'label': 'C_puct Init', 'type': QDoubleSpinBox, 'default': 1.25, 'range': (0.1, 10.0), 'decimals': 3},
-            '--alpha': {'label': 'Dirichlet Alpha', 'type': QDoubleSpinBox, 'default': 0.7, 'range': (0.0, 1.0), 'decimals': 3},
-            '--n_play': {'label': 'Games per Update', 'type': QSpinBox, 'default': 1, 'range': (1, 100)},
-            '--discount': {'label': 'Discount Factor', 'type': QDoubleSpinBox, 'default': 0.99, 'range': (0.0, 1.0), 'decimals': 3},
-            '--temp': {'label': 'Softmax Temperature', 'type': QDoubleSpinBox, 'default': 1.0, 'range': (0.0, 5.0), 'decimals': 3},
-            '--tempD': {'label': 'Temperature Discount', 'type': QDoubleSpinBox, 'default': 0.93, 'range': (0.0, 1.0), 'decimals': 3},
-            '--model': {'label': 'Model Type (CNN/ViT)', 'type': QLineEdit, 'default': 'CNN'},
-            '--device': {'label': 'Device (cuda/cpu)', 'type': QLineEdit, 'default': DEFAULT_DEVICE}, 
-            '--env': {'label': 'Environment Name', 'type': QLineEdit, 'default': 'Connect4'},
-            '--retry': {'label': 'Retry Attempts', 'type': QSpinBox, 'default': 3, 'range': (0, 100)},
-            '--no-cache': {'label': 'Disable Transposition Table', 'type': QCheckBox, 'default': False, 'flag': True},
-            '--cache_size': {'label': 'Transposition Table Size', 'type': QSpinBox, 'default': 5000, 'range': (0, 100000)},
-        }
+        # 优化后的参数分组
+        self.params_groups = [
+            ("🔌 1. 连接 & 客户端配置 (Connection & Client Setup)", {
+                '--host': {'label': 'Server Host IP', 'type': QLineEdit, 'default': '127.0.0.1'},
+                '--port': {'label': 'Server Port', 'type': QSpinBox, 'default': 7718, 'range': (1, 65535)},
+                'num_instances': {'label': 'Parallel Instances', 'type': QSpinBox, 'default': 1, 'range': (1, 100)},
+                '--device': {'label': 'Device (cuda/cpu)', 'type': QLineEdit, 'default': DEFAULT_DEVICE}, 
+                '--retry': {'label': 'Retry Attempts', 'type': QSpinBox, 'default': 3, 'range': (0, UNBOUNDED_INT)}, 
+            }),
+            ("🧠 2. MCTS 核心参数 (MCTS Core Parameters)", {
+                '-n': {'label': 'Simulations (MCTS)', 'type': QSpinBox, 'default': 100, 'range': (1, UNBOUNDED_INT)}, 
+                '--c_init': {'label': 'C_puct Init', 'type': QDoubleSpinBox, 'default': 1.25, 'range': (0.1, 10.0), 'decimals': 3},
+                '--alpha': {'label': 'Dirichlet Alpha', 'type': QDoubleSpinBox, 'default': 0.7, 'range': (0.0, 1.0), 'decimals': 3},
+            }),
+            ("🔥 3. 策略 & 游戏流程设置 (Policy & Game Flow)", {
+                '--temp': {'label': 'Softmax Temperature', 'type': QDoubleSpinBox, 'default': 1.0, 'range': (0.0, UNBOUNDED_INT), 'decimals': 3}, 
+                '--tempD': {'label': 'Temperature Discount', 'type': QDoubleSpinBox, 'default': 0.93, 'range': (0.0, 1.0), 'decimals': 3},
+                '--discount': {'label': 'Discount Factor', 'type': QDoubleSpinBox, 'default': 0.99, 'range': (0.0, 1.0), 'decimals': 3},
+                '--n_play': {'label': 'Games per Update', 'type': QSpinBox, 'default': 1, 'range': (1, UNBOUNDED_INT)}, 
+            }),
+            ("🎮 4. 环境、模型 & 缓存 (Env, Model & Cache)", {
+                '--env': {'label': 'Environment Name', 'type': QLineEdit, 'default': 'Connect4'},
+                '--model': {'label': 'Model Type (CNN/ViT)', 'type': QLineEdit, 'default': 'CNN'},
+                '--cache_size': {'label': 'Transposition Table Size', 'type': QSpinBox, 'default': 5000, 'range': (0, UNBOUNDED_INT)}, 
+                '--no-cache': {'label': 'Disable Transposition Table', 'type': QCheckBox, 'default': False, 'flag': True},
+            })
+        ]
+        
+        # 将分组参数扁平化，以方便其他方法访问
+        self.params = {k: v for _, group in self.params_groups for k, v in group.items()}
         self.widgets = {}
+        # 存储置换表默认大小，用于同步时恢复
+        self.cache_default_size = self.params['--cache_size']['default'] 
 
     def _setup_ui(self):
         central_widget = QWidget()
@@ -112,7 +126,7 @@ class ActorGUI(QMainWindow):
         left_layout = QVBoxLayout()
         left_widget = QWidget()
         left_widget.setLayout(left_layout)
-        left_widget.setFixedWidth(400) 
+        left_widget.setMinimumWidth(350) # 允许水平调整大小
 
         # 1. Control Box
         control_box = QGroupBox("Control Panel")
@@ -138,54 +152,129 @@ class ActorGUI(QMainWindow):
         status_box.setLayout(status_layout)
         left_layout.addWidget(status_box)
 
-        # 3. Parameter Configuration
-        param_box = QGroupBox("Client Parameter Configuration")
-        param_layout = QGridLayout()
+        # 3. Parameter Configuration (Wrapped in ScrollArea)
+        
+        # 3a. 创建参数容器 (用于放置在 QScrollArea 中)
+        param_container = QWidget()
+        param_layout = QGridLayout(param_container)
         
         row = 0
-        for key, config in self.params.items():
-            label = QLabel(f"{config['label']}:")
-            param_layout.addWidget(label, row, 0)
-            
-            widget_type = config['type']
-            widget = widget_type()
-
-            if widget_type in (QSpinBox, QDoubleSpinBox):
-                widget.setRange(config['range'][0], config['range'][1])
-                if widget_type == QDoubleSpinBox:
-                    widget.setDecimals(config.get('decimals', 2))
-                widget.setValue(config['default'])
-                # Set step increments
-                if key == '--c_init' or key == '--alpha':
-                    widget.setSingleStep(0.01)
-                elif key == '--cache_size':
-                    widget.setSingleStep(100)
-            elif widget_type == QCheckBox:
-                widget.setChecked(config['default'])
-            elif widget_type == QLineEdit:
-                widget.setText(config['default'])
-            
-            param_layout.addWidget(widget, row, 1)
-            self.widgets[key] = widget
+        
+        for group_title, params_dict in self.params_groups:
+            # 添加分组标题和分隔线
+            separator_label = QLabel(f"<b>{group_title}</b>")
+            separator_label.setStyleSheet("margin-top: 5px; margin-bottom: 2px;")
+            param_layout.addWidget(separator_label, row, 0, 1, 2)
             row += 1
             
-        param_box.setLayout(param_layout)
-        left_layout.addWidget(param_box)
-        left_layout.addStretch(1) 
+            line = QFrame()
+            line.setFrameShape(QFrame.HLine)
+            line.setFrameShadow(QFrame.Sunken)
+            param_layout.addWidget(line, row, 0, 1, 2)
+            row += 1
+
+            for key, config in params_dict.items():
+                
+                # --- 智能显示范围提示 ---
+                label_text = f"{config['label']}:"
+                widget_type = config['type']
+                
+                if widget_type in (QSpinBox, QDoubleSpinBox) and 'range' in config:
+                    min_val, max_val = config['range']
+                    if widget_type == QSpinBox:
+                        min_str = str(min_val)
+                        max_str = "∞" if max_val == UNBOUNDED_INT else str(max_val)
+                    else:
+                        min_str = f"{min_val:.6g}" 
+                        max_str = "∞" if max_val == UNBOUNDED_INT else f"{max_val:.6g}"
+
+                    if max_val == UNBOUNDED_INT:
+                        label_text = f"{config['label']} (Min {min_str}):"
+                    elif min_val != -UNBOUNDED_INT: 
+                        label_text = f"{config['label']} ({min_str}-{max_str}):"
+
+                label = QLabel(label_text)
+                param_layout.addWidget(label, row, 0)
+                
+                widget = widget_type()
+
+                # --- 参数设置逻辑 ---
+                if widget_type == QSpinBox:
+                    min_val = config['range'][0]
+                    max_val = config['range'][1]
+                    if max_val == UNBOUNDED_INT:
+                        max_val = int(1e9)
+                        
+                    widget.setRange(min_val, max_val) 
+                    widget.setValue(config['default'])
+                    
+                    if config.get('single_step'):
+                         widget.setSingleStep(config['single_step'])
+                    elif key == '--cache_size':
+                        widget.setSingleStep(100)
+
+                elif widget_type == QDoubleSpinBox:
+                    max_val = config['range'][1] if config['range'][1] < UNBOUNDED_INT else 1e9
+                    widget.setRange(config['range'][0], max_val)
+                    
+                    widget.setDecimals(config.get('decimals', 3))
+                    widget.setValue(config['default'])
+                    
+                    if key in ('--c_init', '--alpha', '--tempD'):
+                        widget.setSingleStep(0.01)
+                    elif key == '--temp':
+                        widget.setSingleStep(0.1)
+
+                elif widget_type == QCheckBox:
+                    widget.setChecked(config['default'])
+                elif widget_type == QLineEdit:
+                    widget.setText(config['default'])
+                # --- 参数设置逻辑结束 ---
+                
+                param_layout.addWidget(widget, row, 1)
+                self.widgets[key] = widget
+                row += 1
+            
+        param_container.setLayout(param_layout) 
+        
+        # 3b. 将参数容器包裹在 QScrollArea 中
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True) 
+        scroll_area.setWidget(param_container) 
+
+        # 3c. 将 ScrollArea 放入 QGroupBox (使其具有边框和标题)
+        param_group_box = QGroupBox("Client Parameter Configuration")
+        # 确保 QGroupBox 占据剩余的垂直空间
+        param_group_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding) 
+        param_group_box_layout = QVBoxLayout(param_group_box)
+        param_group_box_layout.addWidget(scroll_area)
+        
+        # 将参数区添加到左侧布局
+        left_layout.addWidget(param_group_box)
+        # 移除 left_layout.addStretch(1)，确保参数组框填满剩余空间
+
+        # --- 置换表同步逻辑初始化 ---
+        self.cache_size_spinbox = self.widgets['--cache_size']
+        self.no_cache_checkbox = self.widgets['--no-cache']
+
+        self.cache_size_spinbox.valueChanged.connect(self._sync_size_to_check)
+        self.no_cache_checkbox.stateChanged.connect(self._sync_check_to_size)
+        
+        if self.cache_size_spinbox.value() == 0:
+             self.no_cache_checkbox.setChecked(True)
+        # --- 置换表同步逻辑初始化结束 ---
+
 
         # --- Right Side: Log Area ---
         right_layout = QVBoxLayout()
         
-        # Log Box Group
         log_box = QGroupBox("Client Log Output")
         log_layout = QVBoxLayout()
         
-        # Clear Log Button
         self.clear_log_button = QPushButton("🗑️ Clear Log")
         self.clear_log_button.clicked.connect(self.clear_log)
         log_layout.addWidget(self.clear_log_button)
         
-        # Log Text Edit
         self.log_text_edit = QTextEdit()
         self.log_text_edit.setReadOnly(True)
         self.log_text_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -199,6 +288,40 @@ class ActorGUI(QMainWindow):
 
         self.setCentralWidget(central_widget)
     
+    # --- 同步方法 ---
+    def _sync_size_to_check(self, value):
+        """将置换表大小同步到 'Disable Cache' 复选框。"""
+        checkbox = self.no_cache_checkbox
+        
+        checkbox.blockSignals(True)
+        
+        if value == 0:
+            if not checkbox.isChecked():
+                checkbox.setChecked(True)
+        elif value > 0:
+            if checkbox.isChecked():
+                checkbox.setChecked(False)
+        
+        checkbox.blockSignals(False)
+
+
+    def _sync_check_to_size(self, state):
+        """将 'Disable Cache' 复选框状态同步到置换表大小。"""
+        spinbox = self.cache_size_spinbox
+        
+        spinbox.blockSignals(True)
+        
+        if state == Qt.Checked:
+            spinbox.setValue(0)
+            
+        elif state == Qt.Unchecked:
+            if spinbox.value() == 0:
+                spinbox.setValue(self.cache_default_size)
+                
+        spinbox.blockSignals(False)
+    # --- 同步方法结束 ---
+
+
     def clear_log(self):
         """Clears the content of the log text box."""
         self.log_text_edit.clear()
@@ -208,12 +331,15 @@ class ActorGUI(QMainWindow):
         """Loads saved parameter values from QSettings."""
         for key, config in self.params.items():
             widget = self.widgets[key]
-            value = self.settings.value(key, config['default'])
+            value = self.settings.value(key, config.get('default'))
             if value is not None:
                 if isinstance(widget, QSpinBox):
                     widget.setValue(int(value))
                 elif isinstance(widget, QDoubleSpinBox):
-                    widget.setValue(float(value))
+                    try:
+                        widget.setValue(float(value))
+                    except ValueError:
+                        widget.setValue(config['default']) 
                 elif isinstance(widget, QCheckBox):
                     widget.setChecked(value == 'true' or value is True)
                 elif isinstance(widget, QLineEdit):
@@ -264,15 +390,16 @@ class ActorGUI(QMainWindow):
         self.start_button.setEnabled(not is_running)
         self.stop_button.setEnabled(is_running)
 
-        # Disable parameter modification while running
         for key in self.widgets:
             self.widgets[key].setEnabled(not is_running)
 
     def start_clients(self):
         """Starts all client processes."""
-        if self.processes:
-            self.append_log("Process list is not empty, please stop all processes first.", 'error')
+        if any(p.state() == QProcess.Running for p in self.processes.values()):
+            self.append_log("Some clients are already running. Please stop them first.", 'error')
             return
+
+        self.processes.clear() 
 
         self._save_settings() 
         num_instances, args = self.get_client_args()
@@ -290,7 +417,8 @@ class ActorGUI(QMainWindow):
             instance_id = i
             process = ClientProcess(instance_id, self, self.log_signal, self.process_finished_signal)
             
-            command_args = ['client.py'] + args
+            # 确保加上 '-u' 标志，强制非缓冲输出
+            command_args = ['-u', 'client.py'] + args 
             
             self.append_log(f"Client {instance_id}: Starting...", 'normal')
             
@@ -319,10 +447,8 @@ class ActorGUI(QMainWindow):
                      self.append_log(f"Client {instance_id}: Forcefully killed (Kill).", 'error')
         
         QApplication.processEvents() 
-        
-        if not self.processes:
-            self.append_log("All clients stopped.", 'success')
-            self.update_status_label()
+        self.update_status_label()
+
 
     def handle_process_finished(self, instance_id):
         """Handles the process finished signal."""
