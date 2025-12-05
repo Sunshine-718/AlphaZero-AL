@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QGroupBox, QLabel, QLineEdit, QPushButton,
     QTextEdit, QSpinBox, QDoubleSpinBox, QCheckBox, QSizePolicy,
-    QMessageBox, QFrame, QScrollArea # 导入 QScrollArea
+    QMessageBox, QFrame, QScrollArea 
 )
 from PyQt5.QtCore import QProcess, QSettings, Qt, pyqtSignal, QProcessEnvironment
 
@@ -59,7 +59,7 @@ class ServerGUI(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("AlphaZero Training Server Manager")
+        self.setWindowTitle("AlphaZero Training Server Manager (PyQt5)")
         self.setGeometry(100, 100, 1000, 700)
         
         self.server_process = ServerProcess(self, self.log_signal)
@@ -85,7 +85,7 @@ class ServerGUI(QMainWindow):
 
         # 优化后的参数分组
         self.params_groups = [
-            ("🔌 1. 连接 & 核心配置 (Connection & Core Setup)", {
+            ("🔌 1. Connection & Core Setup", {
                 '--host': {'label': 'Host IP', 'type': QLineEdit, 'default': '0.0.0.0'},
                 '--port': {'label': 'Port', 'type': QSpinBox, 'default': 7718, 'range': (1024, 65535)},
                 '-d': {'label': 'Device (cuda/cpu)', 'type': QLineEdit, 'default': DEFAULT_DEVICE},
@@ -93,7 +93,7 @@ class ServerGUI(QMainWindow):
                 '-m': {'label': 'Model Type (CNN)', 'type': QLineEdit, 'default': 'CNN'},
                 '--name': {'label': 'Pipeline Name', 'type': QLineEdit, 'default': 'AZ'},
             }),
-            ("🧠 2. MCTS & 训练核心参数 (MCTS & Training Core)", {
+            ("🧠 2. MCTS & Training Core", {
                 '-n': {'label': 'MCTS Simulations/Action', 'type': QSpinBox, 'default': 100, 'range': (1, UNBOUNDED_INT)}, 
                 '-b': {'label': 'Batch Size', 'type': QSpinBox, 'default': 512, 'range': (1, UNBOUNDED_INT)}, 
                 '--buf': {'label': 'Buffer Size', 'type': QSpinBox, 'default': 5000, 'range': (1, UNBOUNDED_INT)}, 
@@ -103,7 +103,7 @@ class ServerGUI(QMainWindow):
                 '-t': {'label': 'Softmax Temperature', 'type': QDoubleSpinBox, 'default': 1, 'range': (0.0, UNBOUNDED_INT), 'decimals': 3, 'single_step': 0.1}, 
                 '--discount': {'label': 'Discount Factor', 'type': QDoubleSpinBox, 'default': 0.99, 'range': (0.0, 1.0), 'decimals': 3, 'single_step': 0.01},
             }),
-            ("🔥 3. 评估 & 流程控制 (Evaluation & Flow Control)", {
+            ("🔥 3. Evaluation & Flow Control", {
                 '--n_play': {'label': 'Games per Update (n_play)', 'type': QSpinBox, 'default': 1, 'range': (1, UNBOUNDED_INT)},
                 '--mcts_n': {'label': 'Pure MCTS Playouts (mcts_n)', 'type': QSpinBox, 'default': 1000, 'range': (1, UNBOUNDED_INT)}, 
                 '--num_eval': {'label': 'Evaluation Games (num_eval)', 'type': QSpinBox, 'default': 50, 'range': (1, UNBOUNDED_INT)},
@@ -111,7 +111,7 @@ class ServerGUI(QMainWindow):
                 '--thres': {'label': 'Win Rate Threshold', 'type': QDoubleSpinBox, 'default': 0.65, 'range': (0.5, 1.0), 'decimals': 3, 'single_step': 0.01},
                 '--pause': {'label': 'Start Paused (Training)', 'type': QCheckBox, 'default': False, 'flag': True},
             }),
-            ("💾 4. 缓存设置 (Caching Settings)", {
+            ("💾 4. Caching Settings", {
                 '--cache_size': {'label': 'Transposition Table Size', 'type': QSpinBox, 'default': 5000, 'range': (0, UNBOUNDED_INT)},
                 '--no-cache': {'label': 'Disable Transposition Table', 'type': QCheckBox, 'default': False, 'flag': True},
             })
@@ -143,8 +143,14 @@ class ServerGUI(QMainWindow):
         
         self.stop_button = QPushButton("🛑 Stop Server")
         self.stop_button.clicked.connect(self.stop_server)
-        
         control_layout.addWidget(self.stop_button)
+        
+        # --- Reset Button ---
+        self.reset_button = QPushButton("🔄 Reset Parameters")
+        self.reset_button.clicked.connect(self.reset_parameters)
+        control_layout.addWidget(self.reset_button)
+        # -------------------------
+        
         control_box.setLayout(control_layout)
         left_layout.addWidget(control_box)
 
@@ -239,6 +245,19 @@ class ServerGUI(QMainWindow):
                 
                 param_layout.addWidget(widget, row, 1)
                 self.widgets[key] = widget
+                
+                # --- Log signal connections ---
+                if widget_type in (QSpinBox, QDoubleSpinBox):
+                    # SpinBoxes pass the new value
+                    widget.valueChanged.connect(lambda val, k=key: self._log_parameter_change(k, val))
+                elif widget_type == QCheckBox:
+                    # CheckBoxes pass the new state
+                    widget.stateChanged.connect(lambda state, k=key: self._log_parameter_change(k, state))
+                elif widget_type == QLineEdit:
+                    # LineEdits should log on focus loss (editingFinished)
+                    widget.editingFinished.connect(lambda w=widget, k=key: self._log_parameter_change(k, w.text()))
+                # --- Log signal connections END ---
+                
                 row += 1
         
         param_container.setLayout(param_layout)
@@ -257,7 +276,6 @@ class ServerGUI(QMainWindow):
         
         # 将参数区添加到左侧布局
         left_layout.addWidget(param_group_box)
-        # 移除 left_layout.addStretch(1)，确保参数组框填满剩余空间
 
         # --- 置换表同步逻辑初始化 ---
         self.cache_size_spinbox = self.widgets['--cache_size']
@@ -269,7 +287,6 @@ class ServerGUI(QMainWindow):
         if self.cache_size_spinbox.value() == 0:
              self.no_cache_checkbox.setChecked(True)
         # --- 置换表同步逻辑初始化结束 ---
-
 
         # --- Right Side: Log Area ---
         right_layout = QVBoxLayout()
@@ -293,7 +310,72 @@ class ServerGUI(QMainWindow):
         main_layout.addLayout(right_layout)
 
         self.setCentralWidget(central_widget)
+        
+    def _log_parameter_change(self, key, value):
+        """Logs the change of a parameter."""
+        widget = self.widgets[key]
+        
+        display_value = str(value)
+        
+        if isinstance(widget, QCheckBox):
+            # QCheckBox passes state (2 or 0)
+            display_value = "Enabled" if value == Qt.Checked else "Disabled"
+            
+        elif isinstance(widget, QDoubleSpinBox):
+            # QDoubleSpinBox passes float value
+            display_value = f"{value:.4g}"
+        
+        # For QLineEdit, 'value' is the text (string)
+        # For QSpinBox, 'value' is the int
+        
+        label = self.params[key]['label']
+        # The synchronization methods block signals, so the automatic sync changes will not trigger this log.
+        self.append_log(f"[PARAM CHANGE] '{label}' ({key}) set to: {display_value}", 'info')
 
+    # --- 重置参数方法 ---
+    def reset_parameters(self):
+        """Resets all parameter widgets to their default values."""
+        
+        reply = QMessageBox.question(self, 'Confirm Reset',
+            "Are you sure you want to reset all parameters to their default values? Unsaved changes will be lost.", 
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+
+        if reply == QMessageBox.No:
+            return
+            
+        # 临时阻断信号，防止同步逻辑在重置过程中多次触发
+        self.cache_size_spinbox.blockSignals(True)
+        self.no_cache_checkbox.blockSignals(True)
+        
+        # 记录重置操作
+        self.append_log("--- Starting parameter reset to defaults ---", 'warning')
+        
+        for key, config in self.params.items():
+            widget = self.widgets[key]
+            default_value = config['default']
+            
+            if isinstance(widget, QSpinBox) or isinstance(widget, QDoubleSpinBox):
+                if widget.value() != default_value:
+                    widget.setValue(default_value)
+            elif isinstance(widget, QCheckBox):
+                if widget.isChecked() != default_value:
+                    widget.setChecked(default_value)
+            elif isinstance(widget, QLineEdit):
+                if widget.text() != default_value:
+                    widget.setText(default_value)
+
+        # 重新启用信号
+        self.cache_size_spinbox.blockSignals(False)
+        self.no_cache_checkbox.blockSignals(False)
+        
+        # 确保缓存复选框与默认的缓存大小保持同步
+        if self.cache_default_size == 0:
+            self.no_cache_checkbox.setChecked(True)
+        else:
+            self.no_cache_checkbox.setChecked(False) 
+        
+        self.append_log("All parameters have been reset to default values.", 'info')
+        
     # --- 同步方法 ---
     def _sync_size_to_check(self, value):
         """将置换表大小同步到 'Disable Cache' 复选框。"""
@@ -336,6 +418,9 @@ class ServerGUI(QMainWindow):
         """Loads saved parameter values from QSettings."""
         for key, config in self.params.items():
             widget = self.widgets[key]
+            # 临时阻断信号，防止加载设置时触发日志
+            widget.blockSignals(True)
+            
             value = self.settings.value(key, config['default'])
             if value is not None:
                 if isinstance(widget, QSpinBox):
@@ -350,6 +435,8 @@ class ServerGUI(QMainWindow):
                     widget.setChecked(value == 'true' or value is True)
                 elif isinstance(widget, QLineEdit):
                     widget.setText(str(value))
+                    
+            widget.blockSignals(False) # 重新启用信号
             
     def _save_settings(self):
         """Saves current parameter values to QSettings."""
@@ -397,6 +484,7 @@ class ServerGUI(QMainWindow):
         
         self.start_button.setEnabled(not is_running)
         self.stop_button.setEnabled(is_running)
+        self.reset_button.setEnabled(not is_running) # 禁用重置按钮
 
         # Disable parameter modification while running
         for key in self.widgets:
@@ -463,14 +551,36 @@ class ServerGUI(QMainWindow):
         
     def append_log(self, text, level='normal'):
         """Appends log text to the text box and scrolls to the bottom."""
-        color_map = {
-            'normal': 'black',
-            'error': 'red',
-            'warning': 'orange',
-            'success': 'green',
-            'info': 'blue'
-        }
-        color = color_map.get(level, 'black')
+        
+        # 1. 检查当前是否处于深色模式 (通过检查背景色亮度)
+        bg_color = self.log_text_edit.palette().color(self.log_text_edit.backgroundRole())
+        # 简单的亮度检查：R+G+B < 382.5 判定为深色背景
+        is_dark_mode = (bg_color.red() + bg_color.green() + bg_color.blue()) < 382
+        
+        # 2. 定义深色和浅色模式下的颜色映射
+        if is_dark_mode:
+            # 深色模式下的颜色 (背景暗，字体亮)
+            color_map = {
+                'normal': 'white',      # 正常输出 (浅色/白色)
+                'error': '#FF6B6B',     # 错误 (亮红)
+                'warning': '#FFCC66',   # 警告 (亮橙/黄)
+                'success': '#8BC34A',   # 成功 (亮绿)
+                'info': '#66A5FF'       # 信息 (亮蓝)
+            }
+            fallback_color = 'white'
+        else:
+            # 浅色模式下的颜色 (背景亮，字体暗)
+            color_map = {
+                'normal': 'black',
+                'error': 'red',
+                'warning': 'orange',
+                'success': 'green',
+                'info': 'blue'
+            }
+            fallback_color = 'black'
+            
+        # 3. 应用颜色
+        color = color_map.get(level, fallback_color)
         
         html = f'<span style="color:{color};">{text}</span><br>'
         self.log_text_edit.insertHtml(html)
