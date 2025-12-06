@@ -170,11 +170,11 @@ class ServerGUI(QMainWindow):
         traffic_layout = QGridLayout()
         
         # --- 优化后的流量标签 (Server Perspective) ---
-        self.label_total_received = QLabel("接收流量 (客户端上传数据) ⬇️:") # Data coming IN to the server
+        self.label_total_received = QLabel("⬇️ Total Download:") # Data coming IN to the server
         self.value_total_received = QLabel("0 B")
         self.value_total_received.setStyleSheet("font-weight: bold; color: blue;")
         
-        self.label_total_sent = QLabel("发送流量 (客户端下载权重) ⬆️:") # Data going OUT from the server
+        self.label_total_sent = QLabel("⬆️ Total Upload:") # Data going OUT from the server
         self.value_total_sent = QLabel("0 B")
         self.value_total_sent.setStyleSheet("font-weight: bold; color: green;")
         # ------------------------------------------------

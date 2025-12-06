@@ -177,11 +177,11 @@ class ActorGUI(QMainWindow):
         traffic_group = QGroupBox("Network Traffic (Clients Aggregate)")
         traffic_layout = QGridLayout()
         
-        self.label_total_downloaded = QLabel("Total Download (Server->Client) ⬇️:")
+        self.label_total_downloaded = QLabel("⬇️ Total Download:")
         self.value_total_downloaded = QLabel("0 B")
         self.value_total_downloaded.setStyleSheet("font-weight: bold; color: blue;")
         
-        self.label_total_uploaded = QLabel("Total Upload (Client->Server) ⬆️:")
+        self.label_total_uploaded = QLabel("⬆️ Total Upload:")
         self.value_total_uploaded = QLabel("0 B")
         self.value_total_uploaded.setStyleSheet("font-weight: bold; color: green;")
         
