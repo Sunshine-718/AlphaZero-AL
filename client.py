@@ -66,6 +66,12 @@ class Actor:
         if r.status_code == 200:
             if self.mtime == 0:
                 print('Server Connected, start collecting.')
+            
+            # --- 新增: 打印特殊日志供 GUI 统计下载流量 ---
+            download_size = len(r.content)
+            print(f"[[TRAFFIC_LOG::DOWNLOAD::+::{download_size}]]")
+            # ----------------------------------------
+
             weights = pickle.loads(r.content)
             self.net.to('cpu')
             self.net.load_state_dict(weights)
@@ -73,10 +79,16 @@ class Actor:
             self.az_player.reload(self.net)
             self.mtime = float(r.headers['X-Timestamp'])
 
-    @staticmethod
-    def push_data(data):
+    # 将 @staticmethod 改为实例方法，以便访问 self
+    def push_data(self, data):
         payload = pickle.dumps(data, protocol=pickle.HIGHEST_PROTOCOL)
         resp = requests.post(f'http://{args.host}:{args.port}/upload', headers=headers, data=payload)
+        
+        # --- 新增: 打印特殊日志供 GUI 统计上传流量 ---
+        if resp.status_code == 200:
+            upload_size = len(payload)
+            print(f"[[TRAFFIC_LOG::UPLOAD::+::{upload_size}]]")
+        # ----------------------------------------
 
     def data_collector(self, n_games=args.n_play):
         self.load_weights()

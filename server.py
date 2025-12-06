@@ -10,6 +10,11 @@ from src.ReplayBuffer import ReplayBuffer
 from flask import Flask, request, jsonify
 import argparse
 
+# --- 新增: 流量统计全局变量 ---
+TOTAL_RECEIVED_BYTES = 0
+TOTAL_SENT_BYTES = 0
+# ---------------------------
+
 parser = argparse.ArgumentParser(description='AlphaZero Training Server')
 parser.add_argument('--host', '-H', type=str, default='0.0.0.0', help='Host IP')
 parser.add_argument('--port', '-P', '-p', type=int, default=7718, help='Port number')
@@ -80,9 +85,15 @@ TrainPipeline.data_collector = data_collector
 
 @app.route('/upload', methods=['POST'])
 def upload():
+    # --- 流量统计: 接收流量 ---
+    global TOTAL_RECEIVED_BYTES
+    if request.data:
+        TOTAL_RECEIVED_BYTES += len(request.data)
+    # -----------------------
+    
     data = pickle.loads(request.data)
     for d in data:
-        print(f'Received data from {request.remote_addr}:{request.environ.get('REMOTE_PORT')}')
+        print(f'Received data from {request.remote_addr}:{request.environ.get("REMOTE_PORT")}')
         inbox.put(d)
     return jsonify({'status': 'success'})
 
@@ -95,15 +106,42 @@ def weights():
     except ValueError:
         client_ts = 0
     if client_ts == 0:
-        print(f'Client {request.remote_addr}:{request.environ.get('REMOTE_PORT')} connected.')
+        print(f'Client {request.remote_addr}:{request.environ.get("REMOTE_PORT")} connected.')
     if mtime > client_ts and os.path.exists(pipeline.current):
         params = torch.load(pipeline.current, map_location='cpu')
-        return pickle.dumps(params, protocol=pickle.HIGHEST_PROTOCOL), 200, {
+        
+        # --- 流量统计: 发送流量 ---
+        payload = pickle.dumps(params, protocol=pickle.HIGHEST_PROTOCOL)
+        global TOTAL_SENT_BYTES
+        TOTAL_SENT_BYTES += len(payload)
+        # ------------------------
+        
+        return payload, 200, {
             'Content-Type': 'application/octet-stream',
             'X-Timestamp': str(mtime)
         }
     else:
         return '', 304
+
+# --- 接口: 状态查询 (供 GUI 使用) ---
+@app.route('/status', methods=['GET'])
+def status():
+    return jsonify({
+        'total_received_bytes': TOTAL_RECEIVED_BYTES,
+        'total_sent_bytes': TOTAL_SENT_BYTES
+    })
+# -------------------------------------
+
+# --- 接口: 重置流量统计 (NEW) ---
+@app.route('/reset_traffic', methods=['POST'])
+def reset_traffic():
+    global TOTAL_RECEIVED_BYTES
+    global TOTAL_SENT_BYTES
+    TOTAL_RECEIVED_BYTES = 0
+    TOTAL_SENT_BYTES = 0
+    print('Network traffic statistics reset.')
+    return jsonify({'status': 'success', 'message': 'Traffic stats reset'})
+# -------------------------------------
 
 
 if __name__ == '__main__':
@@ -117,10 +155,12 @@ if __name__ == '__main__':
         t = threading.Thread(target=pipeline, daemon=True)
         t.start()
 
+    # Flask 日志配置
     handler = logging.FileHandler(log_file, encoding='utf-8')
     handler.setLevel(logging.INFO)
     log = logging.getLogger('werkzeug')
     log.setLevel(logging.INFO)
     log.handlers = [handler]
     app.logger.handlers = [handler]
+    
     app.run(host=args.host, port=args.port, debug=False, use_reloader=False)

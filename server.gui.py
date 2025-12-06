@@ -2,62 +2,47 @@ import sys
 import os
 import torch
 import signal
+import requests
+import json
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QGroupBox, QLabel, QLineEdit, QPushButton,
     QTextEdit, QSpinBox, QDoubleSpinBox, QCheckBox, QSizePolicy,
     QMessageBox, QFrame, QScrollArea 
 )
-from PyQt5.QtCore import QProcess, QSettings, Qt, pyqtSignal, QProcessEnvironment
+from PyQt5.QtCore import QProcess, QSettings, Qt, pyqtSignal, QProcessEnvironment, QTimer
 
-# 使用一个极大的数来标记参数在实际应用中没有上限
 UNBOUNDED_INT = 2000000000
 
-# --- Server Process Management ---
-
 class ServerProcess(QProcess):
-    """
-    A simple QProcess wrapper for the single server instance.
-    """
     log_signal = pyqtSignal(str, str)
     
     def __init__(self, parent=None, log_signal=None):
         super().__init__(parent)
         self.log_signal = log_signal
-        
-        # Connect signals to handle output
         self.readyReadStandardOutput.connect(self._handle_stdout)
         self.readyReadStandardError.connect(self._handle_stderr)
 
     def _handle_stdout(self):
-        # Read and decode all standard output data
-        # Note: Decoding is now handled by Python's process streams (PYTHONIOENCODING=utf-8) 
-        # but QProcess still reads raw data. errors='ignore' is a safe fallback.
         data = self.readAllStandardOutput().data().decode('utf-8', errors='ignore').strip()
         if data and self.log_signal:
             self.log_signal.emit(f"[SERVER][STDOUT] {data}", 'normal')
 
     def _handle_stderr(self):
-        # Read and decode all standard error data
         data = self.readAllStandardError().data().decode('utf-8', errors='ignore').strip()
         if data and self.log_signal:
             self.log_signal.emit(f"[SERVER][STDERR] {data}", 'error')
             
     def kill_server(self):
-        """Attempts to terminate the server process."""
         if self.state() == QProcess.Running:
             if self.terminate():
                 return True
             else:
-                # Force kill if termination fails
                 self.kill()
                 return False
 
-# --- GUI Application ---
-
 class ServerGUI(QMainWindow):
-    # Signal for logging from the QProcess thread to the main thread
-    log_signal = pyqtSignal(str, str) # text, level
+    log_signal = pyqtSignal(str, str)
 
     def __init__(self):
         super().__init__()
@@ -68,6 +53,14 @@ class ServerGUI(QMainWindow):
         self.server_process.finished.connect(self.handle_process_finished)
         self.settings = QSettings("AlphaZeroAL", "ServerGUI")
         
+        # 流量更新定时器
+        self.traffic_timer = QTimer(self)
+        self.traffic_timer.setInterval(1000) 
+        self.traffic_timer.timeout.connect(self._fetch_server_traffic_stats)
+        
+        self.server_process.started.connect(self.traffic_timer.start)
+        self.server_process.finished.connect(self.traffic_timer.stop)
+        
         self.log_signal.connect(self.append_log)
         
         self._init_default_args()
@@ -75,17 +68,24 @@ class ServerGUI(QMainWindow):
         self._load_settings()
         self.update_status_label()
 
+    def format_bytes(self, bytes_num):
+        if bytes_num is None or bytes_num == 0:
+            return "0 B"
+        bytes_num = float(bytes_num)
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if bytes_num < 1024.0:
+                return f"{bytes_num:.2f} {unit}"
+            bytes_num /= 1024.0
+        return f"{bytes_num:.2f} PB"
+
     def _init_default_args(self):
-        # --- Determine Default Device (CUDA/CPU) ---
         DEFAULT_DEVICE = 'cpu'
         try:
             if torch.cuda.is_available():
                 DEFAULT_DEVICE = 'cuda'
         except Exception:
             pass
-        # --- Determine Default Device END ---
 
-        # 优化后的参数分组
         self.params_groups = [
             ("🔌 1. Connection & Core Setup", {
                 '--host': {'label': 'Host IP', 'type': QLineEdit, 'default': '0.0.0.0'},
@@ -119,61 +119,83 @@ class ServerGUI(QMainWindow):
             })
         ]
         
-        # 将分组参数扁平化，以方便其他方法访问
         self.params = {k: v for _, group in self.params_groups for k, v in group.items()}
         self.widgets = {}
-        # 存储置换表默认大小，用于同步时恢复
         self.cache_default_size = self.params['--cache_size']['default'] 
 
     def _setup_ui(self):
         central_widget = QWidget()
         main_layout = QHBoxLayout(central_widget)
 
-        # --- Left Side: Controls and Parameters ---
         left_layout = QVBoxLayout()
         left_widget = QWidget()
         left_widget.setLayout(left_layout)
-        left_widget.setMinimumWidth(350) # 允许水平调整大小
+        left_widget.setMinimumWidth(350) 
 
         # 1. Control Box
         control_box = QGroupBox("Control Panel")
-        control_layout = QHBoxLayout()
+        # 使用 QGridLayout 以便放置更多按钮
+        control_layout = QGridLayout() 
         
         self.start_button = QPushButton("🚀 Start Server")
         self.start_button.clicked.connect(self.start_server)
-        control_layout.addWidget(self.start_button)
+        control_layout.addWidget(self.start_button, 0, 0) # Row 0, Col 0
         
         self.stop_button = QPushButton("🛑 Stop Server")
         self.stop_button.clicked.connect(self.stop_server)
-        control_layout.addWidget(self.stop_button)
+        control_layout.addWidget(self.stop_button, 0, 1) # Row 0, Col 1
         
-        # --- Reset Button ---
         self.reset_button = QPushButton("🔄 Reset Parameters")
         self.reset_button.clicked.connect(self.reset_parameters)
-        control_layout.addWidget(self.reset_button)
-        # -------------------------
+        control_layout.addWidget(self.reset_button, 1, 0) # Row 1, Col 0
+        
+        # --- NEW: Reset Traffic Button ---
+        self.reset_traffic_button = QPushButton("🗑️ Reset Traffic")
+        self.reset_traffic_button.clicked.connect(self.reset_traffic_stats)
+        control_layout.addWidget(self.reset_traffic_button, 1, 1) # Row 1, Col 1
+        # -----------------------------------
         
         control_box.setLayout(control_layout)
         left_layout.addWidget(control_box)
 
         # 2. Status Box
-        status_box = QGroupBox("Status")
-        status_layout = QHBoxLayout()
+        status_box = QGroupBox("Status & Network Traffic") 
+        status_layout = QVBoxLayout() 
+        
         self.status_label = QLabel()
         self.status_label.setStyleSheet("font-weight: bold;")
         status_layout.addWidget(self.status_label)
+        
+        traffic_group = QGroupBox("Server Traffic")
+        traffic_layout = QGridLayout()
+        
+        # --- 优化后的流量标签 (Server Perspective) ---
+        self.label_total_received = QLabel("接收流量 (客户端上传数据) ⬇️:") # Data coming IN to the server
+        self.value_total_received = QLabel("0 B")
+        self.value_total_received.setStyleSheet("font-weight: bold; color: blue;")
+        
+        self.label_total_sent = QLabel("发送流量 (客户端下载权重) ⬆️:") # Data going OUT from the server
+        self.value_total_sent = QLabel("0 B")
+        self.value_total_sent.setStyleSheet("font-weight: bold; color: green;")
+        # ------------------------------------------------
+        
+        traffic_layout.addWidget(self.label_total_received, 0, 0)
+        traffic_layout.addWidget(self.value_total_received, 0, 1)
+        traffic_layout.addWidget(self.label_total_sent, 1, 0)
+        traffic_layout.addWidget(self.value_total_sent, 1, 1)
+        
+        traffic_group.setLayout(traffic_layout)
+        status_layout.addWidget(traffic_group)
+        
         status_box.setLayout(status_layout)
         left_layout.addWidget(status_box)
 
-        # 3. Parameter Configuration (Wrapped in ScrollArea)
-        
-        # 3a. 创建参数容器 (用于放置在 QScrollArea 中)
+        # 3. Parameter Configuration
         param_container = QWidget()
         param_layout = QGridLayout(param_container)
         
         row = 0
         for group_title, params_dict in self.params_groups:
-            # 添加分组标题和分隔线
             separator_label = QLabel(f"<b>{group_title}</b>")
             separator_label.setStyleSheet("margin-top: 5px; margin-bottom: 2px;")
             param_layout.addWidget(separator_label, row, 0, 1, 2)
@@ -186,14 +208,11 @@ class ServerGUI(QMainWindow):
             row += 1
             
             for key, config in params_dict.items():
-                
-                # --- 智能显示范围提示 ---
                 label_text = f"{config['label']}:"
                 widget_type = config['type']
                 
                 if widget_type in (QSpinBox, QDoubleSpinBox) and 'range' in config:
                     min_val, max_val = config['range']
-                    
                     if widget_type == QSpinBox:
                         min_str = str(min_val)
                         max_str = "∞" if max_val == UNBOUNDED_INT else str(max_val)
@@ -206,22 +225,18 @@ class ServerGUI(QMainWindow):
                     elif min_val != -UNBOUNDED_INT: 
                         label_text = f"{config['label']} ({min_str}-{max_str}):"
 
-
                 label = QLabel(label_text)
                 param_layout.addWidget(label, row, 0)
                 
                 widget = widget_type()
 
-                # --- 参数设置逻辑 ---
                 if widget_type == QSpinBox:
                     min_val = config['range'][0]
                     max_val = config['range'][1]
                     if max_val == UNBOUNDED_INT:
                         max_val = int(1e9)
-                        
                     widget.setRange(min_val, max_val) 
                     widget.setValue(config['default'])
-                    
                     if config.get('single_step'):
                          widget.setSingleStep(config['single_step'])
                     elif key == '--cache_size':
@@ -230,10 +245,8 @@ class ServerGUI(QMainWindow):
                 elif widget_type == QDoubleSpinBox:
                     max_val = config['range'][1] if config['range'][1] < UNBOUNDED_INT else 1e9
                     widget.setRange(config['range'][0], max_val)
-                    
                     widget.setDecimals(config.get('decimals', 3))
                     widget.setValue(config['default'])
-                    
                     if config.get('single_step'):
                         widget.setSingleStep(config['single_step'])
                     elif key in ('-c', '-a'):
@@ -243,56 +256,40 @@ class ServerGUI(QMainWindow):
                     widget.setChecked(config['default'])
                 elif widget_type == QLineEdit:
                     widget.setText(config['default'])
-                # --- 参数设置逻辑结束 ---
                 
                 param_layout.addWidget(widget, row, 1)
                 self.widgets[key] = widget
                 
-                # --- Log signal connections ---
                 if widget_type in (QSpinBox, QDoubleSpinBox):
-                    # SpinBoxes pass the new value
                     widget.valueChanged.connect(lambda val, k=key: self._log_parameter_change(k, val))
                 elif widget_type == QCheckBox:
-                    # CheckBoxes pass the new state
                     widget.stateChanged.connect(lambda state, k=key: self._log_parameter_change(k, state))
                 elif widget_type == QLineEdit:
-                    # LineEdits should log on focus loss (editingFinished)
                     widget.editingFinished.connect(lambda w=widget, k=key: self._log_parameter_change(k, w.text()))
-                # --- Log signal connections END ---
                 
                 row += 1
         
         param_container.setLayout(param_layout)
         
-        # 3b. 将参数容器包裹在 QScrollArea 中
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setWidget(param_container) 
         
-        # 3c. 将 ScrollArea 放入 QGroupBox
         param_group_box = QGroupBox("Server Parameter Configuration")
-        # 确保 QGroupBox 占据剩余的垂直空间
         param_group_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         param_group_box_layout = QVBoxLayout(param_group_box)
         param_group_box_layout.addWidget(scroll_area)
         
-        # 将参数区添加到左侧布局
         left_layout.addWidget(param_group_box)
 
-        # --- 置换表同步逻辑初始化 ---
         self.cache_size_spinbox = self.widgets['--cache_size']
         self.no_cache_checkbox = self.widgets['--no-cache']
-
         self.cache_size_spinbox.valueChanged.connect(self._sync_size_to_check)
         self.no_cache_checkbox.stateChanged.connect(self._sync_check_to_size)
-        
         if self.cache_size_spinbox.value() == 0:
              self.no_cache_checkbox.setChecked(True)
-        # --- 置换表同步逻辑初始化结束 ---
 
-        # --- Right Side: Log Area ---
         right_layout = QVBoxLayout()
-        
         log_box = QGroupBox("Server Log Output")
         log_layout = QVBoxLayout()
         
@@ -303,8 +300,8 @@ class ServerGUI(QMainWindow):
         self.log_text_edit = QTextEdit()
         self.log_text_edit.setReadOnly(True)
         self.log_text_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        
         log_layout.addWidget(self.log_text_edit)
+        
         log_box.setLayout(log_layout)
         right_layout.addWidget(log_box)
 
@@ -312,136 +309,109 @@ class ServerGUI(QMainWindow):
         main_layout.addLayout(right_layout)
 
         self.setCentralWidget(central_widget)
+
+    # --- NEW: 流量统计重置方法 ---
+    def reset_traffic_stats(self):
+        if self.server_process.state() != QProcess.Running:
+            QMessageBox.warning(self, "Warning", "Server is not running. Cannot reset traffic stats.")
+            self.append_log("Reset Traffic failed: Server is not running.", 'error')
+            return
         
-    def _log_parameter_change(self, key, value):
-        """Logs the change of a parameter."""
-        widget = self.widgets[key]
-        
-        display_value = str(value)
-        
-        if isinstance(widget, QCheckBox):
-            # QCheckBox passes state (2 or 0)
-            display_value = "Enabled" if value == Qt.Checked else "Disabled"
+        try:
+            host = self.widgets['--host'].text()
+            port = self.widgets['--port'].value()
+            url = f'http://{host}:{port}/reset_traffic'
+            self.append_log(f"Attempting to reset server traffic stats via POST to {url}...", 'info')
             
+            # 发送 POST 请求到服务器的重置接口
+            r = requests.post(url, timeout=2)
+            
+            if r.status_code == 200 and r.json().get('status') == 'success':
+                # 重置成功后，立即更新 GUI 显示
+                self.value_total_received.setText("0 B")
+                self.value_total_sent.setText("0 B")
+                self.append_log("Server traffic statistics successfully reset to 0.", 'success')
+            else:
+                self.append_log(f"Failed to reset server traffic. Status: {r.status_code}. Response: {r.text[:100]}", 'error')
+                
+        except requests.exceptions.ConnectionError:
+            self.append_log("Reset Traffic failed: Could not connect to the server. Check host/port.", 'error')
+        except Exception as e:
+            self.append_log(f"An unexpected error occurred during traffic reset: {e}", 'error')
+    # --------------------------------
+
+    def _fetch_server_traffic_stats(self):
+        if self.server_process.state() != QProcess.Running:
+            self.traffic_timer.stop()
+            return
+        try:
+            host = self.widgets['--host'].text()
+            port = self.widgets['--port'].value()
+            r = requests.get(f'http://{host}:{port}/status', timeout=0.5)
+            if r.status_code == 200:
+                data = r.json()
+                received_bytes = data.get('total_received_bytes', 0)
+                sent_bytes = data.get('total_sent_bytes', 0)
+                self.value_total_received.setText(self.format_bytes(received_bytes))
+                self.value_total_sent.setText(self.format_bytes(sent_bytes))
+        except (requests.exceptions.ConnectionError, Exception):
+            pass 
+
+    def _log_parameter_change(self, key, value):
+        widget = self.widgets[key]
+        display_value = str(value)
+        if isinstance(widget, QCheckBox):
+            display_value = "Enabled" if value == Qt.Checked else "Disabled"
         elif isinstance(widget, QDoubleSpinBox):
-            # QDoubleSpinBox passes float value
             display_value = f"{value:.4g}"
-        
-        # For QLineEdit, 'value' is the text (string)
-        # For QSpinBox, 'value' is the int
-        
         label = self.params[key]['label']
-        # The synchronization methods block signals, so the automatic sync changes will not trigger this log.
         self.append_log(f"[PARAM CHANGE] '{label}' ({key}) set to: {display_value}", 'info')
 
-    # --- 重置参数方法 ---
-    def reset_parameters(self):
-        """Resets all parameter widgets to their default values."""
-        
-        reply = QMessageBox.question(self, 'Confirm Reset',
-            "Are you sure you want to reset all parameters to their default values? Unsaved changes will be lost.", 
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-
-        if reply == QMessageBox.No:
-            return
-            
-        # 临时阻断信号，防止同步逻辑在重置过程中多次触发
-        self.cache_size_spinbox.blockSignals(True)
-        self.no_cache_checkbox.blockSignals(True)
-        
-        # 记录重置操作
-        self.append_log("--- Starting parameter reset to defaults ---", 'warning')
-        
-        for key, config in self.params.items():
-            widget = self.widgets[key]
-            default_value = config['default']
-            
-            if isinstance(widget, QSpinBox) or isinstance(widget, QDoubleSpinBox):
-                if widget.value() != default_value:
-                    widget.setValue(default_value)
-            elif isinstance(widget, QCheckBox):
-                if widget.isChecked() != default_value:
-                    widget.setChecked(default_value)
-            elif isinstance(widget, QLineEdit):
-                if widget.text() != default_value:
-                    widget.setText(default_value)
-
-        # 重新启用信号
-        self.cache_size_spinbox.blockSignals(False)
-        self.no_cache_checkbox.blockSignals(False)
-        
-        # 确保缓存复选框与默认的缓存大小保持同步
-        if self.cache_default_size == 0:
-            self.no_cache_checkbox.setChecked(True)
-        else:
-            self.no_cache_checkbox.setChecked(False) 
-        
-        self.append_log("All parameters have been reset to default values.", 'info')
-        
-    # --- 同步方法 ---
     def _sync_size_to_check(self, value):
-        """将置换表大小同步到 'Disable Cache' 复选框。"""
         checkbox = self.no_cache_checkbox
-        
         checkbox.blockSignals(True)
-        
         if value == 0:
-            if not checkbox.isChecked():
-                checkbox.setChecked(True)
+            if not checkbox.isChecked(): checkbox.setChecked(True)
         elif value > 0:
-            if checkbox.isChecked():
-                checkbox.setChecked(False)
-        
+            if checkbox.isChecked(): checkbox.setChecked(False)
         checkbox.blockSignals(False)
 
-
     def _sync_check_to_size(self, state):
-        """将 'Disable Cache' 复选框状态同步到置换表大小。"""
         spinbox = self.cache_size_spinbox
-        
         spinbox.blockSignals(True)
-        
-        if state == Qt.Checked:
-            spinbox.setValue(0)
-            
+        if state == Qt.Checked: spinbox.setValue(0)
         elif state == Qt.Unchecked:
-            if spinbox.value() == 0:
-                spinbox.setValue(self.cache_default_size)
-                
+            if spinbox.value() == 0: spinbox.setValue(self.cache_default_size)
         spinbox.blockSignals(False)
-    # --- 同步方法结束 ---
     
     def clear_log(self):
-        """Clears the content of the log text box."""
         self.log_text_edit.clear()
         self.append_log("--- Log manually cleared ---", 'info')
 
     def _load_settings(self):
-        """Loads saved parameter values from QSettings."""
         for key, config in self.params.items():
             widget = self.widgets[key]
-            # 临时阻断信号，防止加载设置时触发日志
             widget.blockSignals(True)
-            
-            value = self.settings.value(key, config['default'])
+            value = self.settings.value(key, config.get('default'))
             if value is not None:
                 if isinstance(widget, QSpinBox):
-                    widget.setValue(int(value))
+                    try:
+                        widget.setValue(int(float(value)))
+                    except (ValueError, TypeError):
+                        widget.setValue(config['default'])
                 elif isinstance(widget, QDoubleSpinBox):
-                    # QSettings saves floats as strings, need conversion
                     try:
                         widget.setValue(float(value))
-                    except ValueError:
-                        widget.setValue(config['default']) # Fallback
+                    except (ValueError, TypeError):
+                        widget.setValue(config['default']) 
                 elif isinstance(widget, QCheckBox):
-                    widget.setChecked(value == 'true' or value is True)
+                    if isinstance(value, str): widget.setChecked(value.lower() == 'true')
+                    else: widget.setChecked(bool(value))
                 elif isinstance(widget, QLineEdit):
                     widget.setText(str(value))
-                    
-            widget.blockSignals(False) # 重新启用信号
+            widget.blockSignals(False)
             
     def _save_settings(self):
-        """Saves current parameter values to QSettings."""
         for key, config in self.params.items():
             widget = self.widgets[key]
             if isinstance(widget, QSpinBox) or isinstance(widget, QDoubleSpinBox):
@@ -452,174 +422,119 @@ class ServerGUI(QMainWindow):
                 self.settings.setValue(key, widget.text())
 
     def get_server_args(self):
-        """Collects command-line arguments for server.py from GUI controls."""
         args = []
         for key, config in self.params.items():
             widget = self.widgets[key]
-            
             if isinstance(widget, QSpinBox) or isinstance(widget, QDoubleSpinBox):
                 value = widget.value()
-                # Special handling for scientific notation (like learning rate)
-                if key == '--lr':
-                    args.extend([key, f"{value:.6g}"]) 
-                else:
-                    args.extend([key, str(value)])
+                if key == '--lr': args.extend([key, f"{value:.6g}"]) 
+                else: args.extend([key, str(value)])
             elif isinstance(widget, QLineEdit):
                 value = widget.text().strip()
-                if value:
-                    args.extend([key, value])
+                if value: args.extend([key, value])
             elif isinstance(widget, QCheckBox):
-                # The server code uses '--no-cache' for *disabling* the cache (action='store_false', dest='cache')
-                # The GUI should pass the flag *only* if the checkbox is checked.
                 if config.get('flag') and widget.isChecked():
                     args.append(key)
-        
         return args
 
-    def update_status_label(self):
-        """Updates the status label and controls button enablement."""
-        is_running = self.server_process.state() == QProcess.Running
-        status_text = "Running" if is_running else "Stopped"
-        status_color = "green" if is_running else "red"
-        
-        self.status_label.setText(f"Server Status: <span style='color:{status_color};font-weight:bold;'>{status_text}</span>")
-        
-        self.start_button.setEnabled(not is_running)
-        self.stop_button.setEnabled(is_running)
-        self.reset_button.setEnabled(not is_running) # 禁用重置按钮
-
-        # Disable parameter modification while running
-        for key in self.widgets:
-            self.widgets[key].setEnabled(not is_running)
-
     def start_server(self):
-        """Starts the server process."""
         if self.server_process.state() == QProcess.Running:
-            self.append_log("Server is already running.", 'error')
+            QMessageBox.warning(self, "Warning", "Server is already running.")
             return
-
-        self._save_settings() 
-        args = self.get_server_args()
-        
-        # 确保 server.py 存在
-        if not os.path.exists("server.py"):
-             self.append_log("Error: server.py not found. Ensure it is in the same directory.", 'error')
-             return
-
-        python_executable = sys.executable 
-
-        self.append_log(f"--- Starting Server ---", 'info')
-        
-        # Use '-u' flag to force unbuffered output for real-time logging
-        command_list = ['-u', 'server.py'] + args
-        self.append_log(f"Command: {python_executable} {' '.join(command_list)}", 'info')
-
-        # === FIX: 设置 PYTHONIOENCODING 为 UTF-8 以支持 Unicode 字符 (如 ⭐ 符号) ===
+        command_list = self.get_server_args()
+        python_executable = sys.executable
         env = QProcessEnvironment.systemEnvironment()
-        # 强制子进程使用 UTF-8 编码进行 I/O，解决 Windows GBK 编码问题
+        env.insert("PYTHONPATH", os.getcwd())
         env.insert("PYTHONIOENCODING", "utf-8")
         self.server_process.setProcessEnvironment(env)
-        # =======================================================================
-        
-        self.server_process.start(python_executable, command_list)
-        
+        self.append_log(f"Starting server: {python_executable} {' '.join(['-u', 'server.py'] + command_list)}", 'info')
+        self.server_process.start(python_executable, ['-u', 'server.py'] + command_list)
         if not self.server_process.waitForStarted(2000): 
             self.append_log(f"Server failed to start: {self.server_process.errorString()}", 'error')
-        
+        else:
+             self.traffic_timer.start()
         self.update_status_label()
 
     def stop_server(self):
-        """Stops the server process."""
-        if self.server_process.state() != QProcess.Running:
-            self.append_log("Server is not running.", 'warning')
-            return
-            
-        self.append_log("--- Requesting Server to stop ---", 'warning')
-        
-        if self.server_process.kill_server():
-            self.append_log("Termination signal sent to server (Terminate).", 'warning')
-        else:
-            self.append_log("Server forcefully killed (Kill).", 'error')
-        
-        QApplication.processEvents() 
+        if self.server_process.state() == QProcess.Running:
+            self.append_log("Stopping server...", 'info')
+            self.server_process.kill_server()
+            self.server_process.waitForFinished(3000)
         self.update_status_label()
-
 
     def handle_process_finished(self, exit_code, exit_status):
-        """Handles the server process finishing."""
-        status_name = "Unknown"
-        if exit_status == QProcess.NormalExit:
-            status_name = "Normal Exit (Code: 0)" if exit_code == 0 else f"Normal Exit (Non-zero Code: {exit_code})"
-            level = 'info' if exit_code == 0 else 'warning'
-        elif exit_status == QProcess.CrashExit:
-            status_name = "Crash Exit (Crashed/Error Exit)"
-            level = 'error'
-
-        self.append_log(f"Server Process Finished. Exit Status: {status_name}.", level)
+        self.append_log(f"Server finished with code {exit_code}.", 'warning')
+        self.traffic_timer.stop()
+        self.value_total_received.setText("0 B")
+        self.value_total_sent.setText("0 B")
         self.update_status_label()
-        
+
+    def update_status_label(self):
+        state = self.server_process.state()
+        if state == QProcess.Running:
+            self.status_label.setText("Status: RUNNING 🟢")
+            self.status_label.setStyleSheet("font-weight: bold; color: green;")
+            self.start_button.setEnabled(False)
+            self.stop_button.setEnabled(True)
+            self.reset_button.setEnabled(False)
+            self.reset_traffic_button.setEnabled(True) # NEW: 运行时可以重置流量
+            for k, w in self.widgets.items(): w.setEnabled(False)
+        else:
+            self.status_label.setText("Status: STOPPED 🔴")
+            self.status_label.setStyleSheet("font-weight: bold; color: red;")
+            self.start_button.setEnabled(True)
+            self.stop_button.setEnabled(False)
+            self.reset_button.setEnabled(True)
+            self.reset_traffic_button.setEnabled(False) # NEW: 停止时不能重置流量
+            self.traffic_timer.stop()
+            for k, w in self.widgets.items(): w.setEnabled(True)
+            
     def append_log(self, text, level='normal'):
-        """Appends log text to the text box and scrolls to the bottom."""
-        
-        # 1. 检查当前是否处于深色模式 (通过检查背景色亮度)
         bg_color = self.log_text_edit.palette().color(self.log_text_edit.backgroundRole())
-        # 简单的亮度检查：R+G+B < 382.5 判定为深色背景
         is_dark_mode = (bg_color.red() + bg_color.green() + bg_color.blue()) < 382
-        
-        # 2. 定义深色和浅色模式下的颜色映射
         if is_dark_mode:
-            # 深色模式下的颜色 (背景暗，字体亮)
-            color_map = {
-                'normal': 'white',      # 正常输出 (浅色/白色)
-                'error': '#FF6B6B',     # 错误 (亮红)
-                'warning': '#FFCC66',   # 警告 (亮橙/黄)
-                'success': '#8BC34A',   # 成功 (亮绿)
-                'info': '#66A5FF'       # 信息 (亮蓝)
-            }
+            color_map = {'normal': 'white', 'error': '#FF6B6B', 'warning': '#FFCC66', 'success': '#8BC34A', 'info': '#66A5FF'}
             fallback_color = 'white'
         else:
-            # 浅色模式下的颜色 (背景亮，字体暗)
-            color_map = {
-                'normal': 'black',
-                'error': 'red',
-                'warning': 'orange',
-                'success': 'green',
-                'info': 'blue'
-            }
+            color_map = {'normal': 'black', 'error': 'red', 'warning': 'orange', 'success': 'green', 'info': 'blue'}
             fallback_color = 'black'
-            
-        # 3. 应用颜色
         color = color_map.get(level, fallback_color)
-        
         html = f'<span style="color:{color};">{text}</span><br>'
         self.log_text_edit.insertHtml(html)
         self.log_text_edit.ensureCursorVisible()
 
-    def closeEvent(self, event):
-        """Stops the server process and saves settings before closing the window."""
-        if self.server_process.state() == QProcess.Running:
-            reply = QMessageBox.question(self, 'Confirm Exit',
-                "The server is running. Do you want to stop it before exiting?", 
-                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel)
+    def reset_parameters(self):
+        reply = QMessageBox.question(self, 'Confirm Reset', "Reset parameters to default?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply == QMessageBox.No: return
+        self.cache_size_spinbox.blockSignals(True)
+        self.no_cache_checkbox.blockSignals(True)
+        self.append_log("Resetting parameters...", 'warning')
+        for key, config in self.params.items():
+            widget = self.widgets[key]
+            default = config['default']
+            if isinstance(widget, (QSpinBox, QDoubleSpinBox)): widget.setValue(default)
+            elif isinstance(widget, QCheckBox): widget.setChecked(default)
+            elif isinstance(widget, QLineEdit): widget.setText(str(default))
+        self.cache_size_spinbox.blockSignals(False)
+        self.no_cache_checkbox.blockSignals(False)
+        if self.cache_default_size == 0: self.no_cache_checkbox.setChecked(True)
+        else: self.no_cache_checkbox.setChecked(False)
 
+    def closeEvent(self, event):
+        if self.server_process.state() == QProcess.Running:
+            reply = QMessageBox.question(self, 'Confirm Exit', "Server is running. Stop before exit?", QMessageBox.Yes | QMessageBox.No)
             if reply == QMessageBox.Yes:
                 self.stop_server()
                 QApplication.processEvents()
-            elif reply == QMessageBox.Cancel:
+            elif reply == QMessageBox.No: # Force close
+                self.stop_server()
+            else:
                 event.ignore()
                 return
-
         self._save_settings()
         event.accept()
 
 if __name__ == '__main__':
-    try:
-        # 尝试导入 PyTorch 以检查设备可用性
-        if 'torch' not in sys.modules:
-            import torch
-    except ImportError:
-        pass 
-
     app = QApplication(sys.argv)
     gui = ServerGUI()
     gui.show()
