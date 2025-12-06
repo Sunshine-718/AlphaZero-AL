@@ -4,6 +4,8 @@ import torch
 import signal
 import requests
 import json
+import re 
+import time # <<< ADDED: 导入 time 模块
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QGroupBox, QLabel, QLineEdit, QPushButton,
@@ -26,6 +28,7 @@ class ServerProcess(QProcess):
     def _handle_stdout(self):
         data = self.readAllStandardOutput().data().decode('utf-8', errors='ignore').strip()
         if data and self.log_signal:
+            # 所有来自 server.py 的 STDOUT 都通过信号发送到 GUI 的 append_log
             self.log_signal.emit(f"[SERVER][STDOUT] {data}", 'normal')
 
     def _handle_stderr(self):
@@ -53,10 +56,20 @@ class ServerGUI(QMainWindow):
         self.server_process.finished.connect(self.handle_process_finished)
         self.settings = QSettings("AlphaZeroAL", "ServerGUI")
         
-        # 流量更新定时器
+        self.total_server_received_bytes = 0 
+        self.total_server_sent_bytes = 0 
+        self.traffic_log_pattern = re.compile(r"\[\[TRAFFIC_LOG::(RECEIVED|SENT)::\+::(\d+)\]\]") 
+        
+        # <<< ADDED: Runtime tracking variables and timer
+        self.server_start_time = None
+        self.runtime_timer = QTimer(self)
+        self.runtime_timer.setInterval(1000) # 1 second
+        self.runtime_timer.timeout.connect(self._update_runtime_display)
+        # >>>
+
         self.traffic_timer = QTimer(self)
-        self.traffic_timer.setInterval(1000) 
-        self.traffic_timer.timeout.connect(self._fetch_server_traffic_stats)
+        self.traffic_timer.setInterval(500) 
+        self.traffic_timer.timeout.connect(self._update_server_traffic_display) 
         
         self.server_process.started.connect(self.traffic_timer.start)
         self.server_process.finished.connect(self.traffic_timer.stop)
@@ -67,6 +80,7 @@ class ServerGUI(QMainWindow):
         self._setup_ui()
         self._load_settings()
         self.update_status_label()
+        self._update_runtime_display() # Initialize the display
 
     def format_bytes(self, bytes_num):
         if bytes_num is None or bytes_num == 0:
@@ -77,8 +91,33 @@ class ServerGUI(QMainWindow):
                 return f"{bytes_num:.2f} {unit}"
             bytes_num /= 1024.0
         return f"{bytes_num:.2f} PB"
+        
+    def _update_server_traffic_display(self):
+        self.value_total_received.setText(self.format_bytes(self.total_server_received_bytes))
+        self.value_total_sent.setText(self.format_bytes(self.total_server_sent_bytes))
 
+    # <<< ADDED: Method to update run time display
+    def _update_runtime_display(self):
+        if self.server_process.state() == QProcess.Running and self.server_start_time is not None:
+            elapsed_seconds = int(time.time() - self.server_start_time)
+            # Format as HH:MM:SS
+            hours, remainder = divmod(elapsed_seconds, 3600)
+            minutes, seconds = divmod(remainder, 60)
+            runtime_str = f"Run Time: {hours:02d}:{minutes:02d}:{seconds:02d} ⏱️"
+            self.runtime_label.setText(runtime_str)
+        elif self.server_start_time is not None:
+            # Show final duration when stopped
+            elapsed_seconds = int(time.time() - self.server_start_time)
+            hours, remainder = divmod(elapsed_seconds, 3600)
+            minutes, seconds = divmod(remainder, 60)
+            runtime_str = f"Total Time: {hours:02d}:{minutes:02d}:{seconds:02d} (Stopped)"
+            self.runtime_label.setText(runtime_str)
+        else:
+            self.runtime_label.setText("Run Time: N/A")
+    # >>>
+            
     def _init_default_args(self):
+        # ... (unchanged) ...
         DEFAULT_DEVICE = 'cpu'
         try:
             if torch.cuda.is_available():
@@ -123,6 +162,7 @@ class ServerGUI(QMainWindow):
         self.widgets = {}
         self.cache_default_size = self.params['--cache_size']['default'] 
 
+
     def _setup_ui(self):
         central_widget = QWidget()
         main_layout = QHBoxLayout(central_widget)
@@ -133,30 +173,29 @@ class ServerGUI(QMainWindow):
         left_widget.setMinimumWidth(350) 
 
         # 1. Control Box
+        # ... (unchanged) ...
         control_box = QGroupBox("Control Panel")
-        # 使用 QGridLayout 以便放置更多按钮
         control_layout = QGridLayout() 
         
         self.start_button = QPushButton("🚀 Start Server")
         self.start_button.clicked.connect(self.start_server)
-        control_layout.addWidget(self.start_button, 0, 0) # Row 0, Col 0
+        control_layout.addWidget(self.start_button, 0, 0)
         
         self.stop_button = QPushButton("🛑 Stop Server")
         self.stop_button.clicked.connect(self.stop_server)
-        control_layout.addWidget(self.stop_button, 0, 1) # Row 0, Col 1
+        control_layout.addWidget(self.stop_button, 0, 1)
         
         self.reset_button = QPushButton("🔄 Reset Parameters")
         self.reset_button.clicked.connect(self.reset_parameters)
-        control_layout.addWidget(self.reset_button, 1, 0) # Row 1, Col 0
+        control_layout.addWidget(self.reset_button, 1, 0)
         
-        # --- NEW: Reset Traffic Button ---
         self.reset_traffic_button = QPushButton("🗑️ Reset Traffic")
         self.reset_traffic_button.clicked.connect(self.reset_traffic_stats)
-        control_layout.addWidget(self.reset_traffic_button, 1, 1) # Row 1, Col 1
-        # -----------------------------------
+        control_layout.addWidget(self.reset_traffic_button, 1, 1)
         
         control_box.setLayout(control_layout)
         left_layout.addWidget(control_box)
+
 
         # 2. Status Box
         status_box = QGroupBox("Status & Network Traffic") 
@@ -166,18 +205,21 @@ class ServerGUI(QMainWindow):
         self.status_label.setStyleSheet("font-weight: bold;")
         status_layout.addWidget(self.status_label)
         
+        # <<< ADDED: Runtime Label
+        self.runtime_label = QLabel("Run Time: N/A")
+        status_layout.addWidget(self.runtime_label)
+        # >>>
+        
         traffic_group = QGroupBox("Server Traffic")
         traffic_layout = QGridLayout()
         
-        # --- 优化后的流量标签 (Server Perspective) ---
-        self.label_total_received = QLabel("⬇️ Total Download:") # Data coming IN to the server
+        self.label_total_received = QLabel("⬇️ Total Received (Client Upload):") 
         self.value_total_received = QLabel("0 B")
         self.value_total_received.setStyleSheet("font-weight: bold; color: blue;")
         
-        self.label_total_sent = QLabel("⬆️ Total Upload:") # Data going OUT from the server
+        self.label_total_sent = QLabel("⬆️ Total Sent (Client Download):") 
         self.value_total_sent = QLabel("0 B")
         self.value_total_sent.setStyleSheet("font-weight: bold; color: green;")
-        # ------------------------------------------------
         
         traffic_layout.addWidget(self.label_total_received, 0, 0)
         traffic_layout.addWidget(self.value_total_received, 0, 1)
@@ -191,6 +233,7 @@ class ServerGUI(QMainWindow):
         left_layout.addWidget(status_box)
 
         # 3. Parameter Configuration
+        # ... (unchanged) ...
         param_container = QWidget()
         param_layout = QGridLayout(param_container)
         
@@ -281,7 +324,8 @@ class ServerGUI(QMainWindow):
         param_group_box_layout.addWidget(scroll_area)
         
         left_layout.addWidget(param_group_box)
-
+        
+        # ... (unchanged) ...
         self.cache_size_spinbox = self.widgets['--cache_size']
         self.no_cache_checkbox = self.widgets['--no-cache']
         self.cache_size_spinbox.valueChanged.connect(self._sync_size_to_check)
@@ -310,12 +354,16 @@ class ServerGUI(QMainWindow):
 
         self.setCentralWidget(central_widget)
 
-    # --- NEW: 流量统计重置方法 ---
     def reset_traffic_stats(self):
+        # ... (unchanged) ...
         if self.server_process.state() != QProcess.Running:
             QMessageBox.warning(self, "Warning", "Server is not running. Cannot reset traffic stats.")
             self.append_log("Reset Traffic failed: Server is not running.", 'error')
             return
+        
+        self.total_server_received_bytes = 0
+        self.total_server_sent_bytes = 0
+        self._update_server_traffic_display() 
         
         try:
             host = self.widgets['--host'].text()
@@ -323,41 +371,23 @@ class ServerGUI(QMainWindow):
             url = f'http://{host}:{port}/reset_traffic'
             self.append_log(f"Attempting to reset server traffic stats via POST to {url}...", 'info')
             
-            # 发送 POST 请求到服务器的重置接口
             r = requests.post(url, timeout=2)
             
             if r.status_code == 200 and r.json().get('status') == 'success':
-                # 重置成功后，立即更新 GUI 显示
-                self.value_total_received.setText("0 B")
-                self.value_total_sent.setText("0 B")
-                self.append_log("Server traffic statistics successfully reset to 0.", 'success')
+                self.append_log("Server traffic statistics successfully reset to 0 (GUI and Backend).", 'success')
             else:
-                self.append_log(f"Failed to reset server traffic. Status: {r.status_code}. Response: {r.text[:100]}", 'error')
+                self.append_log(f"Server traffic statistics reset in GUI. WARNING: Backend reset via HTTP failed. Status: {r.status_code}.", 'warning')
                 
         except requests.exceptions.ConnectionError:
-            self.append_log("Reset Traffic failed: Could not connect to the server. Check host/port.", 'error')
+            self.append_log("Server traffic statistics reset in GUI. WARNING: Could not connect to the server for backend reset.", 'warning')
         except Exception as e:
             self.append_log(f"An unexpected error occurred during traffic reset: {e}", 'error')
-    # --------------------------------
 
     def _fetch_server_traffic_stats(self):
-        if self.server_process.state() != QProcess.Running:
-            self.traffic_timer.stop()
-            return
-        try:
-            host = self.widgets['--host'].text()
-            port = self.widgets['--port'].value()
-            r = requests.get(f'http://{host}:{port}/status', timeout=0.5)
-            if r.status_code == 200:
-                data = r.json()
-                received_bytes = data.get('total_received_bytes', 0)
-                sent_bytes = data.get('total_sent_bytes', 0)
-                self.value_total_received.setText(self.format_bytes(received_bytes))
-                self.value_total_sent.setText(self.format_bytes(sent_bytes))
-        except (requests.exceptions.ConnectionError, Exception):
-            pass 
+        pass
 
     def _log_parameter_change(self, key, value):
+        # ... (unchanged) ...
         widget = self.widgets[key]
         display_value = str(value)
         if isinstance(widget, QCheckBox):
@@ -368,6 +398,7 @@ class ServerGUI(QMainWindow):
         self.append_log(f"[PARAM CHANGE] '{label}' ({key}) set to: {display_value}", 'info')
 
     def _sync_size_to_check(self, value):
+        # ... (unchanged) ...
         checkbox = self.no_cache_checkbox
         checkbox.blockSignals(True)
         if value == 0:
@@ -377,6 +408,7 @@ class ServerGUI(QMainWindow):
         checkbox.blockSignals(False)
 
     def _sync_check_to_size(self, state):
+        # ... (unchanged) ...
         spinbox = self.cache_size_spinbox
         spinbox.blockSignals(True)
         if state == Qt.Checked: spinbox.setValue(0)
@@ -385,10 +417,12 @@ class ServerGUI(QMainWindow):
         spinbox.blockSignals(False)
     
     def clear_log(self):
+        # ... (unchanged) ...
         self.log_text_edit.clear()
         self.append_log("--- Log manually cleared ---", 'info')
 
     def _load_settings(self):
+        # ... (unchanged) ...
         for key, config in self.params.items():
             widget = self.widgets[key]
             widget.blockSignals(True)
@@ -412,6 +446,7 @@ class ServerGUI(QMainWindow):
             widget.blockSignals(False)
             
     def _save_settings(self):
+        # ... (unchanged) ...
         for key, config in self.params.items():
             widget = self.widgets[key]
             if isinstance(widget, QSpinBox) or isinstance(widget, QDoubleSpinBox):
@@ -422,6 +457,7 @@ class ServerGUI(QMainWindow):
                 self.settings.setValue(key, widget.text())
 
     def get_server_args(self):
+        # ... (unchanged) ...
         args = []
         for key, config in self.params.items():
             widget = self.widgets[key]
@@ -448,11 +484,16 @@ class ServerGUI(QMainWindow):
         env.insert("PYTHONIOENCODING", "utf-8")
         self.server_process.setProcessEnvironment(env)
         self.append_log(f"Starting server: {python_executable} {' '.join(['-u', 'server.py'] + command_list)}", 'info')
+        # 使用 -u 确保 STDOUT 不被缓存，及时输出
         self.server_process.start(python_executable, ['-u', 'server.py'] + command_list)
         if not self.server_process.waitForStarted(2000): 
             self.append_log(f"Server failed to start: {self.server_process.errorString()}", 'error')
         else:
              self.traffic_timer.start()
+             # <<< MODIFIED: Record start time and start runtime timer
+             self.server_start_time = time.time() 
+             self.runtime_timer.start()
+             # >>>
         self.update_status_label()
 
     def stop_server(self):
@@ -465,11 +506,14 @@ class ServerGUI(QMainWindow):
     def handle_process_finished(self, exit_code, exit_status):
         self.append_log(f"Server finished with code {exit_code}.", 'warning')
         self.traffic_timer.stop()
-        self.value_total_received.setText("0 B")
-        self.value_total_sent.setText("0 B")
+        # <<< MODIFIED: Stop runtime timer and update display
+        self.runtime_timer.stop()
+        self._update_runtime_display() 
+        # >>>
         self.update_status_label()
 
     def update_status_label(self):
+        # ... (unchanged) ...
         state = self.server_process.state()
         if state == QProcess.Running:
             self.status_label.setText("Status: RUNNING 🟢")
@@ -477,7 +521,7 @@ class ServerGUI(QMainWindow):
             self.start_button.setEnabled(False)
             self.stop_button.setEnabled(True)
             self.reset_button.setEnabled(False)
-            self.reset_traffic_button.setEnabled(True) # NEW: 运行时可以重置流量
+            self.reset_traffic_button.setEnabled(True) 
             for k, w in self.widgets.items(): w.setEnabled(False)
         else:
             self.status_label.setText("Status: STOPPED 🔴")
@@ -485,11 +529,31 @@ class ServerGUI(QMainWindow):
             self.start_button.setEnabled(True)
             self.stop_button.setEnabled(False)
             self.reset_button.setEnabled(True)
-            self.reset_traffic_button.setEnabled(False) # NEW: 停止时不能重置流量
+            self.reset_traffic_button.setEnabled(False) 
             self.traffic_timer.stop()
             for k, w in self.widgets.items(): w.setEnabled(True)
+            self._update_runtime_display() # Ensure status is updated when stopped
             
+    # --- MODIFIED: append_log 确保非流量日志能够显示 ---
     def append_log(self, text, level='normal'):
+        match = self.traffic_log_pattern.search(text)
+        
+        if match:
+            direction = match.group(1)
+            try:
+                bytes_added = int(match.group(2))
+                
+                if direction == 'RECEIVED': 
+                    self.total_server_received_bytes += bytes_added
+                    return 
+                elif direction == 'SENT': 
+                    self.total_server_sent_bytes += bytes_added
+                    return 
+                
+            except ValueError: 
+                text = f"[TRAFFIC PARSING ERROR] Malformed traffic log found: {text}"
+                level = 'error'
+        
         bg_color = self.log_text_edit.palette().color(self.log_text_edit.backgroundRole())
         is_dark_mode = (bg_color.red() + bg_color.green() + bg_color.blue()) < 382
         if is_dark_mode:
@@ -504,6 +568,7 @@ class ServerGUI(QMainWindow):
         self.log_text_edit.ensureCursorVisible()
 
     def reset_parameters(self):
+        # ... (unchanged) ...
         reply = QMessageBox.question(self, 'Confirm Reset', "Reset parameters to default?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply == QMessageBox.No: return
         self.cache_size_spinbox.blockSignals(True)
@@ -521,12 +586,13 @@ class ServerGUI(QMainWindow):
         else: self.no_cache_checkbox.setChecked(False)
 
     def closeEvent(self, event):
+        # ... (unchanged) ...
         if self.server_process.state() == QProcess.Running:
             reply = QMessageBox.question(self, 'Confirm Exit', "Server is running. Stop before exit?", QMessageBox.Yes | QMessageBox.No)
             if reply == QMessageBox.Yes:
                 self.stop_server()
                 QApplication.processEvents()
-            elif reply == QMessageBox.No: # Force close
+            elif reply == QMessageBox.No: 
                 self.stop_server()
             else:
                 event.ignore()

@@ -9,6 +9,7 @@ from src.pipeline import TrainPipeline
 from src.ReplayBuffer import ReplayBuffer
 from flask import Flask, request, jsonify
 import argparse
+import sys # ADDED: For explicit stdout printing
 
 # --- 新增: 流量统计全局变量 ---
 TOTAL_RECEIVED_BYTES = 0
@@ -88,7 +89,10 @@ def upload():
     # --- 流量统计: 接收流量 ---
     global TOTAL_RECEIVED_BYTES
     if request.data:
-        TOTAL_RECEIVED_BYTES += len(request.data)
+        data_len = len(request.data)
+        TOTAL_RECEIVED_BYTES += data_len
+        # ADDED: Log traffic for GUI to capture (Server RECEIVED = Client UPLOAD)
+        print(f"[[TRAFFIC_LOG::RECEIVED::+::{data_len}]]", file=sys.stdout)
     # -----------------------
     
     data = pickle.loads(request.data)
@@ -112,8 +116,12 @@ def weights():
         
         # --- 流量统计: 发送流量 ---
         payload = pickle.dumps(params, protocol=pickle.HIGHEST_PROTOCOL)
+        payload_len = len(payload)
         global TOTAL_SENT_BYTES
-        TOTAL_SENT_BYTES += len(payload)
+        TOTAL_SENT_BYTES += payload_len
+        
+        # ADDED: Log traffic for GUI to capture (Server SENT = Client DOWNLOAD)
+        print(f"[[TRAFFIC_LOG::SENT::+::{payload_len}]]", file=sys.stdout)
         # ------------------------
         
         return payload, 200, {

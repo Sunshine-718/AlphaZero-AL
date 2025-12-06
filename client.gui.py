@@ -3,6 +3,7 @@ import os
 import signal
 import torch 
 import re 
+import time # <<< ADDED: 导入 time 模块
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QGroupBox, QLabel, QLineEdit, QPushButton,
@@ -63,6 +64,13 @@ class ActorGUI(QMainWindow):
         self.total_client_downloaded_bytes = 0
         self.traffic_log_pattern = re.compile(r"\[\[TRAFFIC_LOG::(UPLOAD|DOWNLOAD)::\+::(\d+)\]\]")
         
+        # <<< ADDED: Runtime tracking variables and timer
+        self.clients_start_time = None
+        self.runtime_timer = QTimer(self)
+        self.runtime_timer.setInterval(1000) # 1 second
+        self.runtime_timer.timeout.connect(self._update_runtime_display)
+        # >>>
+
         self.traffic_update_timer = QTimer(self)
         self.traffic_update_timer.setInterval(500) 
         self.traffic_update_timer.timeout.connect(self._update_client_traffic_display)
@@ -72,6 +80,7 @@ class ActorGUI(QMainWindow):
         self._setup_ui()
         self._load_settings()
         self.update_status_label()
+        self._update_runtime_display() # Initialize the display
 
     def format_bytes(self, bytes_num):
         if bytes_num is None or bytes_num == 0: return "0 B"
@@ -85,6 +94,29 @@ class ActorGUI(QMainWindow):
         self.value_total_downloaded.setText(self.format_bytes(self.total_client_downloaded_bytes))
         self.value_total_uploaded.setText(self.format_bytes(self.total_client_uploaded_bytes))
 
+    # <<< ADDED: Method to update run time display
+    def _update_runtime_display(self):
+        running_count = sum(1 for p in self.processes.values() if p.state() == QProcess.Running)
+
+        if running_count > 0 and self.clients_start_time is not None:
+            elapsed_seconds = int(time.time() - self.clients_start_time)
+            # Format as HH:MM:SS
+            hours, remainder = divmod(elapsed_seconds, 3600)
+            minutes, seconds = divmod(remainder, 60)
+            runtime_str = f"Run Time: {hours:02d}:{minutes:02d}:{seconds:02d} ⏱️"
+            self.runtime_label.setText(runtime_str)
+        elif self.clients_start_time is not None and running_count == 0:
+            # Show final duration when stopped
+            elapsed_seconds = int(time.time() - self.clients_start_time)
+            hours, remainder = divmod(elapsed_seconds, 3600)
+            minutes, seconds = divmod(remainder, 60)
+            runtime_str = f"Total Time: {hours:02d}:{minutes:02d}:{seconds:02d} (Stopped)"
+            self.runtime_label.setText(runtime_str)
+            self.clients_start_time = None # Reset for next run
+        else:
+            self.runtime_label.setText("Run Time: N/A")
+    # >>>
+            
     def reset_traffic_stats(self):
         self.total_client_uploaded_bytes = 0
         self.total_client_downloaded_bytes = 0
@@ -92,6 +124,7 @@ class ActorGUI(QMainWindow):
         self.append_log("--- Client traffic statistics reset ---", 'info')
 
     def _init_default_args(self):
+        # ... (unchanged) ...
         DEFAULT_DEVICE = 'cpu'
         try:
             if torch.cuda.is_available(): DEFAULT_DEVICE = 'cuda'
@@ -137,6 +170,7 @@ class ActorGUI(QMainWindow):
         left_widget.setMinimumWidth(350) 
 
         # 1. Control Box
+        # ... (unchanged) ...
         control_box = QGroupBox("Control Panel")
         control_layout = QGridLayout()
         
@@ -166,6 +200,7 @@ class ActorGUI(QMainWindow):
         control_box.setLayout(control_layout)
         left_layout.addWidget(control_box)
 
+
         # 2. Status Box
         status_box = QGroupBox("Clients Status & Network Traffic") 
         status_layout = QVBoxLayout() 
@@ -173,6 +208,11 @@ class ActorGUI(QMainWindow):
         self.status_label = QLabel()
         self.status_label.setStyleSheet("font-weight: bold;")
         status_layout.addWidget(self.status_label)
+        
+        # <<< ADDED: Runtime Label
+        self.runtime_label = QLabel("Run Time: N/A")
+        status_layout.addWidget(self.runtime_label)
+        # >>>
         
         traffic_group = QGroupBox("Network Traffic (Clients Aggregate)")
         traffic_layout = QGridLayout()
@@ -197,6 +237,7 @@ class ActorGUI(QMainWindow):
         left_layout.addWidget(status_box)
 
         # 3. Parameter Configuration
+        # ... (unchanged) ...
         param_container = QWidget()
         param_layout = QGridLayout(param_container)
         row = 0
@@ -288,6 +329,7 @@ class ActorGUI(QMainWindow):
         self.setCentralWidget(central_widget)
         
     def _log_parameter_change(self, key, value):
+        # ... (unchanged) ...
         widget = self.widgets[key]
         display_value = str(value)
         if isinstance(widget, QCheckBox): display_value = "Enabled" if value == Qt.Checked else "Disabled"
@@ -296,6 +338,7 @@ class ActorGUI(QMainWindow):
         self.append_log(f"[PARAM CHANGE] '{label}' ({key}) set to: {display_value}", 'info')
 
     def _sync_size_to_check(self, value):
+        # ... (unchanged) ...
         checkbox = self.no_cache_checkbox
         checkbox.blockSignals(True)
         if value == 0:
@@ -305,6 +348,7 @@ class ActorGUI(QMainWindow):
         checkbox.blockSignals(False)
 
     def _sync_check_to_size(self, state):
+        # ... (unchanged) ...
         spinbox = self.cache_size_spinbox
         spinbox.blockSignals(True)
         if state == Qt.Checked: spinbox.setValue(0)
@@ -313,10 +357,12 @@ class ActorGUI(QMainWindow):
         spinbox.blockSignals(False)
     
     def clear_log(self):
+        # ... (unchanged) ...
         self.log_text_edit.clear()
         self.append_log("--- Log manually cleared ---", 'info')
 
     def _load_settings(self):
+        # ... (unchanged) ...
         for key, config in self.params.items():
             widget = self.widgets[key]
             widget.blockSignals(True)
@@ -337,6 +383,7 @@ class ActorGUI(QMainWindow):
         self.num_clients_widget.setValue(self.widgets['num_instances'].value())
 
     def _save_settings(self):
+        # ... (unchanged) ...
         for key, config in self.params.items():
             widget = self.widgets[key]
             if isinstance(widget, QSpinBox) or isinstance(widget, QDoubleSpinBox):
@@ -347,6 +394,7 @@ class ActorGUI(QMainWindow):
                 self.settings.setValue(key, widget.text())
 
     def get_client_args(self):
+        # ... (unchanged) ...
         args = []
         num_instances = self.widgets['num_instances'].value()
         for key, config in self.params.items():
@@ -371,11 +419,16 @@ class ActorGUI(QMainWindow):
         self.stop_button.setEnabled(is_running)
         self.reset_button.setEnabled(not is_running)
         for key in self.widgets: self.widgets[key].setEnabled(not is_running)
+        self._update_runtime_display() # Ensure status is updated (e.g., when 0 clients are running)
+
 
     def start_clients(self):
-        if any(p.state() == QProcess.Running for p in self.processes.values()):
+        is_already_running = any(p.state() == QProcess.Running for p in self.processes.values())
+        if is_already_running:
             self.append_log("Some clients are already running. Please stop them first.", 'error')
             return
+        
+        # ... (unchanged) ...
         self.processes.clear() 
         self._save_settings() 
         num_instances, args = self.get_client_args()
@@ -385,6 +438,11 @@ class ActorGUI(QMainWindow):
         python_executable = sys.executable 
         self.append_log(f"--- Preparing to start {num_instances} clients ---", 'info')
         self.append_log(f"Client Arguments: {' '.join(args)}", 'info')
+        
+        # <<< MODIFIED: Set start time and start timer only if successfully starting
+        clients_started = False
+        # >>>
+
         for i in range(1, num_instances + 1):
             instance_id = f"Client-{self.next_instance_id}"
             process = ClientProcess(instance_id, self, self.log_signal, self.process_finished_signal)
@@ -400,9 +458,18 @@ class ActorGUI(QMainWindow):
             else:
                 self.processes[instance_id] = process
                 self.next_instance_id += 1
+                clients_started = True
+
+        # <<< MODIFIED: Start timer if any client successfully started
+        if clients_started:
+             self.clients_start_time = time.time()
+             self.runtime_timer.start() 
+        # >>>
+
         self.update_status_label()
 
     def stop_all_clients(self):
+        # ... (unchanged) ...
         if not self.processes:
             QMessageBox.information(self, "Info", "No clients are currently running.")
             return
@@ -419,11 +486,18 @@ class ActorGUI(QMainWindow):
         if instance_id in self.processes:
             self.processes.pop(instance_id, None)
             self.append_log(f"Client {instance_id} stopped or exited.", 'warning')
+        
         self.update_status_label()
-        if not self.processes and self.start_button.isEnabled() == False:
+        
+        if not self.processes:
+            # <<< MODIFIED: Stop timer and update display when ALL clients are finished
+            self.runtime_timer.stop()
+            self._update_runtime_display() 
+            # >>>
             self.append_log("--- All clients stopped or exited. ---", 'success')
 
     def append_log(self, text, level='normal'):
+        # ... (unchanged) ...
         match = self.traffic_log_pattern.search(text)
         if match:
             direction = match.group(1)
@@ -448,6 +522,7 @@ class ActorGUI(QMainWindow):
         self.log_text_edit.ensureCursorVisible()
 
     def reset_parameters(self):
+        # ... (unchanged) ...
         reply = QMessageBox.question(self, 'Confirm Reset', "Reset parameters to default?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply == QMessageBox.No: return
         self.cache_size_spinbox.blockSignals(True)
@@ -465,6 +540,7 @@ class ActorGUI(QMainWindow):
         else: self.no_cache_checkbox.setChecked(False)
 
     def closeEvent(self, event):
+        # ... (unchanged) ...
         if any(p.state() == QProcess.Running for p in self.processes.values()):
             reply = QMessageBox.question(self, 'Confirm Exit', "Clients are running. Stop before exit?", QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel)
             if reply == QMessageBox.Yes:
