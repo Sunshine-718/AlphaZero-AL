@@ -31,6 +31,8 @@ class ServerProcess(QProcess):
 
     def _handle_stdout(self):
         # Read and decode all standard output data
+        # Note: Decoding is now handled by Python's process streams (PYTHONIOENCODING=utf-8) 
+        # but QProcess still reads raw data. errors='ignore' is a safe fallback.
         data = self.readAllStandardOutput().data().decode('utf-8', errors='ignore').strip()
         if data and self.log_signal:
             self.log_signal.emit(f"[SERVER][STDOUT] {data}", 'normal')
@@ -512,6 +514,13 @@ class ServerGUI(QMainWindow):
         command_list = ['-u', 'server.py'] + args
         self.append_log(f"Command: {python_executable} {' '.join(command_list)}", 'info')
 
+        # === FIX: 设置 PYTHONIOENCODING 为 UTF-8 以支持 Unicode 字符 (如 ⭐ 符号) ===
+        env = QProcessEnvironment.systemEnvironment()
+        # 强制子进程使用 UTF-8 编码进行 I/O，解决 Windows GBK 编码问题
+        env.insert("PYTHONIOENCODING", "utf-8")
+        self.server_process.setProcessEnvironment(env)
+        # =======================================================================
+        
         self.server_process.start(python_executable, command_list)
         
         if not self.server_process.waitForStarted(2000): 
