@@ -1,4 +1,5 @@
 # ======= 配置区：所有重要参数在这里集中定义 =======
+import torch
 import os
 from PyQt5.QtGui import QColor
 
@@ -38,7 +39,7 @@ import time
 from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QSpinBox, QComboBox, QPushButton, QCheckBox
 from PyQt5.QtGui import QPainter
 from PyQt5.QtCore import Qt, QTimer
-import torch
+
 import torch.nn.functional as F
 from src.environments import load
 from src.player import Human, AlphaZeroPlayer
@@ -394,7 +395,6 @@ class Connect4GUI(QWidget):
             self.result_label.setText("平局！点击重新开始。")
 
 if __name__ == "__main__":
-    import torch
     torch.set_num_threads(1)
     torch.set_num_interop_threads(1)
 
@@ -406,3 +406,4 @@ if __name__ == "__main__":
     gui = Connect4GUI()
     gui.show()
     app.exec_()
+    
