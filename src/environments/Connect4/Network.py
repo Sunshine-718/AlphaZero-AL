@@ -3,11 +3,12 @@
 # Written by: Sunshine
 # Created on: 14/Jul/2024  20:41
 import math
+import inspect
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.optim import NAdam, SGD
+from torch.optim import NAdam, SGD, AdamW
 from einops import rearrange
 from ..NetworkBase import Base
 
@@ -33,13 +34,13 @@ def mask(out_ch, in_ch, device='cpu'):
 
 
 class Block(nn.Module):
-    def __init__(self, in_dim, out_dim):
+    def __init__(self, in_dim, out_dim, dropout):
         super().__init__()
         self.conv = nn.Sequential(nn.Conv2d(in_dim, out_dim, kernel_size=1, padding=0, bias=False),
                                   nn.BatchNorm2d(out_dim),
                                   nn.SiLU(True),
                                   nn.Conv2d(out_dim, out_dim, kernel_size=1, padding=0, bias=False))
-        self.dropout = nn.Dropout2d(0.2)
+        self.dropout = nn.Dropout2d(dropout)
         self.norm = nn.BatchNorm2d(out_dim)
 
     def forward(self, x):
@@ -47,15 +48,15 @@ class Block(nn.Module):
 
 
 class CNN(Base):
-    def __init__(self, lr, in_dim=3, h_dim=128, out_dim=7, device='cpu'):
+    def __init__(self, lr, in_dim=3, h_dim=128, out_dim=7, dropout=0.3, device='cpu'):
         super().__init__()
-        self.hidden = nn.Sequential(MaskedConv2d(in_dim, h_dim, mask=mask(h_dim, in_dim, device), kernel_size=7, padding=3),
+        self.hidden = nn.Sequential(MaskedConv2d(in_dim, h_dim, mask=mask(h_dim, in_dim, device), kernel_size=7, padding=3, bias=False),
                                     nn.BatchNorm2d(h_dim),
                                     nn.SiLU(True),
-                                    nn.Dropout2d(0.2),
-                                    Block(h_dim, h_dim),
-                                    Block(h_dim, h_dim),
-                                    Block(h_dim, h_dim))
+                                    nn.Dropout2d(dropout),
+                                    Block(h_dim, h_dim, dropout),
+                                    Block(h_dim, h_dim, dropout),
+                                    Block(h_dim, h_dim, dropout))
         self.policy_middle = nn.Sequential(nn.Conv2d(h_dim, h_dim, kernel_size=(6, 1), bias=False),
                                            nn.BatchNorm2d(h_dim),
                                            nn.SiLU(True))
@@ -71,13 +72,41 @@ class CNN(Base):
                                         nn.SiLU(True),
                                         nn.Linear(6 * 7, 3),
                                         nn.LogSoftmax(dim=-1))
-        self.positional_encoding = nn.Parameter(torch.zeros(1, h_dim, 1, 7))
-        torch.nn.init.normal_(self.positional_encoding, 0, 1e-2)
+        self.positional_encoding = torch.zeros(1, h_dim, 1, 7)
+        torch.nn.init.normal_(self.positional_encoding, 0, 0.02)
+        self.positional_encoding[:, :, :, -1] = torch.clone(self.positional_encoding[:, :, :, 0])
+        self.positional_encoding[:, :, :, -2] = torch.clone(self.positional_encoding[:, :, :, 1])
+        self.positional_encoding[:, :, :, -3] = torch.clone(self.positional_encoding[:, :, :, 2])
+        self.positional_encoding = nn.Parameter(self.positional_encoding)
         self.device = device
         self.n_actions = out_dim
-        self.opt = NAdam(self.parameters(), lr=lr, weight_decay=0.01, decoupled_weight_decay=True)
+        self.apply(self.init_weights)
+        self.opt = self.configure_optimizers(lr, 1e-4, self.device)
         # self.opt = SGD(self.parameters(), lr=lr, momentum=0.9, weight_decay=1e-4)
         self.to(self.device)
+    
+    def init_weights(self, m):
+        if isinstance(m, nn.Conv2d):
+            nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.Linear):
+            nn.init.normal_(m.weight, 0, 0.02)
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+
+    def configure_optimizers(self, lr, weight_decay, device):
+        param_dict = {pn: p for pn, p in self.named_parameters() if p.requires_grad}
+        decay_params = [p for np, p in param_dict.items() if (not np.endswith('.bias')) and ('norm' not in np)]
+        nodecay_params = [p for np, p in param_dict.items() if (np.endswith('.bias') or 'norm' in np)]
+        optim_grops = [
+            {'params': decay_params, 'weight_decay': weight_decay},
+            {'params': nodecay_params, 'weight_decay': 0}
+        ]
+        # fused_available = 'fused' in inspect.signature(AdamW).parameters
+        # use_fused = fused_available and device == 'cuda'
+        # extra_args = dict(fused=True) if use_fused else dict()
+        return NAdam(optim_grops, lr=lr, decoupled_weight_decay=True)
 
     def name(self):
         return 'CNN'

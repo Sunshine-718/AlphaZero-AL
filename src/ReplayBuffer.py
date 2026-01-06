@@ -17,18 +17,12 @@ class ReplayBuffer:
     
     def __init__(self, state_dim, capacity, action_dim, row, col, replay_ratio=0.1, device='cpu', balance_done_value=True):
         if not self._initialized:
-            self.state = torch.full(
-                (capacity, state_dim, row, col), torch.nan, dtype=torch.float32, device=device)
-            self.prob = torch.full(
-                (capacity, action_dim), torch.nan, dtype=torch.float32, device=device)
-            self.discount = torch.full((capacity, 1), torch.nan,
-                                    dtype=torch.float32, device=device)
-            self.winner = torch.full(
-                (capacity, 1), 0, dtype=torch.int32, device=device)
-            self.next_state = torch.full_like(
-                self.state, torch.nan, dtype=torch.float32, device=device)
-            self.done = torch.full_like(
-                self.discount, torch.nan, dtype=torch.bool, device=device)
+            self.state = torch.empty((capacity, state_dim, row, col), dtype=torch.int8, device=device)
+            self.prob = torch.empty((capacity, action_dim), dtype=torch.float32, device=device)
+            self.discount = torch.empty((capacity, 1), dtype=torch.float32, device=device)
+            self.winner = torch.full((capacity, 1), 0, dtype=torch.int8, device=device)
+            self.next_state = torch.empty_like(self.state, dtype=torch.int8, device=device)
+            self.done = torch.empty_like(self.discount, dtype=torch.bool, device=device)
             self.replay_ratio = replay_ratio
             self.device = device
             self.balance_done_value = balance_done_value
@@ -42,12 +36,12 @@ class ReplayBuffer:
         return len(self) >= len(self.state)
 
     def reset(self):
-        self.state = torch.full_like(self.state, torch.nan, dtype=torch.float32)
-        self.prob = torch.full_like(self.prob, torch.nan, dtype=torch.float32)
-        self.discount = torch.full_like(self.discount, torch.nan, dtype=torch.float32)
-        self.winner = torch.full_like(self.winner, torch.nan, dtype=torch.int32)
-        self.next_state = torch.full_like(self.next_state, torch.nan, dtype=torch.float32)
-        self.done = torch.full_like(self.done, torch.nan, dtype=torch.bool)
+        self.state = torch.empty_like(self.state)
+        self.prob = torch.empty_like(self.prob, dtype=torch.float32)
+        self.discount = torch.empty_like(self.discount, dtype=torch.float32)
+        self.winner = torch.empty_like(self.winner, dtype=torch.int8)
+        self.next_state = torch.empty_like(self.next_state, torch.empty)
+        self.done = torch.empty_like(self.done, dtype=torch.bool)
         self._ptr = 0
         self.current_capacity = 2500
 
@@ -78,8 +72,8 @@ class ReplayBuffer:
         return idx
 
     def get(self, indices):
-        return self.state[indices], self.prob[indices], self.discount[indices], \
-            self.winner[indices], self.next_state[indices], self.done[indices]
+        return self.state[indices].float(), self.prob[indices], self.discount[indices], \
+            self.winner[indices], self.next_state[indices].float(), self.done[indices]
 
     def sample(self, batch_size):
         idx = torch.from_numpy(np.random.randint(

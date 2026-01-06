@@ -34,25 +34,27 @@ class Base(ABC, nn.Module):
     def train_step(self, dataloader, augment):
         p_l, v_l = [], []
         self.train()
-        for batch in dataloader:
-            state, prob, discount, winner, next_state, _ = augment(batch)
-            value = deepcopy(winner)
-            value[value == -1] = 2
-            value = value.view(-1,).long()
-            value_oppo = deepcopy(winner)
-            value_oppo[value_oppo == 1] = -2
-            value_oppo = (-value_oppo).view(-1,).long()
-            self.opt.zero_grad()
-            log_p_pred, value_pred = self(state)
-            _, next_value_pred = self(next_state)
-            v_loss = (F.nll_loss(value_pred, value, reduction='none') * discount).mean()
-            v_loss += (F.nll_loss(next_value_pred, value_oppo, reduction='none') * discount).mean()
-            p_loss = torch.mean(torch.sum(-prob * log_p_pred, dim=1))
-            loss = p_loss + v_loss
-            loss.backward()
-            self.opt.step()
-            p_l.append(p_loss.item())
-            v_l.append(v_loss.item())
+
+        for _ in range(5):
+            for batch in dataloader:
+                state, prob, discount, winner, next_state, _ = augment(batch)
+                value = deepcopy(winner)
+                value[value == -1] = 2
+                value = value.view(-1,).long()
+                value_oppo = deepcopy(winner)
+                value_oppo[value_oppo == 1] = -2
+                value_oppo = (-value_oppo).view(-1,).long()
+                self.opt.zero_grad()
+                log_p_pred, value_pred = self(state)
+                _, next_value_pred = self(next_state)
+                v_loss = (F.nll_loss(value_pred, value, reduction='none') * discount).mean()
+                v_loss += (F.nll_loss(next_value_pred, value_oppo, reduction='none') * discount).mean()
+                p_loss = torch.mean(torch.sum(-prob * log_p_pred, dim=1))
+                loss = p_loss + v_loss
+                loss.backward()
+                self.opt.step()
+                p_l.append(p_loss.item())
+                v_l.append(v_loss.item())
         self.eval()
         with torch.no_grad():
             _, new_v = self(state)

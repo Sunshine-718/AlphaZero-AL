@@ -137,8 +137,8 @@ class ServerGUI(QMainWindow):
             ("🧠 2. MCTS & Training Core", {
                 '-n': {'label': 'MCTS Simulations/Action', 'type': QSpinBox, 'default': 100, 'range': (1, UNBOUNDED_INT)}, 
                 '-b': {'label': 'Batch Size', 'type': QSpinBox, 'default': 512, 'range': (1, UNBOUNDED_INT)}, 
-                '--buf': {'label': 'Buffer Size', 'type': QSpinBox, 'default': 5000, 'range': (1, UNBOUNDED_INT)}, 
-                '--lr': {'label': 'Learning Rate', 'type': QDoubleSpinBox, 'default': 1e-3, 'range': (1e-6, 1e-1), 'decimals': 6, 'single_step': 1e-4},
+                '--buf': {'label': 'Buffer Size', 'type': QSpinBox, 'default': 100000, 'range': (1, UNBOUNDED_INT)}, 
+                '--lr': {'label': 'Learning Rate', 'type': QDoubleSpinBox, 'default': 3e-3, 'range': (1e-6, 1e-1), 'decimals': 6, 'single_step': 1e-4},
                 '-c': {'label': 'C_puct Init', 'type': QDoubleSpinBox, 'default': 1.25, 'range': (0.1, 10.0), 'decimals': 3, 'single_step': 0.01},
                 '-a': {'label': 'Dirichlet Alpha', 'type': QDoubleSpinBox, 'default': 0.7, 'range': (0.0, 1.0), 'decimals': 3, 'single_step': 0.01},
                 '-t': {'label': 'Softmax Temperature', 'type': QDoubleSpinBox, 'default': 1, 'range': (0.0, UNBOUNDED_INT), 'decimals': 3, 'single_step': 0.1}, 

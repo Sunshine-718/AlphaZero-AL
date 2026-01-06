@@ -39,11 +39,11 @@ class Game:
             temperature = pow(temp_discount, steps)
             action, probs = player.get_action(self.env, temperature)
             steps += 1
-            states.append(self.env.current_state())
+            states.append(self.env.current_state().astype(np.int8))
             mcts_probs.append(probs)
             current_players.append(self.env.turn)
             self.env.step(action)
-            next_states.append(self.env.current_state())
+            next_states.append(self.env.current_state().astype(np.int8))
             if self.env.done():
                 winner = self.env.winPlayer()
                 winner_z = np.zeros(len(current_players), dtype=np.int32)

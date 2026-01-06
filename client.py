@@ -7,6 +7,9 @@ from src.player import AlphaZeroPlayer
 import argparse
 import signal
 import time
+import warnings
+
+warnings.filterwarnings('error', category=RuntimeWarning)
 
 
 running = True
@@ -93,11 +96,14 @@ class Actor:
     def data_collector(self, n_games=args.n_play):
         self.load_weights()
         data = []
-        for _ in range(n_games):
-            _, play_data = self.game.self_play(self.az_player, temp_discount=args.tempD)
-            play_data = list(play_data)
-            data.append(play_data)
-        self.push_data(data)
+        try:
+            for _ in range(n_games):
+                _, play_data = self.game.self_play(self.az_player, temp_discount=args.tempD)
+                play_data = list(play_data)
+                data.append(play_data)
+            self.push_data(data)
+        except RuntimeWarning:
+            pass
 
 
 if __name__ == '__main__':
