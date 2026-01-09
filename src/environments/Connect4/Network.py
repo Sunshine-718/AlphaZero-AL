@@ -48,7 +48,7 @@ class Block(nn.Module):
 
 
 class CNN(Base):
-    def __init__(self, lr, in_dim=3, h_dim=128, out_dim=7, dropout=0.3, device='cpu'):
+    def __init__(self, lr, in_dim=3, h_dim=128, out_dim=7, dropout=0.2, device='cpu'):
         super().__init__()
         self.hidden = nn.Sequential(MaskedConv2d(in_dim, h_dim, mask=mask(h_dim, in_dim, device), kernel_size=7, padding=3, bias=False),
                                     nn.BatchNorm2d(h_dim),
@@ -74,6 +74,7 @@ class CNN(Base):
                                         nn.LogSoftmax(dim=-1))
         self.positional_encoding = torch.zeros(1, h_dim, 1, 7)
         torch.nn.init.normal_(self.positional_encoding, 0, 0.02)
+        torch.nn.init.constant_(self.policy_head[0].weight, 0)
         self.positional_encoding[:, :, :, -1] = torch.clone(self.positional_encoding[:, :, :, 0])
         self.positional_encoding[:, :, :, -2] = torch.clone(self.positional_encoding[:, :, :, 1])
         self.positional_encoding[:, :, :, -3] = torch.clone(self.positional_encoding[:, :, :, 2])
@@ -81,7 +82,7 @@ class CNN(Base):
         self.device = device
         self.n_actions = out_dim
         self.apply(self.init_weights)
-        self.opt = self.configure_optimizers(lr, 1e-4, self.device)
+        self.opt = self.configure_optimizers(lr, 1e-4)
         # self.opt = SGD(self.parameters(), lr=lr, momentum=0.9, weight_decay=1e-4)
         self.to(self.device)
     
@@ -95,7 +96,7 @@ class CNN(Base):
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
 
-    def configure_optimizers(self, lr, weight_decay, device):
+    def configure_optimizers(self, lr, weight_decay):
         param_dict = {pn: p for pn, p in self.named_parameters() if p.requires_grad}
         decay_params = [p for np, p in param_dict.items() if (not np.endswith('.bias')) and ('norm' not in np)]
         nodecay_params = [p for np, p in param_dict.items() if (np.endswith('.bias') or 'norm' in np)]
