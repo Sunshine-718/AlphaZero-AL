@@ -11,6 +11,8 @@ import torch.nn.functional as F
 from torch.optim import NAdam, SGD, AdamW
 from einops import rearrange
 from ..NetworkBase import Base
+if torch.cuda.is_available():
+    from torch.amp import GradScaler
 
 
 class MaskedConv2d(nn.Conv2d):
@@ -84,6 +86,9 @@ class CNN(Base):
         self.apply(self.init_weights)
         self.opt = self.configure_optimizers(lr, 1e-4)
         # self.opt = SGD(self.parameters(), lr=lr, momentum=0.9, weight_decay=1e-4)
+        self.scaler = None
+        if self.device == 'cuda':
+            self.scaler = GradScaler()
         self.to(self.device)
     
     def init_weights(self, m):

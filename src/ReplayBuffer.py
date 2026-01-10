@@ -15,7 +15,7 @@ class ReplayBuffer:
             cls._instance = super().__new__(cls)
         return cls._instance
     
-    def __init__(self, state_dim, capacity, action_dim, row, col, replay_ratio=0.1, device='cpu', balance_done_value=True):
+    def __init__(self, state_dim, capacity, action_dim, row, col, replay_ratio=0.25, device='cpu', balance_done_value=True):
         if not self._initialized:
             self.state = torch.empty((capacity, state_dim, row, col), dtype=torch.int8, device=device)
             self.prob = torch.empty((capacity, action_dim), dtype=torch.float32, device=device)
@@ -30,7 +30,7 @@ class ReplayBuffer:
             self._ptr = 0
 
     def __len__(self):
-        return len(self.discount[~self.discount.isnan()])
+        return min(self._ptr, len(self.state))
 
     def is_full(self):
         return len(self) >= len(self.state)
@@ -55,8 +55,8 @@ class ReplayBuffer:
         self.device = device
 
     def store(self, state, prob, discount, winner, next_state, done):
-        idx = self._ptr
-        self._ptr = (self._ptr + 1) % self.current_capacity
+        idx = self._ptr % self.current_capacity
+        self._ptr += 1
         if isinstance(state, np.ndarray):
             state = torch.from_numpy(state).float().to(self.device)
         self.state[idx] = state

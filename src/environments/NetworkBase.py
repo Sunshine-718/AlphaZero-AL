@@ -10,6 +10,8 @@ import numpy as np
 from abc import ABC
 from copy import deepcopy
 from sklearn.metrics import f1_score
+if torch.cuda.is_available():
+    from torch.amp import autocast
 
 
 class Base(ABC, nn.Module):
@@ -34,7 +36,6 @@ class Base(ABC, nn.Module):
     def train_step(self, dataloader, augment):
         p_l, v_l = [], []
         self.train()
-
         for _ in range(5):
             for batch in dataloader:
                 state, prob, discount, winner, next_state, _ = augment(batch)
@@ -45,14 +46,26 @@ class Base(ABC, nn.Module):
                 value_oppo[value_oppo == 1] = -2
                 value_oppo = (-value_oppo).view(-1,).long()
                 self.opt.zero_grad()
-                log_p_pred, value_pred = self(state)
-                _, next_value_pred = self(next_state)
-                v_loss = (F.nll_loss(value_pred, value, reduction='none') * discount).mean()
-                v_loss += (F.nll_loss(next_value_pred, value_oppo, reduction='none') * discount).mean()
-                p_loss = torch.mean(torch.sum(-prob * log_p_pred, dim=1))
-                loss = p_loss + v_loss
-                loss.backward()
-                self.opt.step()
+                if self.scaler is None:
+                    log_p_pred, value_pred = self(state)
+                    _, next_value_pred = self(next_state)
+                    v_loss = (F.nll_loss(value_pred, value, reduction='none') * discount).mean()
+                    v_loss += (F.nll_loss(next_value_pred, value_oppo, reduction='none') * discount).mean()
+                    p_loss = torch.mean(torch.sum(-prob * log_p_pred, dim=1))
+                    loss = p_loss + v_loss
+                    loss.backward()
+                    self.opt.step()
+                else:
+                    with autocast(self.device):
+                        log_p_pred, value_pred = self(state)
+                        _, next_value_pred = self(next_state)
+                        v_loss = (F.nll_loss(value_pred, value, reduction='none') * discount).mean()
+                        v_loss += (F.nll_loss(next_value_pred, value_oppo, reduction='none') * discount).mean()
+                        p_loss = torch.mean(torch.sum(-prob * log_p_pred, dim=1))
+                        loss = p_loss + v_loss
+                    self.scaler.scale(loss).backward()
+                    self.scaler.step(self.opt)
+                    self.scaler.update()
                 p_l.append(p_loss.item())
                 v_l.append(v_loss.item())
         self.eval()

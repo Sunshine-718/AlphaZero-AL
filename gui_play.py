@@ -1,4 +1,12 @@
 # ======= 配置区：所有重要参数在这里集中定义 =======
+from src.game import Game
+from src.player import Human, AlphaZeroPlayer
+from src.environments import load
+import torch.nn.functional as F
+from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtGui import QPainter
+from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QSpinBox, QComboBox, QPushButton, QCheckBox
+import time
 import torch
 import os
 from PyQt5.QtGui import QColor
@@ -35,15 +43,6 @@ COLOR_MAP = {
 }
 # ================================================
 
-import time
-from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QSpinBox, QComboBox, QPushButton, QCheckBox
-from PyQt5.QtGui import QPainter
-from PyQt5.QtCore import Qt, QTimer
-
-import torch.nn.functional as F
-from src.environments import load
-from src.player import Human, AlphaZeroPlayer
-from src.game import Game
 
 class Connect4GUI(QWidget):
     def __init__(self):
@@ -122,7 +121,6 @@ class Connect4GUI(QWidget):
         self.speed_input.valueChanged.connect(lambda _: self.reload_timer.start(500))
         self.layout.addWidget(self.speed_label)
         self.layout.addWidget(self.speed_input)
-
 
         # 重新开始按钮
         self.reset_button = QPushButton("重新开始")
@@ -228,7 +226,6 @@ class Connect4GUI(QWidget):
         if self.env.turn == -1 * self.player_color:
             self.ai_move()
 
-
     def paintEvent(self, event):
         qp = QPainter()
         qp.begin(self)
@@ -289,10 +286,10 @@ class Connect4GUI(QWidget):
 
         # 计算棋盘的像素边界
         x, y = event.x(), event.y()
-        board_left   = self.margin
-        board_top    = self.margin
-        board_right  = board_left + self.cell_size * 7
-        board_bottom = board_top  + self.cell_size * 6
+        board_left = self.margin
+        board_top = self.margin
+        board_right = board_left + self.cell_size * 7
+        board_bottom = board_top + self.cell_size * 6
 
         # 若点击不在棋盘矩形内，直接忽略
         if not (board_left <= x < board_right and board_top <= y < board_bottom):
@@ -394,6 +391,7 @@ class Connect4GUI(QWidget):
         else:
             self.result_label.setText("平局！点击重新开始。")
 
+
 if __name__ == "__main__":
     torch.set_num_threads(1)
     torch.set_num_interop_threads(1)
@@ -406,4 +404,3 @@ if __name__ == "__main__":
     gui = Connect4GUI()
     gui.show()
     app.exec_()
-    

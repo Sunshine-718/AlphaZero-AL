@@ -1,5 +1,4 @@
 import os
-import torch
 import numpy as np
 from .utils import Elo
 from .game import Game
