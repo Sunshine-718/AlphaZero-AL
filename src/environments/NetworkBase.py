@@ -14,6 +14,25 @@ if torch.cuda.is_available():
     from torch.amp import autocast
 
 
+def get_gradient(model, state):
+    state.requires_grad_(True)
+    probs, values = model(state)
+    grads = torch.autograd.grad(inputs=state,
+                                outputs=[probs, values],
+                                grad_outputs=[torch.ones_like(probs), torch.ones_like(values)],
+                                create_graph=True,
+                                retain_graph=True)[0]
+    return grads
+
+
+def gradient_penalty(gradient, c_lambda=10):
+    if gradient is None:
+        return 0
+    gradient = gradient.view(len(gradient), -1)
+    grad_norm = gradient.norm(2, dim=1)
+    return torch.mean(grad_norm - 0.5) ** 2 * c_lambda
+
+
 class Base(ABC, nn.Module):
     def save(self, path=None):
         while True:
@@ -32,13 +51,13 @@ class Base(ABC, nn.Module):
                 self.load_state_dict(torch.load(path, map_location=self.device))
             except Exception as e:
                 print(f'Failed to load parameters.\n{e}')
-    
+
     def train_step(self, dataloader, augment):
         p_l, v_l = [], []
         self.train()
-        for _ in range(5):
+        for _ in range(10):
             for batch in dataloader:
-                state, prob, discount, winner, next_state, _ = augment(batch)
+                state, _, prob, discount, winner, next_state, _ = augment(batch)
                 value = deepcopy(winner)
                 value[value == -1] = 2
                 value = value.view(-1,).long()
@@ -52,7 +71,10 @@ class Base(ABC, nn.Module):
                     v_loss = (F.nll_loss(value_pred, value, reduction='none') * discount).mean()
                     v_loss += (F.nll_loss(next_value_pred, value_oppo, reduction='none') * discount).mean()
                     p_loss = torch.mean(torch.sum(-prob * log_p_pred, dim=1))
-                    loss = p_loss + v_loss
+                    p_loss += 0.01 * -log_p_pred.mean()
+                    grad = get_gradient(self, state)
+                    gp = gradient_penalty(grad)
+                    loss = p_loss + v_loss + gp
                     loss.backward()
                     self.opt.step()
                 else:
@@ -62,6 +84,10 @@ class Base(ABC, nn.Module):
                         v_loss = (F.nll_loss(value_pred, value, reduction='none') * discount).mean()
                         v_loss += (F.nll_loss(next_value_pred, value_oppo, reduction='none') * discount).mean()
                         p_loss = torch.mean(torch.sum(-prob * log_p_pred, dim=1))
+                        p_loss += 0.01 * -log_p_pred.mean()
+                        grad = get_gradient(self, state)
+                        gp = gradient_penalty(grad)
+                        loss = p_loss + v_loss + gp
                         loss = p_loss + v_loss
                     self.scaler.scale(loss).backward()
                     self.scaler.step(self.opt)
@@ -80,4 +106,3 @@ class Base(ABC, nn.Module):
                 total_norm += param_norm.item() ** 2
             total_norm = total_norm ** 0.5
         return np.mean(p_l), np.mean(v_l), float(entropy), total_norm, f1
-                

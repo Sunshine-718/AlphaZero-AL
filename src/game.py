@@ -33,13 +33,14 @@ class Game:
 
     def self_play(self, player, temp_discount=0.93):
         self.env.reset()
-        states, mcts_probs, current_players, next_states = [], [], [], []
+        states, actions, mcts_probs, current_players, next_states = [], [], [], [], []
         steps = 0
         while True:
             temperature = pow(temp_discount, steps)
             action, probs = player.get_action(self.env, temperature)
             steps += 1
             states.append(self.env.current_state().astype(np.int8))
+            actions.append(action)
             mcts_probs.append(probs)
             current_players.append(self.env.turn)
             self.env.step(action)
@@ -53,4 +54,4 @@ class Game:
                 discount = reversed([pow(player.discount, i) for i in range(len(winner_z))])
                 dones = [False]*len(current_players)
                 dones[-1] = True
-                return winner, zip(states, mcts_probs, discount, winner_z, next_states, dones)
+                return winner, zip(states, actions, mcts_probs, discount, winner_z, next_states, dones)

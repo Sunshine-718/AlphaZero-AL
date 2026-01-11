@@ -27,7 +27,7 @@ def state_to_board(state):
         tmp = np.zeros((1, 3, H, W), dtype=np.float32)
         tmp[0, :, :, :] = state
         state = tmp
-    
+
     H, W = state.shape[2], state.shape[3]
     board = np.zeros((H, W), dtype=np.float32)
 
@@ -109,7 +109,7 @@ def inspect(net, board=None):
 
 
 def augment(batch):
-    state, prob, discount, winner, next_state, done = batch
+    state, action, prob, discount, winner, next_state, done = batch
 
     state_flipped = torch.flip(state, dims=[3])
     next_state_flipped = torch.flip(next_state, dims=[3])
@@ -117,12 +117,13 @@ def augment(batch):
 
     state = torch.cat([state, state_flipped], dim=0)
     next_state = torch.cat([next_state, next_state_flipped], dim=0)
+    action = torch.cat([action, 6 - action], dim=0)
     prob = torch.cat([prob, prob_flipped], dim=0)
     discount = torch.cat([discount, discount], dim=0)
     done = torch.cat([done, done], dim=0)
     winner = torch.cat([winner, winner], dim=0)
 
-    return state, prob, discount, winner, next_state, done
+    return state, action, prob, discount, winner, next_state, done
 
 
 @njit
@@ -144,6 +145,7 @@ def print_row(action, probX, probO, max_X, max_O):
 @njit
 def valid_move(board):
     return [i for i in range(board.shape[1]) if 0 in board[:, i]]
+
 
 @njit
 def valid_mask(board):

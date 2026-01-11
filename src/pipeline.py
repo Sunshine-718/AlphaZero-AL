@@ -48,7 +48,7 @@ class TrainPipeline:
         raise NotImplementedError
 
     def policy_update(self):
-        dataloader = self.buffer.dataloader(self.batch_size)
+        dataloader = self.buffer.sample(self.batch_size)
 
         p_l, v_l, ent, g_n, f1 = self.net.train_step(dataloader, self.module.augment)
 
