@@ -70,8 +70,7 @@ class Base(ABC, nn.Module):
                     _, next_value_pred = self(next_state)
                     v_loss = (F.nll_loss(value_pred, value, reduction='none') * discount).mean()
                     v_loss += (F.nll_loss(next_value_pred, value_oppo, reduction='none') * discount).mean()
-                    p_loss = torch.mean(torch.sum(-prob * log_p_pred, dim=1))
-                    p_loss += 0.01 * -log_p_pred.mean()
+                    p_loss = torch.mean(torch.sum(-prob * log_p_pred - 0.01 * log_p_pred, dim=1))
                     grad = get_gradient(self, state)
                     gp = gradient_penalty(grad)
                     loss = p_loss + v_loss + gp
@@ -83,8 +82,7 @@ class Base(ABC, nn.Module):
                         _, next_value_pred = self(next_state)
                         v_loss = (F.nll_loss(value_pred, value, reduction='none') * discount).mean()
                         v_loss += (F.nll_loss(next_value_pred, value_oppo, reduction='none') * discount).mean()
-                        p_loss = torch.mean(torch.sum(-prob * log_p_pred, dim=1))
-                        p_loss += 0.01 * -log_p_pred.mean()
+                        p_loss = torch.mean(torch.sum(-prob * log_p_pred - 0.01 * log_p_pred, dim=1))
                         grad = get_gradient(self, state)
                         gp = gradient_penalty(grad)
                         loss = p_loss + v_loss + gp
