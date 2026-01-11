@@ -80,15 +80,15 @@ class ReplayBuffer:
 
     def sample(self, batch_size):
         total_samples = len(self)
-        max_samples = int(total_samples * self.replay_ratio) if len(self.state) > 10000 else min(total_samples, 10000)
-        idx = torch.from_numpy(np.random.randint(
-            0, len(self), max_samples, dtype=np.int64))
+        assert len(self) > 0
+        max_samples = int(total_samples * self.replay_ratio) if len(self) > 10000 else min(total_samples, 10000)
+        idx = torch.from_numpy(np.random.randint(0, len(self), max_samples, dtype=np.int64))
         dataset = TensorDataset(*self.get(idx))
         return DataLoader(dataset, batch_size, True)
 
     def dataloader(self, batch_size):
         total_samples = len(self)
-        max_samples = int(total_samples * self.replay_ratio) if len(self.state) > 10000 else min(total_samples, 10000)
+        max_samples = int(total_samples * self.replay_ratio) if len(self) > 10000 else min(total_samples, 10000)
         if total_samples <= 10000:
             max_samples = total_samples
         if max_samples <= 0:
@@ -147,7 +147,7 @@ class ReplayBuffer:
     def sample_balanced(self, batch_size):
         # 采样上限逻辑
         total_samples = len(self)
-        max_samples = int(total_samples * self.replay_ratio) if len(self.state) > 10000 else min(total_samples, 10000)
+        max_samples = int(total_samples * self.replay_ratio) if len(self) > 10000 else min(total_samples, 10000)
 
         winner = self.winner[:total_samples].squeeze()  # [N]
         if not torch.allclose(winner, winner.round()):

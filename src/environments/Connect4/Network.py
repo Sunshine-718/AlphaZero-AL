@@ -70,13 +70,15 @@ class CNN(Base):
                                         nn.SiLU(True),
                                         nn.Flatten(),
                                         nn.Linear(6 * 7, 6 * 7),
-                                        nn.LayerNorm(6 * 7),
+                                        nn.BatchNorm1d(6 * 7),
+                                        nn.Dropout(dropout),
                                         nn.SiLU(True),
                                         nn.Linear(6 * 7, 3),
                                         nn.LogSoftmax(dim=-1))
         self.positional_encoding = torch.zeros(1, h_dim, 1, 7)
-        torch.nn.init.normal_(self.positional_encoding, 0, 0.02)
-        torch.nn.init.constant_(self.policy_head[0].weight, 0)
+        nn.init.normal_(self.positional_encoding, 0, 0.02)
+        nn.init.constant_(self.policy_head[0].weight, 0)
+        nn.init.constant_(self.value_head[-2].weight, 0)
         self.positional_encoding[:, :, :, -1] = torch.clone(self.positional_encoding[:, :, :, 0])
         self.positional_encoding[:, :, :, -2] = torch.clone(self.positional_encoding[:, :, :, 1])
         self.positional_encoding[:, :, :, -3] = torch.clone(self.positional_encoding[:, :, :, 2])
