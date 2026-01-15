@@ -108,7 +108,7 @@ class TrainPipeline:
         print(f'\tBatch size: {self.batch_size}')
         print(f'\tTemperature: {self.temp}')
         print('=' * 50)
-    
+
     def update_best_net(self):
         self.best_net = deepcopy(self.net)
 
@@ -116,8 +116,10 @@ class TrainPipeline:
         self.show_hyperparams()
 
         writer = SummaryWriter(filename_suffix=self.name)
-        
+
         best_counter = 0
+        
+        self.buffer.load('./dataset/dataset.pt')
         while True:
             self.data_collector()
             p_loss, v_loss, entropy, grad_norm = float('inf'), float('inf'), float('inf'), float('inf')
@@ -126,8 +128,8 @@ class TrainPipeline:
             self.net.save(self.current)
 
             print(f'batch i: {self.global_step}, episode_len: {self.episode_len}, '
-                  f'loss: {p_loss + v_loss: .8f}, entropy: {entropy: .8f}')
-
+                    f'loss: {p_loss + v_loss: .8f}, entropy: {entropy: .8f}')
+            writer.add_scalar('Metric/lr', self.net.opt.param_groups[0]['lr'], self.global_step)
             writer.add_scalar('Metric/Gradient Norm', grad_norm, self.global_step)
             writer.add_scalar('Metric/F1 score', f1, self.global_step)
             writer.add_scalars('Metric/Loss', {'Action Loss': p_loss, 'Value loss': v_loss}, self.global_step)
@@ -141,17 +143,19 @@ class TrainPipeline:
             r_a, r_b = self.update_elo()
             print(f'Elo score: AlphaZero: {r_a: .2f}, Benchmark: {r_b: .2f}')
             writer.add_scalars('Metric/Elo', {f'AlphaZero_{self.n_playout}': r_a,
-                                              f'MCTS_{self.pure_mcts_n_playout}': r_b}, self.global_step)
+                                                f'MCTS_{self.pure_mcts_n_playout}': r_b}, self.global_step)
 
             if self.env_name == 'Connect4':
                 p0, v0, p1, v1 = self.module.inspect(self.net)
                 writer.add_scalars('Metric/Initial Value', {'X': v0, 'O': v1}, self.global_step)
-                writer.add_scalars('Action probability/X', {str(idx): i for idx, i in enumerate(p0)}, self.global_step)
-                writer.add_scalars('Action probability/O', {str(idx): i for idx, i in enumerate(p1)}, self.global_step)
+                writer.add_scalars('Action probability/X',
+                                    {str(idx): i for idx, i in enumerate(p0)}, self.global_step)
+                writer.add_scalars('Action probability/O',
+                                    {str(idx): i for idx, i in enumerate(p1)}, self.global_step)
                 writer.add_scalars('Action probability/X_cummulative',
-                                   {str(idx): i for idx, i in enumerate(np.cumsum(p0))}, self.global_step)
+                                    {str(idx): i for idx, i in enumerate(np.cumsum(p0))}, self.global_step)
                 writer.add_scalars('Action probability/O_cummulative',
-                                   {str(idx): i for idx, i in enumerate(np.cumsum(p1))}, self.global_step)
+                                    {str(idx): i for idx, i in enumerate(np.cumsum(p1))}, self.global_step)
 
             flag, win_rate = self.select_best_player(self.num_eval)
             writer.add_scalar('Metric/win rate', win_rate, self.global_step)
@@ -160,6 +164,8 @@ class TrainPipeline:
                 best_counter += 1
                 writer.add_scalar('Metric/Best policy', best_counter, self.global_step)
                 self.net.save(self.best)
+                os.makedirs('dataset', exist_ok=True)
+                self.buffer.save('./dataset/dataset.pt')
 
     def __call__(self):
         self.run()

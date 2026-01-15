@@ -16,7 +16,7 @@ class ReplayBuffer:
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, state_dim, capacity, action_dim, row, col, replay_ratio=0.1, device='cpu', balance_done_value=True):
+    def __init__(self, state_dim, capacity, action_dim, row, col, replay_ratio=0.25, device='cpu', balance_done_value=True):
         if not self._initialized:
             self.state = torch.empty((capacity, state_dim, row, col), dtype=torch.int8, device=device)
             self.action = torch.empty((capacity, 1), dtype=torch.int16, device=device)
@@ -30,6 +30,35 @@ class ReplayBuffer:
             self.balance_done_value = balance_done_value
             self.current_capacity = capacity
             self._ptr = 0
+
+    def save(self, path):
+        state_dict = {
+            'state': self.state,
+            'action': self.action,
+            'prob': self.prob,
+            'discount': self.discount,
+            'winner': self.winner,
+            'next_state': self.next_state,
+            'done': self.done,
+            '_ptr': self._ptr,
+            'current_capacity': self.current_capacity
+        }
+        torch.save(state_dict, path)
+
+    def load(self, path):
+        try:
+            state_dict = torch.load(path, map_location=self.device)
+            self.state.copy_(state_dict['state'])
+            self.action.copy_(state_dict['action'])
+            self.prob.copy_(state_dict['prob'])
+            self.discount.copy_(state_dict['discount'])
+            self.winner.copy_(state_dict['winner'])
+            self.next_state.copy_(state_dict['next_state'])
+            self.done.copy_(state_dict['done'])
+            self._ptr = state_dict['_ptr']
+        except Exception as e:
+            print(e)
+        return self
 
     def __len__(self):
         return min(self._ptr, len(self.state))

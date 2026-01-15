@@ -1,4 +1,6 @@
 import os
+import time
+import random
 import torch
 import queue
 import pickle
@@ -9,7 +11,7 @@ from src.pipeline import TrainPipeline
 from src.ReplayBuffer import ReplayBuffer
 from flask import Flask, request, jsonify
 import argparse
-import sys # ADDED: For explicit stdout printing
+import sys  # ADDED: For explicit stdout printing
 
 # --- 新增: 流量统计全局变量 ---
 TOTAL_RECEIVED_BYTES = 0
@@ -25,7 +27,7 @@ parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
 parser.add_argument('-c', '--c_init', type=float, default=1.25, help='C_puct init')
 parser.add_argument('-a', '--alpha', type=float, default=0.7, help='Dirichlet alpha')
 parser.add_argument('-b', '--batch_size', type=int, default=512, help='Batch size')
-parser.add_argument('--buf', '--buffer_size', type=int, default=100000, help='Buffer size')
+parser.add_argument('--buf', '--buffer_size', type=int, default=50000, help='Buffer size')
 parser.add_argument('--mcts_n', type=int, default=1000, help='MCTS n_playout')
 parser.add_argument('--n_play', type=int, default=1, help='n_playout')
 parser.add_argument('--discount', type=float, default=0.99, help='Discount factor')
@@ -94,7 +96,7 @@ def upload():
         # ADDED: Log traffic for GUI to capture (Server RECEIVED = Client UPLOAD)
         print(f"[[TRAFFIC_LOG::RECEIVED::+::{data_len}]]", file=sys.stdout)
     # -----------------------
-    
+
     data = pickle.loads(request.data)
     for d in data:
         print(f'Received data from {request.remote_addr}:{request.environ.get("REMOTE_PORT")}')
@@ -104,7 +106,10 @@ def upload():
 
 @app.route('/weights', methods=['GET'])
 def weights():
-    mtime = os.path.getmtime(pipeline.current)
+    try:
+        mtime = os.path.getmtime(pipeline.current)
+    except FileNotFoundError:
+        mtime = time.time()
     try:
         client_ts = float(request.args.get('ts', 0))
     except ValueError:
@@ -112,18 +117,23 @@ def weights():
     if client_ts == 0:
         print(f'Client {request.remote_addr}:{request.environ.get("REMOTE_PORT")} connected.')
     if mtime > client_ts and os.path.exists(pipeline.current):
-        params = torch.load(pipeline.current, map_location='cpu')
-        
+        while True:
+            try:
+                params = torch.load(pipeline.current, map_location='cpu')['model_state_dict']
+                break
+            except RuntimeError:
+                time.sleep(1)
+
         # --- 流量统计: 发送流量 ---
         payload = pickle.dumps(params, protocol=pickle.HIGHEST_PROTOCOL)
         payload_len = len(payload)
         global TOTAL_SENT_BYTES
         TOTAL_SENT_BYTES += payload_len
-        
+
         # ADDED: Log traffic for GUI to capture (Server SENT = Client DOWNLOAD)
         print(f"[[TRAFFIC_LOG::SENT::+::{payload_len}]]", file=sys.stdout)
         # ------------------------
-        
+
         return payload, 200, {
             'Content-Type': 'application/octet-stream',
             'X-Timestamp': str(mtime)
@@ -132,6 +142,8 @@ def weights():
         return '', 304
 
 # --- 接口: 状态查询 (供 GUI 使用) ---
+
+
 @app.route('/status', methods=['GET'])
 def status():
     return jsonify({
@@ -141,6 +153,8 @@ def status():
 # -------------------------------------
 
 # --- 接口: 重置流量统计 (NEW) ---
+
+
 @app.route('/reset_traffic', methods=['POST'])
 def reset_traffic():
     global TOTAL_RECEIVED_BYTES
@@ -152,7 +166,18 @@ def reset_traffic():
 # -------------------------------------
 
 
+def setup_seed(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
 if __name__ == '__main__':
+    setup_seed(0)
     log_file = 'flask_access.log'
     with open(log_file, 'w'):
         pass
@@ -170,5 +195,5 @@ if __name__ == '__main__':
     log.setLevel(logging.INFO)
     log.handlers = [handler]
     app.logger.handlers = [handler]
-    
+
     app.run(host=args.host, port=args.port, debug=False, use_reloader=False)

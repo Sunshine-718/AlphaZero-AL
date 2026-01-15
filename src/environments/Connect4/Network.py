@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import NAdam, SGD, AdamW
+from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
 from einops import rearrange
 from ..NetworkBase import Base
 if torch.cuda.is_available():
@@ -35,64 +36,70 @@ def mask(out_ch, in_ch, device='cpu'):
     return m[None, None, :, :].expand(out_ch, in_ch, m.shape[0], m.shape[1]).clone()
 
 
-class Block(nn.Module):
+class ResidualConv2d(nn.Module):
     def __init__(self, in_dim, out_dim, dropout):
         super().__init__()
         self.conv = nn.Sequential(nn.Conv2d(in_dim, out_dim, kernel_size=1, padding=0, bias=False),
                                   nn.BatchNorm2d(out_dim),
                                   nn.SiLU(True),
-                                  nn.Conv2d(out_dim, out_dim, kernel_size=1, padding=0, bias=False))
+                                  nn.Conv2d(out_dim, out_dim, kernel_size=1, padding=0),
+                                  nn.BatchNorm2d(out_dim))
         self.dropout = nn.Dropout2d(dropout)
-        self.norm = nn.BatchNorm2d(out_dim)
 
     def forward(self, x):
-        return self.dropout(F.silu(self.norm(x + self.conv(x))))
+        return self.dropout(F.silu(x + self.conv(x)))
+
+
+class ResidualLinear(nn.Module):
+    def __init__(self, n_dim, dropout):
+        super().__init__()
+        self.linear = nn.Sequential(nn.Linear(n_dim, n_dim),
+                                    nn.BatchNorm1d(n_dim))
+        self.dropout = nn.Dropout(dropout)
+    
+    def forward(self, x):
+        return self.dropout(F.silu(x + self.linear(x)))
 
 
 class CNN(Base):
-    def __init__(self, lr, in_dim=3, h_dim=128, out_dim=7, dropout=0.2, device='cpu'):
+    def __init__(self, lr, in_dim=3, h_dim=256, out_dim=7, dropout=0.05, device='cpu'):
         super().__init__()
         self.hidden = nn.Sequential(MaskedConv2d(in_dim, h_dim, mask=mask(h_dim, in_dim, device), kernel_size=7, padding=3, bias=False),
                                     nn.BatchNorm2d(h_dim),
                                     nn.SiLU(True),
                                     nn.Dropout2d(dropout),
-                                    Block(h_dim, h_dim, dropout),
-                                    Block(h_dim, h_dim, dropout),
-                                    Block(h_dim, h_dim, dropout))
-        self.policy_middle = nn.Sequential(nn.Conv2d(h_dim, h_dim, kernel_size=(6, 1), bias=False),
-                                           nn.BatchNorm2d(h_dim),
-                                           nn.SiLU(True))
-        self.policy_head = nn.Sequential(nn.Conv2d(h_dim, 1, kernel_size=1),
+                                    ResidualConv2d(h_dim, h_dim, dropout),
+                                    ResidualConv2d(h_dim, h_dim, dropout),
+                                    ResidualConv2d(h_dim, h_dim, dropout))
+        self.policy_head = nn.Sequential(nn.Conv2d(h_dim, h_dim // 4, kernel_size=(6, 1), bias=False),
+                                         nn.BatchNorm2d(h_dim // 4),
+                                         nn.Dropout2d(dropout),
+                                         nn.SiLU(True),
                                          nn.Flatten(),
+                                         nn.Linear(7 * (h_dim // 4), 7),
                                          nn.LogSoftmax(dim=-1))
         self.value_head = nn.Sequential(nn.Conv2d(h_dim, 1, kernel_size=(3, 3), padding=(1, 1), bias=False),
                                         nn.BatchNorm2d(1),
                                         nn.SiLU(True),
                                         nn.Flatten(),
-                                        nn.Linear(6 * 7, 6 * 7),
-                                        nn.BatchNorm1d(6 * 7),
-                                        nn.Dropout(dropout),
-                                        nn.SiLU(True),
+                                        ResidualLinear(6 * 7, dropout),
                                         nn.Linear(6 * 7, 3),
                                         nn.LogSoftmax(dim=-1))
-        self.positional_encoding = torch.zeros(1, h_dim, 1, 7)
-        nn.init.normal_(self.positional_encoding, 0, 0.02)
-        nn.init.constant_(self.policy_head[0].weight, 0)
+        nn.init.constant_(self.policy_head[-2].weight, 0)
         nn.init.constant_(self.value_head[-2].weight, 0)
-        self.positional_encoding[:, :, :, -1] = torch.clone(self.positional_encoding[:, :, :, 0])
-        self.positional_encoding[:, :, :, -2] = torch.clone(self.positional_encoding[:, :, :, 1])
-        self.positional_encoding[:, :, :, -3] = torch.clone(self.positional_encoding[:, :, :, 2])
-        self.positional_encoding = nn.Parameter(self.positional_encoding)
         self.device = device
         self.n_actions = out_dim
         self.apply(self.init_weights)
         self.opt = self.configure_optimizers(lr, 1e-4)
         # self.opt = SGD(self.parameters(), lr=lr, momentum=0.9, weight_decay=1e-4)
+        scheduler_warmup = LinearLR(self.opt, start_factor=1e-8, total_iters=100)
+        scheduler_cosine = CosineAnnealingLR(self.opt, T_max=1000, eta_min=lr * 0.1)
+        self.scheduler = SequentialLR(self.opt, schedulers=[scheduler_warmup, scheduler_cosine], milestones=[100])
         self.scaler = None
         if self.device == 'cuda':
             self.scaler = GradScaler()
         self.to(self.device)
-    
+
     def init_weights(self, m):
         if isinstance(m, nn.Conv2d):
             nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
@@ -121,34 +128,32 @@ class CNN(Base):
 
     def forward(self, x):
         hidden = self.hidden(x)
-        p_laten = self.policy_middle(hidden)
-        log_prob = self.policy_head(p_laten + self.positional_encoding)
+        log_prob = self.policy_head(hidden)
         value = self.value_head(hidden)
         return log_prob, value
 
+    @torch.no_grad()
     def policy(self, state):
         self.eval()
         if isinstance(state, np.ndarray):
             state = torch.from_numpy(state).float().to(self.device)
-        with torch.no_grad():
-            hidden = self.hidden(state)
-            p_laten = self.policy_middle(hidden)
-            return self.policy_head(p_laten + self.positional_encoding).exp().cpu().numpy()
+        hidden = self.hidden(state)
+        return self.policy_head(hidden).exp().cpu().numpy()
 
+    @torch.no_grad()
     def value(self, state):
         self.eval()
-        with torch.no_grad():
-            hidden = self.hidden(state)
-            return self.value_head(hidden).exp().cpu().numpy()
+        hidden = self.hidden(state)
+        return self.value_head(hidden).exp().cpu().numpy()
 
+    @torch.no_grad()
     def predict(self, state, draw_factor=0.5):
         state = torch.from_numpy(state).float().to(self.device)
         self.eval()
-        with torch.no_grad():
-            log_prob, value_log_prob = self.forward(state)
-            value_prob = value_log_prob.exp()
-            player = state[:, -1, 0, 0].view(-1,)
-            value = (-player) * draw_factor * value_prob[:, 0] + value_prob[:, 1] - value_prob[:, 2]
+        log_prob, value_log_prob = self.forward(state)
+        value_prob = value_log_prob.exp()
+        player = state[:, -1, 0, 0].view(-1,)
+        value = (-player) * draw_factor * value_prob[:, 0] + value_prob[:, 1] - value_prob[:, 2]
         return log_prob.exp().cpu().numpy(), value.cpu().view(-1, 1).numpy()
 
 
@@ -191,6 +196,9 @@ class ViT(Base):
         self.device = device
         self.to(device)
         self.opt = NAdam(self.parameters(), lr=lr, weight_decay=1e-4, decoupled_weight_decay=True)
+        scheduler_warmup = LinearLR(self.opt, start_factor=1e-6, total_iters=100)
+        scheduler_cosine = CosineAnnealingLR(self.opt, T_max=2000, eta_min=lr * 0.1)
+        self.scheduler = SequentialLR(self.opt, schedulers=[scheduler_warmup, scheduler_cosine], milestones=[100])
 
     def name(self):
         return 'ViT'

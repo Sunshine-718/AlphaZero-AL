@@ -7,7 +7,7 @@ class LRUCache:
         match capacity:
             case None:
                 self._cap = float('inf')
-            case n if int(n) == n and n > 0:
+            case n if int(n) == n and n >= 0:
                 self._cap = n
             case _:
                 raise ValueError
