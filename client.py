@@ -28,7 +28,7 @@ parser.add_argument('--port', '-P', '-p', type=int, default=7718, help='Port num
 parser.add_argument('-c', '--c_init', type=float, default=1.25, help='C_puct init')
 parser.add_argument('-a', '--alpha', type=float, default=0.7, help='Dirichlet alpha')
 parser.add_argument('--n_play', type=int, default=1, help='n_playout')
-parser.add_argument('--discount', type=float, default=0.99, help='Discount factor')
+parser.add_argument('--discount', type=float, default=1, help='Discount factor')
 parser.add_argument('-t', '--temp', '--temperature', type=float, default=1, help='Softmax temperature')
 parser.add_argument('--tempD', type=float, default=0.93, help='Temperature discount factor')
 parser.add_argument('-m', '--model', type=str, default='CNN', help='Model type (CNN)')

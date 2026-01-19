@@ -10,9 +10,6 @@ import numpy as np
 from abc import ABC
 from copy import deepcopy
 from sklearn.metrics import f1_score
-if torch.cuda.is_available():
-    from torch.amp import autocast
-
 
 def get_gradient(model, state):
     state.requires_grad_(True)
@@ -40,8 +37,7 @@ class Base(ABC, nn.Module):
                 if path is not None:
                     checkpoint = {'model_state_dict': self.state_dict(),
                                   'opt_state_dict': self.opt.state_dict(),
-                                  'scheduler_state_dict': self.scheduler.state_dict(),
-                                  'scaler_state_dict': self.scaler.state_dict() if self.scaler else None}
+                                  'scheduler_state_dict': self.scheduler.state_dict()}
                     torch.save(checkpoint, path)
                     break
             except RuntimeError:
@@ -56,8 +52,6 @@ class Base(ABC, nn.Module):
                 self.load_state_dict(checkpoint['model_state_dict'])
                 self.opt.load_state_dict(checkpoint['opt_state_dict'])
                 self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-                if self.scaler is not None and checkpoint['scaler_state_dict'] is not None:
-                    self.scaler.load_state_dict(checkpoint['scaler_state_dict'])
             except Exception as e:
                 print(f'Failed to load parameters.\n{e}')
         return self
@@ -75,30 +69,16 @@ class Base(ABC, nn.Module):
                 value_oppo[value_oppo == 1] = -2
                 value_oppo = (-value_oppo).view(-1,).long()
                 self.opt.zero_grad()
-                if self.scaler is None:
-                    log_p_pred, value_pred = self(state)
-                    _, next_value_pred = self(next_state)
-                    v_loss = (F.nll_loss(value_pred, value, reduction='none') * discount).mean()
-                    v_loss += (F.nll_loss(next_value_pred, value_oppo, reduction='none') * discount).mean()
-                    p_loss = torch.mean(torch.sum(-prob * log_p_pred - 0.03 * log_p_pred, dim=1))
-                    # grad = get_gradient(self, state)
-                    # gp = gradient_penalty(grad)
-                    loss = p_loss + v_loss
-                    loss.backward()
-                    self.opt.step()
-                else:
-                    with autocast(self.device):
-                        log_p_pred, value_pred = self(state)
-                        _, next_value_pred = self(next_state)
-                        v_loss = (F.nll_loss(value_pred, value, reduction='none') * discount).mean()
-                        v_loss += (F.nll_loss(next_value_pred, value_oppo, reduction='none') * discount).mean()
-                        p_loss = torch.mean(torch.sum(-prob * log_p_pred - 0.03 * log_p_pred, dim=1))
-                        # grad = get_gradient(self, state)
-                        # gp = gradient_penalty(grad)
-                        loss = p_loss + v_loss
-                    self.scaler.scale(loss).backward()
-                    self.scaler.step(self.opt)
-                    self.scaler.update()
+                log_p_pred, value_pred = self(state)
+                _, next_value_pred = self(next_state)
+                v_loss = (F.nll_loss(value_pred, value, reduction='none') * discount).mean()
+                v_loss += (F.nll_loss(next_value_pred, value_oppo, reduction='none') * discount).mean()
+                p_loss = torch.mean(torch.sum(-prob * log_p_pred - 0.01 * log_p_pred, dim=1))
+                # grad = get_gradient(self, state)
+                # gp = gradient_penalty(grad)
+                loss = p_loss + v_loss
+                loss.backward()
+                self.opt.step()
                 p_l.append(p_loss.item())
                 v_l.append(v_loss.item())
         self.scheduler.step()

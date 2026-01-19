@@ -30,7 +30,7 @@ parser.add_argument('-b', '--batch_size', type=int, default=512, help='Batch siz
 parser.add_argument('--buf', '--buffer_size', type=int, default=50000, help='Buffer size')
 parser.add_argument('--mcts_n', type=int, default=1000, help='MCTS n_playout')
 parser.add_argument('--n_play', type=int, default=1, help='n_playout')
-parser.add_argument('--discount', type=float, default=0.99, help='Discount factor')
+parser.add_argument('--discount', type=float, default=1, help='Discount factor')
 parser.add_argument('-t', '--temp', type=float, default=1, help='Softmax temperature')
 parser.add_argument('--thres', type=float, default=0.65, help='Win rate threshold')
 parser.add_argument('--num_eval', type=int, default=50, help='Number of evaluation.')

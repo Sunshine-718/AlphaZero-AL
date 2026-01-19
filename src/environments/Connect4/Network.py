@@ -12,17 +12,37 @@ from torch.optim import NAdam, SGD, AdamW
 from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
 from einops import rearrange
 from ..NetworkBase import Base
-if torch.cuda.is_available():
-    from torch.amp import GradScaler
+
+
+class RMSNorm2d(nn.Module):
+    def __init__(self, dim, eps=1e-5):
+        super().__init__()
+        self.norm = nn.RMSNorm(dim, eps=eps)
+
+    def forward(self, x):
+        if x.dtype != self.norm.weight.dtype:
+            self.norm.to(dtype=x.dtype)
+        x = x.permute(0, 2, 3, 1)
+        x = self.norm(x)
+        x = x.permute(0, 3, 1, 2)
+        return x
 
 
 class MaskedConv2d(nn.Conv2d):
     def __init__(self, *args, mask: torch.Tensor, **kwargs):
         super().__init__(*args, **kwargs)
         self.register_buffer("mask", mask)
+        self.norm1 = RMSNorm2d(args[1])
+        self.o_proj = nn.Sequential(nn.Conv2d(args[1], args[1], kernel_size=1),
+                                    RMSNorm2d(args[1]),
+                                    nn.SiLU(True))
 
     def forward(self, x):
-        return F.conv2d(x, self.weight * self.mask, self.bias, self.stride, self.padding, self.dilation, self.groups)
+        gate_proj = torch.sigmoid(F.conv2d(x, self.weight * self.mask, self.bias,
+                                  self.stride, self.padding, self.dilation, self.groups))
+        v_proj = F.conv2d(x, self.weight * self.mask, self.bias, self.stride, self.padding, self.dilation, self.groups)
+        hidden = self.norm1(gate_proj * v_proj)
+        return self.o_proj(hidden)
 
 
 def mask(out_ch, in_ch, device='cpu'):
@@ -36,41 +56,52 @@ def mask(out_ch, in_ch, device='cpu'):
     return m[None, None, :, :].expand(out_ch, in_ch, m.shape[0], m.shape[1]).clone()
 
 
-class ResidualConv2d(nn.Module):
+class ResidualSwishGLUConv2d(nn.Module):
     def __init__(self, in_dim, out_dim, dropout):
         super().__init__()
-        self.conv = nn.Sequential(nn.Conv2d(in_dim, out_dim, kernel_size=1, padding=0, bias=False),
-                                  nn.BatchNorm2d(out_dim),
-                                  nn.SiLU(True),
-                                  nn.Conv2d(out_dim, out_dim, kernel_size=1, padding=0),
-                                  nn.BatchNorm2d(out_dim))
-        self.dropout = nn.Dropout2d(dropout)
+        self.gate_proj = nn.Sequential(nn.Conv2d(in_dim, out_dim, kernel_size=1, padding=0),
+                                       nn.Sigmoid())
+        self.v_proj = nn.Sequential(nn.Conv2d(in_dim, out_dim, kernel_size=1, padding=0))
+        self.o_proj = nn.Sequential(nn.Conv2d(out_dim, out_dim, kernel_size=1, padding=0),
+                                    RMSNorm2d(out_dim),
+                                    nn.Dropout(dropout))
+        self.in_dim = in_dim
+        self.out_dim = out_dim
+        self.norm = RMSNorm2d(out_dim)
 
     def forward(self, x):
-        return self.dropout(F.silu(x + self.conv(x)))
+        if self.in_dim == self.out_dim:
+            return F.silu(x + self.o_proj(self.norm(self.gate_proj(x) * self.v_proj(x))))
+        return F.silu(self.o_proj(self.norm(self.gate_proj(x) * self.v_proj(x))))
 
 
-class ResidualLinear(nn.Module):
-    def __init__(self, n_dim, dropout):
+class ResidualSwiGLUBlock(nn.Module):
+    def __init__(self, in_dim, out_dim, dropout=0.):
         super().__init__()
-        self.linear = nn.Sequential(nn.Linear(n_dim, n_dim),
-                                    nn.BatchNorm1d(n_dim))
-        self.dropout = nn.Dropout(dropout)
-    
+        self.gate_proj = nn.Sequential(nn.Linear(in_dim, out_dim, bias=True),
+                                       nn.Sigmoid())
+        self.v_proj = nn.Sequential(nn.Linear(in_dim, out_dim, bias=True))
+        self.o_proj = nn.Sequential(nn.Linear(out_dim, out_dim, bias=True),
+                                    nn.RMSNorm(out_dim),
+                                    nn.Dropout(dropout))
+        self.in_dim = in_dim
+        self.out_dim = out_dim
+        self.norm = nn.RMSNorm(out_dim)
+
     def forward(self, x):
-        return self.dropout(F.silu(x + self.linear(x)))
+        if self.in_dim == self.out_dim:
+            return F.silu(x + self.o_proj(self.norm(self.gate_proj(x) * self.v_proj(x))))
+        return F.silu(self.o_proj(self.norm(self.gate_proj(x) * self.v_proj(x))))
 
 
 class CNN(Base):
-    def __init__(self, lr, in_dim=3, h_dim=256, out_dim=7, dropout=0.05, device='cpu'):
+    def __init__(self, lr, in_dim=3, h_dim=128, out_dim=7, dropout=0.05, device='cpu'):
         super().__init__()
         self.hidden = nn.Sequential(MaskedConv2d(in_dim, h_dim, mask=mask(h_dim, in_dim, device), kernel_size=7, padding=3, bias=False),
-                                    nn.BatchNorm2d(h_dim),
-                                    nn.SiLU(True),
                                     nn.Dropout2d(dropout),
-                                    ResidualConv2d(h_dim, h_dim, dropout),
-                                    ResidualConv2d(h_dim, h_dim, dropout),
-                                    ResidualConv2d(h_dim, h_dim, dropout))
+                                    ResidualSwishGLUConv2d(h_dim, h_dim, dropout),
+                                    ResidualSwishGLUConv2d(h_dim, h_dim, dropout),
+                                    ResidualSwishGLUConv2d(h_dim, h_dim, dropout))
         self.policy_head = nn.Sequential(nn.Conv2d(h_dim, h_dim // 4, kernel_size=(6, 1), bias=False),
                                          nn.BatchNorm2d(h_dim // 4),
                                          nn.Dropout2d(dropout),
@@ -82,7 +113,7 @@ class CNN(Base):
                                         nn.BatchNorm2d(1),
                                         nn.SiLU(True),
                                         nn.Flatten(),
-                                        ResidualLinear(6 * 7, dropout),
+                                        ResidualSwiGLUBlock(6 * 7, 6 * 7, dropout),
                                         nn.Linear(6 * 7, 3),
                                         nn.LogSoftmax(dim=-1))
         nn.init.constant_(self.policy_head[-2].weight, 0)
@@ -95,9 +126,6 @@ class CNN(Base):
         scheduler_warmup = LinearLR(self.opt, start_factor=1e-8, total_iters=100)
         scheduler_cosine = CosineAnnealingLR(self.opt, T_max=1000, eta_min=lr * 0.1)
         self.scheduler = SequentialLR(self.opt, schedulers=[scheduler_warmup, scheduler_cosine], milestones=[100])
-        self.scaler = None
-        if self.device == 'cuda':
-            self.scaler = GradScaler()
         self.to(self.device)
 
     def init_weights(self, m):
