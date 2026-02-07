@@ -11,25 +11,6 @@ from abc import ABC
 from copy import deepcopy
 from sklearn.metrics import f1_score
 
-def get_gradient(model, state):
-    state.requires_grad_(True)
-    probs, values = model(state)
-    grads = torch.autograd.grad(inputs=state,
-                                outputs=[probs, values],
-                                grad_outputs=[torch.ones_like(probs), torch.ones_like(values)],
-                                create_graph=True,
-                                retain_graph=True)[0]
-    return grads
-
-
-def gradient_penalty(gradient, c_lambda=10):
-    if gradient is None:
-        return 0
-    gradient = gradient.view(len(gradient), -1)
-    grad_norm = gradient.norm(2, dim=1)
-    return torch.mean(grad_norm - 0.5) ** 2 * c_lambda
-
-
 class Base(ABC, nn.Module):
     def save(self, path=None):
         while True:
@@ -74,10 +55,9 @@ class Base(ABC, nn.Module):
                 v_loss = (F.nll_loss(value_pred, value, reduction='none') * discount).mean()
                 v_loss += (F.nll_loss(next_value_pred, value_oppo, reduction='none') * discount).mean()
                 p_loss = torch.mean(torch.sum(-prob * log_p_pred - 0.01 * log_p_pred, dim=1))
-                # grad = get_gradient(self, state)
-                # gp = gradient_penalty(grad)
                 loss = p_loss + v_loss
                 loss.backward()
+                nn.utils.clip_grad_norm_(self.parameters(), 0.5)
                 self.opt.step()
                 p_l.append(p_loss.item())
                 v_l.append(v_loss.item())

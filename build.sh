@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#! /usr/bin/env bash
 set -e
 
 if command -v pip3 &>/dev/null; then

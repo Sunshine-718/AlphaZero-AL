@@ -26,9 +26,9 @@ parser.add_argument('-n', type=int, default=100,
 parser.add_argument('--host', '-H', type=str, default='127.0.0.1', help='Host IP')
 parser.add_argument('--port', '-P', '-p', type=int, default=7718, help='Port number')
 parser.add_argument('-c', '--c_init', type=float, default=1.25, help='C_puct init')
-parser.add_argument('-a', '--alpha', type=float, default=0.7, help='Dirichlet alpha')
+parser.add_argument('-a', '--alpha', type=float, default=0.3, help='Dirichlet alpha')
 parser.add_argument('--n_play', type=int, default=1, help='n_playout')
-parser.add_argument('--discount', type=float, default=1, help='Discount factor')
+parser.add_argument('--discount', type=float, default=0.99, help='Discount factor')
 parser.add_argument('-t', '--temp', '--temperature', type=float, default=1, help='Softmax temperature')
 parser.add_argument('--tempD', type=float, default=0.93, help='Temperature discount factor')
 parser.add_argument('-m', '--model', type=str, default='CNN', help='Model type (CNN)')
@@ -36,7 +36,7 @@ parser.add_argument('-d', '--device', type=str, default='cuda' if torch.cuda.is_
 parser.add_argument('-e', '--env', '--environment', type=str, default='Connect4', help='Environment name')
 parser.add_argument('--retry', type=int, default=3, help='Retry times')
 # Turn off transposition table can save gpu memory, but will cause lower computation speed
-parser.add_argument('--no-cache', action='store_false', dest='cache', help='Disable transposition table')
+parser.add_argument('--cache', action='store_true', help='Disable transposition table')
 parser.add_argument('--cache_size', type=int, default=5000, help='LRU transposition table max size')
 
 args = parser.parse_args()
@@ -46,7 +46,7 @@ headers = {'Content-Type': 'application/octet-stream'}
 
 class Actor:
     def __init__(self, env_name=args.env):
-        collection = ('Connect4', )  # NBTTT implementation not yet finished.
+        collection = ('Connect4', )
         if env_name not in collection:
             raise ValueError(f'Environment does not exist, available env: {collection}')
         self.env_name = env_name
