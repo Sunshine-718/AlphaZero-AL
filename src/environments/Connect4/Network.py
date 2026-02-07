@@ -175,6 +175,5 @@ class CNN(Base):
         self.eval()
         log_prob, value_log_prob = self.forward(state)
         value_prob = value_log_prob.exp()
-        player = state[:, -1, 0, 0].view(-1,)
-        value = (-player) * draw_factor * value_prob[:, 0] + value_prob[:, 1] - value_prob[:, 2]
+        value = value_prob[:, 1] - value_prob[:, 2]
         return log_prob.exp().cpu().numpy(), value.cpu().view(-1, 1).numpy()
