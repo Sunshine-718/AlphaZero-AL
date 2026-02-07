@@ -48,13 +48,14 @@ class ReplayBuffer:
     def load(self, path):
         try:
             state_dict = torch.load(path, map_location=self.device)
-            self.state.copy_(state_dict['state'])
-            self.action.copy_(state_dict['action'])
-            self.prob.copy_(state_dict['prob'])
-            self.discount.copy_(state_dict['discount'])
-            self.winner.copy_(state_dict['winner'])
-            self.next_state.copy_(state_dict['next_state'])
-            self.done.copy_(state_dict['done'])
+            capacity = min(self.state.shape[0], state_dict['state'].shape[0])
+            self.state[:capacity].copy_(state_dict['state'][:capacity])
+            self.action[:capacity].copy_(state_dict['action'][:capacity])
+            self.prob[:capacity].copy_(state_dict['prob'][:capacity])
+            self.discount[:capacity].copy_(state_dict['discount'][:capacity])
+            self.winner[:capacity].copy_(state_dict['winner'][:capacity])
+            self.next_state[:capacity].copy_(state_dict['next_state'][:capacity])
+            self.done[:capacity].copy_(state_dict['done'][:capacity])
             self._ptr = state_dict['_ptr']
         except Exception as e:
             print(e)
