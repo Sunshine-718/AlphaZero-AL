@@ -27,7 +27,8 @@ parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
 parser.add_argument('-c', '--c_init', type=float, default=1.25, help='C_puct init')
 parser.add_argument('-a', '--alpha', type=float, default=0.3, help='Dirichlet alpha')
 parser.add_argument('-b', '--batch_size', type=int, default=512, help='Batch size')
-parser.add_argument('--buf', '--buffer_size', type=int, default=10000, help='Buffer size')
+parser.add_argument('--q_size', type=int, default=100, help='Queue size')
+parser.add_argument('--buf', '--buffer_size', type=int, default=50000, help='Buffer size')
 parser.add_argument('--mcts_n', type=int, default=1000, help='MCTS n_playout')
 parser.add_argument('--n_play', type=int, default=1, help='n_playout')
 parser.add_argument('--discount', type=float, default=0.99, help='Discount factor')
@@ -69,12 +70,16 @@ app = Flask(__name__)
 
 
 def data_collector(self):
+    global inbox
     episode_len = []
     flag = 0
-    while inbox.empty():
-        if flag == 0:
-            print('Pending...')
-            flag += 1
+    length = inbox.qsize()
+    while length < args.q_size:
+        if flag != inbox.qsize():
+            print(f'[Pending] {length}/{args.q_size}')
+            flag = length
+        length = inbox.qsize()
+        time.sleep(1)
     while not inbox.empty():
         play_data = inbox.get()
         for data in play_data:
@@ -96,7 +101,7 @@ def upload():
         # ADDED: Log traffic for GUI to capture (Server RECEIVED = Client UPLOAD)
         print(f"[[TRAFFIC_LOG::RECEIVED::+::{data_len}]]", file=sys.stdout)
     # -----------------------
-
+    global inbox
     data = pickle.loads(request.data)
     for d in data:
         print(f'Received data from {request.remote_addr}:{request.environ.get("REMOTE_PORT")}')

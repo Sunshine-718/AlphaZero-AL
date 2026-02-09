@@ -2,15 +2,12 @@
 # -*- coding: utf-8 -*-
 # Written by: Sunshine
 # Created on: 14/Jul/2024  20:41
-import math
-import inspect
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.optim import NAdam, SGD, AdamW
+from torch.optim import NAdam
 from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
-from einops import rearrange
 from ..NetworkBase import Base
 
 
@@ -28,111 +25,94 @@ class RMSNorm2d(nn.Module):
         return x
 
 
-class MaskedConv2d(nn.Conv2d):
-    def __init__(self, *args, mask: torch.Tensor, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.register_buffer("mask", mask)
-        self.norm1 = RMSNorm2d(args[1])
-        self.o_proj = nn.Sequential(nn.Conv2d(args[1], args[1], kernel_size=1),
-                                    RMSNorm2d(args[1]))
+class ConvGLU(nn.Module):
+    def __init__(self, in_channels, out_channels, **kwargs):
+        super().__init__()
+        self.gate = nn.Conv2d(in_channels, out_channels, **kwargs)
+        self.proj = nn.Conv2d(in_channels, out_channels, **kwargs)
 
     def forward(self, x):
-        gate_proj = F.silu(F.conv2d(x, self.weight * self.mask, self.bias,
-                                  self.stride, self.padding, self.dilation, self.groups))
-        v_proj = F.conv2d(x, self.weight * self.mask, self.bias, self.stride, self.padding, self.dilation, self.groups)
-        hidden = self.norm1(gate_proj * v_proj)
-        return self.o_proj(hidden)
+        return torch.sigmoid(self.gate(x)) * self.proj(x)
 
 
-def mask(out_ch, in_ch, device='cpu'):
-    m = torch.tensor([[1, 0, 0, 1, 0, 0, 1],
-                      [0, 1, 0, 1, 0, 1, 0],
-                      [0, 0, 1, 1, 1, 0, 0],
-                      [1, 1, 1, 1, 1, 1, 1],
-                      [0, 0, 1, 1, 1, 0, 0],
-                      [0, 1, 0, 1, 0, 1, 0],
-                      [1, 0, 0, 1, 0, 0, 1]], dtype=torch.float32, device=device)
-    return m[None, None, :, :].expand(out_ch, in_ch, m.shape[0], m.shape[1]).clone()
+class LinearGLU(nn.Module):
+    def __init__(self, in_dim, out_dim):
+        super().__init__()
+        self.gate = nn.Linear(in_dim, out_dim)
+        self.proj = nn.Linear(in_dim, out_dim)
 
+    def forward(self, x):
+        return torch.sigmoid(self.gate(x)) * self.proj(x)
 
-class ResidualSwishGLUConv2d(nn.Module):
+class ResidualGLUConv2d(nn.Module):
     def __init__(self, in_dim, out_dim, dropout):
         super().__init__()
-        self.gate_proj = nn.Sequential(nn.Conv2d(in_dim, in_dim // 2, kernel_size=1, padding=0),
-                                       nn.SiLU(True))
-        self.v_proj = nn.Sequential(nn.Conv2d(in_dim, in_dim // 2, kernel_size=1, padding=0))
-        self.o_proj = nn.Sequential(nn.Conv2d(in_dim // 2, out_dim, kernel_size=1, padding=0),
-                                    RMSNorm2d(out_dim),
-                                    nn.Dropout(dropout))
-        self.in_dim = in_dim
-        self.out_dim = out_dim
-        self.norm = RMSNorm2d(in_dim // 2)
+        self.norm = RMSNorm2d(in_dim, 1e-5)
+        self.glu = ConvGLU(in_dim, out_dim, kernel_size=3, padding=1)
+        self.conv = nn.Conv2d(out_dim, out_dim, kernel_size=1)
+        self.dropout = nn.Dropout2d(p=dropout, inplace=True)
+        self.residual = in_dim == out_dim
 
     def forward(self, x):
-        if self.in_dim == self.out_dim:
-            return x + self.o_proj(self.norm(self.gate_proj(x) * self.v_proj(x)))
-        return self.o_proj(self.norm(self.gate_proj(x) * self.v_proj(x)))
+        residual = 0
+        if self.residual:
+            residual = x
+        x = self.norm(x)
+        x = self.glu(x)
+        x = self.conv(x)
+        return self.dropout(x + residual)
 
 
-class ResidualSwiGLUBlock(nn.Module):
-    def __init__(self, in_dim, out_dim, dropout=0.):
+class ResidualBlock(nn.Module):
+    def __init__(self, in_dim, out_dim, dropout=0., zero_out=False):
         super().__init__()
-        self.gate_proj = nn.Sequential(nn.Linear(in_dim, out_dim, bias=True),
-                                       nn.Sigmoid())
-        self.v_proj = nn.Sequential(nn.Linear(in_dim, out_dim, bias=True))
-        self.o_proj = nn.Sequential(nn.Linear(out_dim, out_dim, bias=True),
-                                    nn.RMSNorm(out_dim, eps=1e-5),
-                                    nn.Dropout(dropout))
-        self.in_dim = in_dim
-        self.out_dim = out_dim
-        self.norm = nn.RMSNorm(out_dim)
+        self.glu = LinearGLU(in_dim, out_dim)
+        self.linear = nn.Linear(out_dim, out_dim)
+        self.norm = nn.RMSNorm(in_dim, 1e-5)
+        self.dropout = nn.Dropout(dropout, inplace=True)
+        self.residual = in_dim == out_dim
+        if zero_out:
+            nn.init.constant_(self.linear.weight, 0)
 
     def forward(self, x):
-        if self.in_dim == self.out_dim:
-            return F.silu(x + self.o_proj(self.norm(self.gate_proj(x) * self.v_proj(x))))
-        return F.silu(self.o_proj(self.norm(self.gate_proj(x) * self.v_proj(x))))
+        residual = 0
+        if self.residual:
+            residual = x
+        x = self.norm(x)
+        x = self.glu(x)
+        x = self.linear(x)
+        return self.dropout(x + residual)
 
 
 class CNN(Base):
-    def __init__(self, lr, in_dim=3, h_dim=128, out_dim=7, dropout=0.05, device='cpu'):
+    def __init__(self, lr, in_dim=3, h_dim=64, out_dim=7, dropout=0.05, device='cpu'):
         super().__init__()
-        self.hidden = nn.Sequential(MaskedConv2d(in_dim, h_dim, mask=mask(h_dim, in_dim, device), kernel_size=7, padding=3, bias=False),
-                                    nn.Dropout2d(dropout),
-                                    ResidualSwishGLUConv2d(h_dim, h_dim, dropout),
-                                    ResidualSwishGLUConv2d(h_dim, h_dim, dropout),
-                                    ResidualSwishGLUConv2d(h_dim, h_dim, dropout))
-        self.policy_head = nn.Sequential(nn.Conv2d(h_dim, h_dim // 2, kernel_size=(6, 1), bias=False),
-                                         nn.BatchNorm2d(h_dim // 2),
-                                         nn.Dropout2d(dropout),
-                                         nn.SiLU(True),
+        self.hidden = nn.Sequential(ResidualGLUConv2d(in_dim, h_dim, dropout),
+                                    ResidualGLUConv2d(h_dim, h_dim, dropout),
+                                    ResidualGLUConv2d(h_dim, h_dim, dropout))
+        self.policy_head = nn.Sequential(ResidualGLUConv2d(h_dim, 3, dropout),
                                          nn.Flatten(),
-                                         nn.Linear(7 * (h_dim // 2), 7),
+                                         ResidualBlock(6 * 7 * 3, 7, dropout=0.),
                                          nn.LogSoftmax(dim=-1))
-        self.value_head = nn.Sequential(nn.Conv2d(h_dim, 1, kernel_size=(3, 3), padding=(1, 1), bias=False),
-                                        nn.BatchNorm2d(1),
-                                        nn.SiLU(True),
+        self.value_head = nn.Sequential(ResidualGLUConv2d(h_dim, 3, dropout),
                                         nn.Flatten(),
-                                        ResidualSwiGLUBlock(6 * 7, 6 * 7, dropout),
-                                        nn.Linear(6 * 7, 3),
+                                        ResidualBlock(6 * 7 * 3, 6 * 7 * 3, dropout=dropout),
+                                        ResidualBlock(6 * 7 * 3, 3, dropout=0.),
                                         nn.LogSoftmax(dim=-1))
-        nn.init.constant_(self.policy_head[-2].weight, 0)
         self.device = device
         self.n_actions = out_dim
         self.apply(self.init_weights)
-        self.opt = self.configure_optimizers(lr, 1e-4)
-        # self.opt = SGD(self.parameters(), lr=lr, momentum=0.9, weight_decay=1e-4)
-        scheduler_warmup = LinearLR(self.opt, start_factor=1e-8, total_iters=200)
+        nn.init.constant_(self.policy_head[-2].linear.weight, 0)
+        nn.init.constant_(self.value_head[-2].linear.weight, 0)
+        self.opt = self.configure_optimizers(lr, 0.01)
+        scheduler_warmup = LinearLR(self.opt, start_factor=1e-8, total_iters=10)
         scheduler_cosine = CosineAnnealingLR(self.opt, T_max=1000, eta_min=lr * 0.1)
-        self.scheduler = SequentialLR(self.opt, schedulers=[scheduler_warmup, scheduler_cosine], milestones=[200])
+        self.scheduler = SequentialLR(self.opt, schedulers=[scheduler_warmup, scheduler_cosine], milestones=[10])
         self.to(self.device)
 
     def init_weights(self, m):
-        if isinstance(m, nn.Conv2d):
-            nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
-            if m.bias is not None:
-                nn.init.constant_(m.bias, 0)
-        elif isinstance(m, nn.Linear):
-            nn.init.normal_(m.weight, 0, 0.02)
+        if isinstance(m, (nn.Conv2d, nn.Linear)):
+            nn.init.xavier_normal_(m.weight)
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
 
