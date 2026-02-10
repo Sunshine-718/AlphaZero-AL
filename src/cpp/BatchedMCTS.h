@@ -65,7 +65,8 @@ namespace AlphaZero
             const int *turns,
             int8_t *output_boards,
             float *output_term_values,
-            uint8_t *output_is_term)
+            uint8_t *output_is_term,
+            int *output_turns) // [ROBUSTNESS FIX] 新增 output_turns
         {
 #pragma omp parallel for schedule(static)
             for (int i = 0; i < n_envs; ++i)
@@ -84,6 +85,9 @@ namespace AlphaZero
 
                 output_is_term[i] = is_term ? 1 : 0;
                 output_term_values[i] = term_val;
+
+                // [ROBUSTNESS FIX] 直接返回 C++ 状态中的轮次，不让 Python 猜
+                output_turns[i] = leaf_board.turn;
 
                 std::memcpy(output_boards + offset, leaf_board.board, Config::ROWS * Config::COLS);
             }
@@ -115,6 +119,7 @@ namespace AlphaZero
 
         std::vector<int> get_all_counts()
         {
+// #pragma omp parallel for schedule(static)
             std::vector<int> all_counts(n_envs * Config::ACTION_SIZE);
 
             for (int i = 0; i < n_envs; ++i)

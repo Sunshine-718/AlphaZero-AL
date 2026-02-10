@@ -56,6 +56,7 @@ namespace AlphaZero
         {
             sim_env = start_state;
             MCTSNode *node = root.get();
+            current_flipped = false;
 
             while (node->is_expanded)
             {

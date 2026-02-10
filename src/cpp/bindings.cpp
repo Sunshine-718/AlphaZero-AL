@@ -22,7 +22,8 @@ PYBIND11_MODULE(mcts_cpp, m)
 
         .def("get_all_counts", &BatchedMCTS::get_all_counts)
 
-        .def("prune_roots", [](BatchedMCTS &self, py::array_t<int> actions)
+        .def("prune_roots", [](BatchedMCTS &self, 
+                               py::array_t<int, py::array::c_style | py::array::forcecast> actions)
              {
             py::buffer_info buf = actions.request();
 
@@ -31,16 +32,21 @@ PYBIND11_MODULE(mcts_cpp, m)
             std::span<const int> s(static_cast<int*>(buf.ptr), buf.size);
             self.prune_roots(s); })
 
-        .def("search_batch", [](BatchedMCTS &self, py::array_t<int8_t> input_boards, py::array_t<int> turns)
+        .def("search_batch", [](BatchedMCTS &self, 
+                                py::array_t<int8_t, py::array::c_style | py::array::forcecast> input_boards, 
+                                py::array_t<int, py::array::c_style | py::array::forcecast> turns)
              {
             auto buf_in = input_boards.request();
             auto buf_turns = turns.request();
             int batch_size = buf_in.shape[0];
             
-            py::array_t<int8_t> out_boards({batch_size, 6, 7});
+            // [SECURITY FIX] 防止缓冲区溢出
+            if (buf_turns.size != batch_size) throw std::runtime_error("Turns size must match batch size");
 
+            py::array_t<int8_t> out_boards({batch_size, 6, 7});
             py::array_t<float> out_vals(batch_size);
             py::array_t<uint8_t> out_term(batch_size);
+            py::array_t<int> out_turns(batch_size); // [NEW OUTPUT]
 
             int8_t* ptr_in = static_cast<int8_t*>(buf_in.ptr);
             int* ptr_turns = static_cast<int*>(buf_turns.ptr);
@@ -48,16 +54,20 @@ PYBIND11_MODULE(mcts_cpp, m)
             int8_t* ptr_out_boards = static_cast<int8_t*>(out_boards.request().ptr);
             float* ptr_out_vals = static_cast<float*>(out_vals.request().ptr);
             uint8_t* ptr_out_term = static_cast<uint8_t*>(out_term.request().ptr);
+            int* ptr_out_turns = static_cast<int*>(out_turns.request().ptr);
+
             {
-                py::gil_scoped_release release; // <--- 关键！释放 Python 锁
-                self.search_batch(ptr_in, ptr_turns, ptr_out_boards, ptr_out_vals, ptr_out_term);
+                py::gil_scoped_release release; 
+                self.search_batch(ptr_in, ptr_turns, ptr_out_boards, ptr_out_vals, ptr_out_term, ptr_out_turns);
             }
-            return py::make_tuple(out_boards, out_vals, out_term); })
+            
+            // 返回4个元素的元组
+            return py::make_tuple(out_boards, out_vals, out_term, out_turns); })
 
         .def("backprop_batch", [](BatchedMCTS &self,
-                                  py::array_t<float> policy_logits,
-                                  py::array_t<float> values,
-                                  py::array_t<uint8_t> is_term)
+                                  py::array_t<float, py::array::c_style | py::array::forcecast> policy_logits,
+                                  py::array_t<float, py::array::c_style | py::array::forcecast> values,
+                                  py::array_t<uint8_t, py::array::c_style | py::array::forcecast> is_term)
              {
             
             auto buf_pol = policy_logits.request();
@@ -69,7 +79,7 @@ PYBIND11_MODULE(mcts_cpp, m)
             uint8_t* ptr_term = static_cast<uint8_t*>(buf_term.ptr);
 
             {
-                py::gil_scoped_release release; // 释放 GIL
+                py::gil_scoped_release release;
                 self.backprop_batch(ptr_pol, ptr_val, ptr_term);
             } });
 }

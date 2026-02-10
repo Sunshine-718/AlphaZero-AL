@@ -9,12 +9,10 @@ class BatchedMCTS:
         self.batch_size = batch_size
 
     @staticmethod
-    def _convert_board(board):
+    def _convert_board(board, turns):
         plane_x = (board == 1).astype(np.float32)
         plane_o = (board == -1).astype(np.float32)
-        board_sums = np.sum(board, axis=(1, 2))
-        current_turns = 1.0 - 2.0 * board_sums.astype(np.float32)
-        plane_turn = np.ones_like(board, dtype=np.float32) * current_turns[:, None, None]
+        plane_turn = np.ones_like(board, dtype=np.float32) * turns[:, None, None]
         return np.stack([plane_x, plane_o, plane_turn], axis=1)
 
     def batch_playout(self, pv_func, current_boards, turns):
@@ -24,10 +22,14 @@ class BatchedMCTS:
         turns = turns.astype(np.int32)
 
         for _ in range(self.n_playout):
-            leaf_boards, _, is_term = self.mcts.search_batch(current_boards, turns)
+            leaf_boards, _, is_term, leaf_turns = self.mcts.search_batch(current_boards, turns)
 
-            probs, values = pv_func.predict(self._convert_board(leaf_boards))
-            self.mcts.backprop_batch(probs.astype(np.float32), values.flatten().astype(np.float32), is_term)
+            probs, values = pv_func.predict(self._convert_board(leaf_boards, leaf_turns))
+            self.mcts.backprop_batch(
+                np.ascontiguousarray(probs, dtype=np.float32), 
+                np.ascontiguousarray(values.flatten(), dtype=np.float32), 
+                is_term
+            )
         return self
 
     def reset_env(self, index):
@@ -38,6 +40,7 @@ class BatchedMCTS:
         self.mcts.set_seed(seed)
 
     def prune_roots(self, actions):
+        actions = np.ascontiguousarray(actions, dtype=np.int32)
         self.mcts.prune_roots(actions)
         return self
 
