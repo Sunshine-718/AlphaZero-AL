@@ -104,7 +104,7 @@ def upload():
     global inbox
     data = pickle.loads(request.data)
     for d in data:
-        print(f'Received data from {request.remote_addr}:{request.environ.get("REMOTE_PORT")}')
+        # print(f'Received data from {request.remote_addr}:{request.environ.get("REMOTE_PORT")}')
         inbox.put(d)
     return jsonify({'status': 'success'})
 

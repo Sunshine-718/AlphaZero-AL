@@ -164,4 +164,4 @@ cython_debug/
 .DS_Store
 scratch.py
 tempCodeRunnerFile.py
-runs/
+swanlog/
