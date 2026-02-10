@@ -52,6 +52,6 @@ class Game:
                     winner_z[np.array(current_players) == winner] = 1
                     winner_z[np.array(current_players) != winner] = -1
                 discount = reversed([pow(player.discount, i) for i in range(len(winner_z))])
-                dones = [False]*len(current_players)
+                dones = [False] * len(current_players)
                 dones[-1] = True
                 return winner, zip(states, actions, mcts_probs, discount, winner_z, next_states, dones)

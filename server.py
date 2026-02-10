@@ -28,7 +28,7 @@ parser.add_argument('-c', '--c_init', type=float, default=1.25, help='C_puct ini
 parser.add_argument('-a', '--alpha', type=float, default=0.3, help='Dirichlet alpha')
 parser.add_argument('-b', '--batch_size', type=int, default=512, help='Batch size')
 parser.add_argument('--q_size', type=int, default=100, help='Queue size')
-parser.add_argument('--buf', '--buffer_size', type=int, default=50000, help='Buffer size')
+parser.add_argument('--buf', '--buffer_size', type=int, default=100000, help='Buffer size')
 parser.add_argument('--mcts_n', type=int, default=1000, help='MCTS n_playout')
 parser.add_argument('--n_play', type=int, default=1, help='n_playout')
 parser.add_argument('--discount', type=float, default=0.99, help='Discount factor')

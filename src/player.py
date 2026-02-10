@@ -71,7 +71,7 @@ class MCTSPlayer(Player):
     def __init__(self, c_puct=4, n_playout=1000, discount=1):
         super().__init__()
         self.mcts = MCTS(policy_value_fn, c_puct, n_playout, discount, None)
-    
+
     @property
     def discount(self):
         return self.mcts.root.discount
@@ -94,7 +94,7 @@ class AlphaZeroPlayer(MCTSPlayer):
             self.n_actions = policy_value_fn.n_actions
         except AttributeError:
             self.n_actions = None
-    
+
     def reload(self, policy_value_fn, c_puct=None, n_playout=None, alpha=None, is_self_play=None):
         self.pv_fn = policy_value_fn
         self.mcts.policy = policy_value_fn
@@ -108,7 +108,7 @@ class AlphaZeroPlayer(MCTSPlayer):
             self.is_selfplay = is_self_play
         self.n_actions = policy_value_fn.n_actions
         self.mcts.refresh_cache()
-    
+
     def to(self, device='cpu'):
         self.pv_fn.to(device)
 

@@ -144,7 +144,7 @@ class MCTS_AZ(MCTS):
         super().__init__(policy_value_fn, c_init, n_playout, discount, alpha)
         self.cache = Cache(cache_size)
         self.use_cache = use_cache
-    
+
     def refresh_cache(self):
         if self.use_cache:
             self.cache.refresh(self.policy.predict)
