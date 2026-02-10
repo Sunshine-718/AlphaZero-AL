@@ -5,7 +5,7 @@ from .game import Game
 from copy import deepcopy
 from .environments import load
 from .player import MCTSPlayer, AlphaZeroPlayer, NetworkPlayer
-from torch.utils.tensorboard import SummaryWriter
+import swanlab
 
 
 class TrainPipeline:
@@ -21,6 +21,7 @@ class TrainPipeline:
         self.params = './params'
         self.global_step = 0
         self.play_batch_size = play_batch_size
+        self.raw_config = config if config else {}
         for key, value in config.items():
             setattr(self, key, value)
         self.buffer = None
@@ -115,7 +116,25 @@ class TrainPipeline:
     def run(self):
         self.show_hyperparams()
 
-        writer = SummaryWriter(filename_suffix=self.name)
+        run_config = {
+            'env_name': self.env_name,
+            'model': self.net.name(),
+            'play_batch_size': self.play_batch_size,
+            'c_puct': self.c_puct,
+            'n_playout': self.n_playout,
+            'benchmark_n_playout': self.pure_mcts_n_playout,
+            'discount': self.discount,
+            'dirichlet_alpha': self.dirichlet_alpha,
+            'buffer_size': self.buffer_size,
+            'batch_size': self.batch_size,
+            'temp': self.temp
+        }
+        
+        run_config.update(self.raw_config)
+
+        swanlab.init(project="AlphaZero-AL",
+                     experiment_name=self.name,
+                     config=run_config)
 
         best_counter = 0
         
@@ -129,12 +148,15 @@ class TrainPipeline:
 
             print(f'batch i: {self.global_step}, episode_len: {self.episode_len}, '
                     f'loss: {p_loss + v_loss: .8f}, entropy: {entropy: .8f}')
-            writer.add_scalar('Metric/lr', self.net.opt.param_groups[0]['lr'], self.global_step)
-            writer.add_scalar('Metric/Gradient Norm', grad_norm, self.global_step)
-            writer.add_scalar('Metric/F1 score', f1, self.global_step)
-            writer.add_scalars('Metric/Loss', {'Action Loss': p_loss, 'Value loss': v_loss}, self.global_step)
-            writer.add_scalar('Metric/Entropy', entropy, self.global_step)
-            writer.add_scalar('Metric/Episode length', self.episode_len, self.global_step)
+            swanlab.log({
+                'Metric/lr': self.net.opt.param_groups[0]['lr'],
+                'Metric/Gradient Norm': grad_norm,
+                'Metric/F1 score': f1,
+                'Metric/Loss/Action Loss': p_loss,
+                'Metric/Loss/Value loss': v_loss,
+                'Metric/Entropy': entropy,
+                'Metric/Episode length': self.episode_len
+            }, step=self.global_step)
 
             if (self.global_step) % self.interval != 0:
                 continue
@@ -142,27 +164,40 @@ class TrainPipeline:
             print(f'current self-play batch: {self.global_step + 1}')
             r_a, r_b = self.update_elo()
             print(f'Elo score: AlphaZero: {r_a: .2f}, Benchmark: {r_b: .2f}')
-            writer.add_scalars('Metric/Elo', {f'AlphaZero_{self.n_playout}': r_a,
-                                                f'MCTS_{self.pure_mcts_n_playout}': r_b}, self.global_step)
+            swanlab.log({
+                f'Metric/Elo/AlphaZero_{self.n_playout}': r_a,
+                f'Metric/Elo/MCTS_{self.pure_mcts_n_playout}': r_b
+            }, step=self.global_step)
 
             if self.env_name == 'Connect4':
                 p0, v0, p1, v1 = self.module.inspect(self.net)
-                writer.add_scalars('Metric/Initial Value', {'X': v0, 'O': v1}, self.global_step)
-                writer.add_scalars('Action probability/X',
-                                    {str(idx): i for idx, i in enumerate(p0)}, self.global_step)
-                writer.add_scalars('Action probability/O',
-                                    {str(idx): i for idx, i in enumerate(p1)}, self.global_step)
-                writer.add_scalars('Action probability/X_cummulative',
-                                    {str(idx): i for idx, i in enumerate(np.cumsum(p0))}, self.global_step)
-                writer.add_scalars('Action probability/O_cummulative',
-                                    {str(idx): i for idx, i in enumerate(np.cumsum(p1))}, self.global_step)
+                log_dict = {}
+
+                # 1. 记录 X 的动作概率 (对应原 Action probability/X)
+                # SwanLab 会在 UI 中创建一个名为 "Action probability/X" 的分组
+                for idx, prob in enumerate(p0):
+                    log_dict[f'Action probability/X/{idx}'] = prob
+
+                # 2. 记录 O 的动作概率 (对应原 Action probability/O)
+                for idx, prob in enumerate(p1):
+                    log_dict[f'Action probability/O/{idx}'] = prob
+
+                # 3. 记录 X 的累积概率 (对应原 Action probability/X_cummulative)
+                for idx, prob in enumerate(np.cumsum(p0)):
+                    log_dict[f'Action probability/X_cummulative/{idx}'] = prob
+
+                # 4. 记录 O 的累积概率 (对应原 Action probability/O_cummulative)
+                for idx, prob in enumerate(np.cumsum(p1)):
+                    log_dict[f'Action probability/O_cummulative/{idx}'] = prob
+                
+                swanlab.log(log_dict, step=self.global_step)
 
             flag, win_rate = self.select_best_player(self.num_eval)
-            writer.add_scalar('Metric/win rate', win_rate, self.global_step)
+            swanlab.log({'Metric/win rate': win_rate}, step=self.global_step)
             if flag:
                 print('New best policy!!')
                 best_counter += 1
-                writer.add_scalar('Metric/Best policy', best_counter, self.global_step)
+                swanlab.log({'Metric/Best policy': best_counter}, step=self.global_step)
                 self.net.save(self.best)
                 os.makedirs('dataset', exist_ok=True)
                 self.buffer.save('./dataset/dataset.pt')

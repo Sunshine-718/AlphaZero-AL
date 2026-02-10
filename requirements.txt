@@ -1,7 +1,7 @@
 numba
 numpy
 tqdm
-tensorboard
+swanlab
 Cython
 einops
 pyqt5
