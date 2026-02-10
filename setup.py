@@ -23,11 +23,11 @@ try:
     ext_modules = [
         Extension(
             "mcts_cpp",  # 生成的包名
-            ["src/bindings.cpp"],  # 只需要编译这个绑定文件，它会 include 头文件
+            ["src/cpp/bindings.cpp"],  # 只需要编译这个绑定文件，它会 include 头文件
             include_dirs=[
                 pybind11.get_include(),  # pybind11 头文件路径
                 pybind11.get_include(user=True),
-                "src",  # 你的 .h 文件所在的路径
+                "src/cpp",  # 你的 .h 文件所在的路径
                 "."
             ],
             language="c++",

@@ -40,7 +40,7 @@ class Base(ABC, nn.Module):
     def train_step(self, dataloader, augment):
         p_l, v_l = [], []
         self.train()
-        for _ in range(5):
+        for _ in range(20):
             for batch in dataloader:
                 state, _, prob, discount, winner, next_state, _ = augment(batch)
                 value = deepcopy(winner)

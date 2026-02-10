@@ -54,4 +54,65 @@ class Game:
                 discount = reversed([pow(player.discount, i) for i in range(len(winner_z))])
                 dones = [False] * len(current_players)
                 dones[-1] = True
-                return winner, zip(states, actions, mcts_probs, discount, winner_z, next_states, dones)
+                return winner, tuple(zip(states, actions, mcts_probs, discount, winner_z, next_states, dones))
+
+    def batch_self_play(self, player, n_games, temp_discount=0.93):
+        envs = [self.env.copy() for _ in range(n_games)]
+        for env in envs:
+            env.reset()
+            player.mcts.reset_env(envs.index(env))
+        trajectories = [{'states': [], 'actions': [], 'probs': [], 'players': [], 'steps': 0}
+                        for _ in range(n_games)]
+        active_indices = list(range(n_games))
+        completed_data = [None] * n_games
+        while active_indices:
+            current_boards = np.array([envs[i].board for i in range(n_games)])
+            turns = np.array([envs[i].turn for i in range(n_games)], dtype=np.int32)
+            temps = [pow(temp_discount, trajectories[i]['steps']) for i in range(n_games)]
+            actions, probs = player.get_action(current_boards, turns, temps)
+            next_active_indices = []
+            for i in active_indices:
+                action = actions[i]
+                prob = probs[i]
+                env = envs[i]
+                traj = trajectories[i]
+
+                state_feature = env.current_state()[0].astype(np.int8)
+                
+                traj['states'].append(state_feature)
+                traj['actions'].append(action)
+                traj['probs'].append(prob)
+                traj['players'].append(env.turn)
+                traj['steps'] += 1
+
+                env.step(action)
+                if env.done():
+                    winner = env.winPlayer()
+                    
+                    # 构建回放数据
+                    states = traj['states']
+                    # next_states 是 states 错位，最后补一个终止状态特征
+                    end_state_feature = env.current_state()[0].astype(np.int8)
+                    next_states = states[1:] + [end_state_feature]
+                    
+                    winner_z = np.zeros(len(traj['players']), dtype=np.int32)
+                    if winner != 0:
+                        winner_z[np.array(traj['players']) == winner] = 1
+                        winner_z[np.array(traj['players']) != winner] = -1
+                    
+                    discount = reversed([pow(player.discount, k) for k in range(len(winner_z))])
+                    dones = [False] * len(traj['players'])
+                    dones[-1] = True
+                    
+                    # 此时 states 的 list 元素形状为 (3, 6, 7)，符合 dataset 预期
+                    play_data = zip(states, traj['actions'], traj['probs'], discount, winner_z, next_states, dones)
+                    completed_data[i] = (winner, tuple(play_data))
+                    
+                    # 游戏结束，重置该环境的 MCTS 树（可选，取决于是否复用）
+                    # player.reset_env(i) 
+                else:
+                    next_active_indices.append(i)
+            
+            active_indices = next_active_indices
+
+        return completed_data

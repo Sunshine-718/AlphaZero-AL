@@ -6,6 +6,7 @@ import numpy as np
 from abc import abstractmethod, ABC
 from src.utils import policy_value_fn, softmax
 from .MCTS import MCTS, MCTS_AZ
+from .MCTS_cpp import BatchedMCTS
 
 
 class Player(ABC):
@@ -134,3 +135,52 @@ class AlphaZeroPlayer(MCTSPlayer):
         else:
             self.reset_player()
         return action, action_probs
+
+
+class BatchedAlphaZeroPlayer:
+    def __init__(self, policy_value_fn, n_envs, c_init=1.25, c_base=500, n_playout=100, discount=1, alpha=0.3):
+        self.pv_func = policy_value_fn
+        self.mcts = BatchedMCTS(n_envs, c_init, c_base, discount, alpha, n_playout)
+        self.n_envs = n_envs
+        self.n_actions = policy_value_fn.n_actions
+        self.discount = discount
+
+    def to(self, device='cpu'):
+        self.pv_fn.to(device)
+
+    def reset_player(self):
+        for i in range(self.n_envs):
+            self.mcts.reset_env(i)
+
+    def get_action(self, current_boards, turns, temps=None):
+        assert len(current_boards) == self.n_envs
+        if temps is None:
+            temps = [0 for _ in range(self.n_envs)]
+
+        self.mcts.batch_playout(self.pv_func, current_boards, turns)
+
+        visits = self.mcts.get_visits_count()
+
+        batch_actions = []
+        batch_probs = []
+
+        for i in range(self.n_envs):
+            visit = visits[i]
+            temp = temps[i]
+            visit_sum = visit.sum()
+            if visit_sum == 0:
+                probs = np.ones_like(visit) / len(visit)
+            else:
+                probs = visit / visit_sum
+
+            if temp == 0:
+                action = np.argmax(visit)
+            else:
+                visit_temp = np.power(visit, 1.0 / temp)
+                prob_sample = visit_temp / visit_temp.sum()
+                action = np.random.choice(len(visit), p=prob_sample)
+            batch_actions.append(action)
+            batch_probs.append(probs)
+        actions_array = np.array(batch_actions, dtype=np.int32)
+        self.mcts.prune_roots(actions_array)
+        return batch_actions, np.array(batch_probs)
