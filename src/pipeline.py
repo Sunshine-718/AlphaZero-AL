@@ -1,5 +1,6 @@
 import os
 import numpy as np
+from abc import ABC, abstractmethod
 from .utils import Elo
 from .game import Game
 from copy import deepcopy
@@ -8,7 +9,7 @@ from .player import MCTSPlayer, AlphaZeroPlayer, NetworkPlayer
 import swanlab
 
 
-class TrainPipeline:
+class TrainPipeline(ABC):
     def __init__(self, env_name='Connect4', model='CNN', name='AZ', play_batch_size=1, config=None):
         collection = ('Connect4', )  # NBTTT implementation not yet finished.
         if env_name not in collection:
@@ -45,8 +46,9 @@ class TrainPipeline:
     def init_buffer(self, buffer):
         self.buffer = buffer
 
+    @abstractmethod
     def data_collector(self):
-        raise NotImplementedError
+        ...
 
     def policy_update(self):
         dataloader = self.buffer.sample(self.batch_size)

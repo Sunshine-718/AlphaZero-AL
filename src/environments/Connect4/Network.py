@@ -87,6 +87,7 @@ class ResidualBlock(nn.Module):
 class CNN(Base):
     def __init__(self, lr, in_dim=3, h_dim=64, out_dim=7, dropout=0.05, device='cpu'):
         super().__init__()
+        self.in_dim = in_dim
         self.hidden = nn.Sequential(ResidualGLUConv2d(in_dim, h_dim, dropout),
                                     ResidualGLUConv2d(h_dim, h_dim, dropout),
                                     ResidualGLUConv2d(h_dim, h_dim, dropout))
@@ -106,7 +107,7 @@ class CNN(Base):
         nn.init.constant_(self.value_head[-2].linear.weight, 0)
         self.opt = self.configure_optimizers(lr, 0.01)
         scheduler_warmup = LinearLR(self.opt, start_factor=1e-8, total_iters=10)
-        scheduler_cosine = CosineAnnealingLR(self.opt, T_max=1000, eta_min=lr * 0.1)
+        scheduler_cosine = CosineAnnealingLR(self.opt, T_max=50, eta_min=lr * 0.1)
         self.scheduler = SequentialLR(self.opt, schedulers=[scheduler_warmup, scheduler_cosine], milestones=[10])
         self.to(self.device)
 

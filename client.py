@@ -116,8 +116,8 @@ class Actor:
             duration = time.time() - start_time
             print(f"Collected {len(data)} games in {duration:.2f}s (FPS: {len(data) / duration:.2f})")
             self.push_data(data)
-        except RuntimeWarning:
-            pass
+        except RuntimeWarning as e:
+            print(f"RuntimeWarning during self-play: {e}")
 
 
 if __name__ == '__main__':
