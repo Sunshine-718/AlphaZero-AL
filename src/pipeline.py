@@ -129,7 +129,7 @@ class TrainPipeline:
             'batch_size': self.batch_size,
             'temp': self.temp
         }
-        
+
         run_config.update(self.raw_config)
 
         swanlab.init(project="AlphaZero-AL",
@@ -137,7 +137,7 @@ class TrainPipeline:
                      config=run_config)
 
         best_counter = 0
-        
+
         self.buffer.load('./dataset/dataset.pt')
         while True:
             self.data_collector()
@@ -147,7 +147,7 @@ class TrainPipeline:
             self.net.save(self.current)
 
             print(f'batch i: {self.global_step}, episode_len: {self.episode_len}, '
-                    f'loss: {p_loss + v_loss: .8f}, entropy: {entropy: .8f}')
+                  f'loss: {p_loss + v_loss: .8f}, entropy: {entropy: .8f}')
             swanlab.log({
                 'Metric/lr': self.net.opt.param_groups[0]['lr'],
                 'Metric/Gradient Norm': grad_norm,
@@ -172,6 +172,7 @@ class TrainPipeline:
             if self.env_name == 'Connect4':
                 p0, v0, p1, v1 = self.module.inspect(self.net)
                 log_dict = {}
+                swanlab.log({"Metric/initial value/X": v0, "Metric/initial value/O": v1})
 
                 # 1. 记录 X 的动作概率 (对应原 Action probability/X)
                 # SwanLab 会在 UI 中创建一个名为 "Action probability/X" 的分组
@@ -189,7 +190,7 @@ class TrainPipeline:
                 # 4. 记录 O 的累积概率 (对应原 Action probability/O_cummulative)
                 for idx, prob in enumerate(np.cumsum(p1)):
                     log_dict[f'Action probability/O_cummulative/{idx}'] = prob
-                
+
                 swanlab.log(log_dict, step=self.global_step)
 
             flag, win_rate = self.select_best_player(self.num_eval)
