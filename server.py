@@ -18,6 +18,12 @@ TOTAL_RECEIVED_BYTES = 0
 TOTAL_SENT_BYTES = 0
 # ---------------------------
 
+# --- 数据搬运线程的共享状态 ---
+new_data_event = threading.Event()       # 通知训练线程有新数据可用
+episode_len_lock = threading.Lock()      # 保护 episode_len_list 的并发访问
+episode_len_list = []                    # 累积的 episode 长度
+# -----------------------------
+
 parser = argparse.ArgumentParser(description='AlphaZero Training Server')
 parser.add_argument('--host', '-H', type=str, default='0.0.0.0', help='Host IP')
 parser.add_argument('--port', '-P', '-p', type=int, default=7718, help='Port number')
@@ -69,23 +75,36 @@ inbox = queue.Queue()
 app = Flask(__name__)
 
 
-def data_collector(self):
-    global inbox
-    episode_len = []
-    flag = 0
-    length = inbox.qsize()
-    while length < args.q_size:
-        if flag != inbox.qsize():
-            print(f'[Pending] {length}/{args.q_size}')
-            flag = length
-        length = inbox.qsize()
-        time.sleep(1)
-    while not inbox.empty():
-        play_data = inbox.get()
+def _inbox_worker(buffer):
+    """后台线程：持续从 inbox 取数据存入 buffer，每存完一局就通知训练线程。"""
+    global episode_len_list
+    while True:
+        play_data = inbox.get()  # 阻塞等待
         for data in play_data:
-            self.buffer.store(*data)
-        episode_len.append(len(play_data))
-    self.episode_len = int(np.mean(episode_len))
+            buffer.store(*data)
+        with episode_len_lock:
+            episode_len_list.append(len(play_data))
+        new_data_event.set()  # 通知训练线程
+
+
+def data_collector(self):
+    """等待 buffer 中有足够新数据后返回（非阻塞式消费）。"""
+    global episode_len_list
+    flag = 0
+    while True:
+        with episode_len_lock:
+            n_episodes = len(episode_len_list)
+        if n_episodes >= args.q_size:
+            break
+        if flag != n_episodes:
+            print(f'[Pending] {n_episodes}/{args.q_size}')
+            flag = n_episodes
+        new_data_event.wait(timeout=1)
+        new_data_event.clear()
+
+    with episode_len_lock:
+        self.episode_len = int(np.mean(episode_len_list)) if episode_len_list else 0
+        episode_len_list.clear()
 
 
 TrainPipeline.data_collector = data_collector
@@ -189,6 +208,11 @@ if __name__ == '__main__':
     pipeline = TrainPipeline(args.env, args.model, args.name, args.n_play, config)
     buffer = ReplayBuffer(3, pipeline.buffer_size, 7, 6, 7, device=pipeline.device)
     pipeline.init_buffer(buffer)
+
+    # 启动后台数据搬运线程：inbox → buffer（持续运行）
+    worker = threading.Thread(target=_inbox_worker, args=(buffer,), daemon=True)
+    worker.start()
+
     if not args.pause:
         t = threading.Thread(target=pipeline, daemon=True)
         t.start()
