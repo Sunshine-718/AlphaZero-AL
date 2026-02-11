@@ -105,7 +105,7 @@ class CNN(Base):
         self.apply(self.init_weights)
         nn.init.constant_(self.policy_head[-2].linear.weight, 0)
         nn.init.constant_(self.value_head[-2].linear.weight, 0)
-        self.opt = SGD(self.parameters(), lr=lr, momentum=0.9, nesterov=True, fused="cuda" in self.device)
+        self.opt = SGD(self.parameters(), lr=lr, momentum=0.9, nesterov=True)
         scheduler_warmup = LinearLR(self.opt, start_factor=1e-8, total_iters=10)
         scheduler_cosine = CosineAnnealingLR(self.opt, T_max=50, eta_min=lr * 0.1)
         self.scheduler = SequentialLR(self.opt, schedulers=[scheduler_warmup, scheduler_cosine], milestones=[10])

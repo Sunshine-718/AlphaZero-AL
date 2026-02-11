@@ -176,7 +176,6 @@ class Connect4GUI(QWidget):
             n_playout=None,
             discount=0.99,
             is_selfplay=0,
-            use_cache=True,
             cache_size=10000
         )
         self.auto_reload_model()
