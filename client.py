@@ -42,6 +42,8 @@ parser.add_argument('-e', '--env', '--environment', type=str, default='Connect4'
 parser.add_argument('--retry', type=int, default=3, help='Retry times')
 
 parser.add_argument('-B', '--batch_size', type=int, default=64, help='Batch size for self-play')
+parser.add_argument('--cache_size', type=int, default=0,
+                    help='Transposition table size (0 = disabled, >0 = LRU cache capacity)')
 
 args = parser.parse_args()
 
@@ -70,7 +72,8 @@ class Actor:
                                                 c_base=args.c_base,
                                                 n_playout=args.n,
                                                 discount=args.discount,
-                                                alpha=args.alpha)
+                                                alpha=args.alpha,
+                                                cache_size=args.cache_size)
         self.mtime = 0
 
     def load_weights(self):
@@ -89,6 +92,7 @@ class Actor:
             self.net.load_state_dict(weights)
             self.net.to(args.device)
             self.mtime = float(r.headers['X-Timestamp'])
+            self.az_player.mcts.refresh_cache(self.net)
 
     # 将 @staticmethod 改为实例方法，以便访问 self
     def push_data(self, data):

@@ -1,5 +1,6 @@
 import numpy as np
 from src import mcts_cpp
+from src.Cache import LRUCache
 
 
 # 游戏名 → C++ 后端类的映射
@@ -20,7 +21,7 @@ def _default_convert_board(board, turns):
 
 class BatchedMCTS:
     def __init__(self, batch_size, c_init, c_base, discount, alpha, n_playout,
-                 game_name='Connect4', board_converter=None):
+                 game_name='Connect4', board_converter=None, cache_size=0):
         backend_cls = _BACKENDS[game_name]
         self.mcts = backend_cls(batch_size, c_init, c_base, discount, alpha)
         self.n_playout = n_playout
@@ -28,6 +29,8 @@ class BatchedMCTS:
         self.action_size = backend_cls.action_size
         self.board_shape = backend_cls.board_shape
         self._convert_board = board_converter or _default_convert_board
+        # cache_size=0 表示禁用置换表；>0 则启用 LRU 置换表
+        self.cache = LRUCache(cache_size) if cache_size > 0 else None
 
     def batch_playout(self, pv_func, current_boards, turns):
         """ current_boards: shape [batch_size, *board_shape], X: 1, O: -1
@@ -41,23 +44,62 @@ class BatchedMCTS:
             term_mask = is_term.astype(bool)
             values = term_vals.copy()
 
-            # 只对非终局 leaf 调用 NN
+            # 只对非终局 leaf 调用 NN（或查置换表）
             non_term_mask = ~term_mask
+            probs = np.zeros((self.batch_size, self.action_size), dtype=np.float32)
             if non_term_mask.any():
-                non_term_converted = self._convert_board(leaf_boards[non_term_mask], leaf_turns[non_term_mask])
-                non_term_probs, non_term_vals = pv_func.predict(non_term_converted)
+                if self.cache is None:
+                    # 置换表未启用：全部送 NN
+                    non_term_converted = self._convert_board(leaf_boards[non_term_mask], leaf_turns[non_term_mask])
+                    non_term_probs, non_term_vals = pv_func.predict(non_term_converted)
+                    probs[non_term_mask] = non_term_probs
+                    values[non_term_mask] = non_term_vals.flatten()
+                else:
+                    # 置换表启用：先查缓存，cache miss 的再批量送 NN
+                    non_term_indices = np.where(non_term_mask)[0]
+                    miss_indices = []
+                    for i in non_term_indices:
+                        # key = 棋盘原始字节 + turn 字节（43 bytes，含 turn 信息）
+                        key = leaf_boards[i].tobytes() + leaf_turns[i].item().to_bytes(1, 'little', signed=True)
+                        if key in self.cache:
+                            p, v = self.cache.get(key)
+                            probs[i] = p
+                            values[i] = v
+                        else:
+                            miss_indices.append(i)
 
-                probs = np.zeros((self.batch_size, self.action_size), dtype=np.float32)
-                probs[non_term_mask] = non_term_probs
-                values[non_term_mask] = non_term_vals.flatten()
-            else:
-                probs = np.zeros((self.batch_size, self.action_size), dtype=np.float32)
+                    if miss_indices:
+                        miss_boards = leaf_boards[miss_indices]
+                        miss_turns  = leaf_turns[miss_indices]
+                        miss_converted = self._convert_board(miss_boards, miss_turns)
+                        miss_probs, miss_vals = pv_func.predict(miss_converted)
+                        miss_vals = miss_vals.flatten()
+                        for j, i in enumerate(miss_indices):
+                            probs[i]  = miss_probs[j]
+                            values[i] = miss_vals[j]
+                            key = leaf_boards[i].tobytes() + leaf_turns[i].item().to_bytes(1, 'little', signed=True)
+                            self.cache.put(key, (miss_probs[j].copy(), miss_vals[j].item()))
+                            # 覆盖 state 字段为 converted board，供 refresh_cache 批量重算
+                            self.cache._od[key]['state'] = miss_converted[j:j+1]
 
             self.mcts.backprop_batch(
                 np.ascontiguousarray(probs, dtype=np.float32),
                 np.ascontiguousarray(values, dtype=np.float32),
                 is_term
             )
+        return self
+
+    def refresh_cache(self, pv_func):
+        """网络权重更新后调用，用新 NN 重新计算缓存中所有条目的 prob 和 value"""
+        if self.cache is None or len(self.cache) == 0:
+            return self
+        od = self.cache._od
+        keys = list(od.keys())
+        states = np.concatenate([od[k]['state'] for k in keys], axis=0)
+        new_probs, new_vals = pv_func.predict(states)
+        new_vals = new_vals.flatten()
+        for j, k in enumerate(keys):
+            od[k]['value'] = (new_probs[j].copy(), new_vals[j].item())
         return self
 
     def reset_env(self, index):
