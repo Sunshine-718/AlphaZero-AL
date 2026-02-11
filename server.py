@@ -97,7 +97,7 @@ def data_collector(self):
         if n_episodes >= args.q_size:
             break
         if flag != n_episodes:
-            print(f'[Pending] {n_episodes}/{args.q_size}')
+            # print(f'[Pending] {n_episodes}/{args.q_size}')
             flag = n_episodes
         new_data_event.wait(timeout=1)
         new_data_event.clear()

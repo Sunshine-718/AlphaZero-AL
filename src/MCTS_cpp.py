@@ -2,21 +2,35 @@ import numpy as np
 from src import mcts_cpp
 
 
+# 游戏名 → C++ 后端类的映射
+_BACKENDS = {
+    'Connect4': mcts_cpp.BatchedMCTS_Connect4,
+    # 添加新游戏:
+    # 'TicTacToe': mcts_cpp.BatchedMCTS_TicTacToe,
+}
+
+
+def _default_convert_board(board, turns):
+    """默认 3 通道转换: player1 平面, player2 平面, turn 平面"""
+    plane_x = (board == 1).astype(np.float32)
+    plane_o = (board == -1).astype(np.float32)
+    plane_turn = np.ones_like(board, dtype=np.float32) * turns[:, None, None]
+    return np.stack([plane_x, plane_o, plane_turn], axis=1)
+
+
 class BatchedMCTS:
-    def __init__(self, batch_size, c_init, c_base, discount, alpha, n_playout):
-        self.mcts = mcts_cpp.BatchedMCTS(batch_size, c_init, c_base, discount, alpha)
+    def __init__(self, batch_size, c_init, c_base, discount, alpha, n_playout,
+                 game_name='Connect4', board_converter=None):
+        backend_cls = _BACKENDS[game_name]
+        self.mcts = backend_cls(batch_size, c_init, c_base, discount, alpha)
         self.n_playout = n_playout
         self.batch_size = batch_size
-
-    @staticmethod
-    def _convert_board(board, turns):
-        plane_x = (board == 1).astype(np.float32)
-        plane_o = (board == -1).astype(np.float32)
-        plane_turn = np.ones_like(board, dtype=np.float32) * turns[:, None, None]
-        return np.stack([plane_x, plane_o, plane_turn], axis=1)
+        self.action_size = backend_cls.action_size
+        self.board_shape = backend_cls.board_shape
+        self._convert_board = board_converter or _default_convert_board
 
     def batch_playout(self, pv_func, current_boards, turns):
-        """ current_boards: shape [batch_size, 6, 7], X: 1, O: -1
+        """ current_boards: shape [batch_size, *board_shape], X: 1, O: -1
             turns: shape [batch_size, ], 1, -1"""
         current_boards = current_boards.astype(np.int8)
         turns = turns.astype(np.int32)
@@ -52,7 +66,7 @@ class BatchedMCTS:
 
     def get_visits_count(self):
         counts = self.mcts.get_all_counts()
-        return np.array(counts).reshape(self.batch_size, -1)
+        return np.array(counts).reshape(self.batch_size, self.action_size)
 
     def get_mcts_probs(self):
         counts = self.get_visits_count()

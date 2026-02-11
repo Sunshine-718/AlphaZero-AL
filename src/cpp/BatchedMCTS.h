@@ -8,11 +8,15 @@
 
 namespace AlphaZero
 {
+    template <MCTSGame Game>
     class BatchedMCTS
     {
     private:
+        static constexpr int ACTION_SIZE = Game::Traits::ACTION_SIZE;
+        static constexpr int BOARD_SIZE = Game::Traits::BOARD_SIZE;
+
         int n_envs;
-        std::vector<std::unique_ptr<MCTS>> mcts_envs;
+        std::vector<std::unique_ptr<MCTS<Game>>> mcts_envs;
 
     public:
         BatchedMCTS(int num_envs, float c_init, float c_base, float discount, float alpha)
@@ -21,7 +25,7 @@ namespace AlphaZero
             mcts_envs.reserve(n_envs);
             for (int i = 0; i < n_envs; ++i)
             {
-                mcts_envs.push_back(std::make_unique<MCTS>(c_init, c_base, discount, alpha));
+                mcts_envs.push_back(std::make_unique<MCTS<Game>>(c_init, c_base, discount, alpha));
             }
         }
 
@@ -66,19 +70,18 @@ namespace AlphaZero
             int8_t *output_boards,
             float *output_term_values,
             uint8_t *output_is_term,
-            int *output_turns) // [ROBUSTNESS FIX] 新增 output_turns
+            int *output_turns)
         {
 #pragma omp parallel for schedule(static)
             for (int i = 0; i < n_envs; ++i)
             {
-                Connect4 current_game;
-                int offset = i * Config::ROWS * Config::COLS;
+                Game current_game;
+                int offset = i * BOARD_SIZE;
 
-                std::memcpy(current_game.board, input_boards + offset, Config::ROWS * Config::COLS);
-                current_game.turn = turns[i];
-                current_game.sync_from_board(); // 从 board 数组重建 bitboard 状态
+                current_game.import_board(input_boards + offset);
+                current_game.set_turn(turns[i]);
 
-                Connect4 leaf_board;
+                Game leaf_board;
                 bool is_term;
                 float term_val;
 
@@ -86,12 +89,9 @@ namespace AlphaZero
 
                 output_is_term[i] = is_term ? 1 : 0;
                 output_term_values[i] = term_val;
+                output_turns[i] = leaf_board.get_turn();
 
-                // [ROBUSTNESS FIX] 直接返回 C++ 状态中的轮次，不让 Python 猜
-                output_turns[i] = leaf_board.turn;
-
-                // board 数组在 step() 中已同步，无需额外 sync_to_board()
-                std::memcpy(output_boards + offset, leaf_board.board, Config::ROWS * Config::COLS);
+                std::memcpy(output_boards + offset, leaf_board.board_data(), BOARD_SIZE);
             }
         }
 
@@ -104,14 +104,10 @@ namespace AlphaZero
             for (int i = 0; i < n_envs; ++i)
             {
                 float val = values[i];
-                // 如果是终端状态，MCTS 应该使用之前 search_batch 算出的真实收益，
-                // 或者是这里传递进来的值（假设 Python 端已经处理好）。
-                // 通常 Python 端逻辑是：如果 is_term，val = term_val。
-                // 我们直接信任传入的 values[i]。
 
-                std::vector<float> policy(Config::ACTION_SIZE);
-                int offset = i * Config::ACTION_SIZE;
-                for (int a = 0; a < Config::ACTION_SIZE; ++a)
+                std::vector<float> policy(ACTION_SIZE);
+                int offset = i * ACTION_SIZE;
+                for (int a = 0; a < ACTION_SIZE; ++a)
                 {
                     policy[a] = policy_logits[offset + a];
                 }
@@ -121,14 +117,13 @@ namespace AlphaZero
 
         std::vector<int> get_all_counts()
         {
-// #pragma omp parallel for schedule(static)
-            std::vector<int> all_counts(n_envs * Config::ACTION_SIZE);
+            std::vector<int> all_counts(n_envs * ACTION_SIZE);
 
             for (int i = 0; i < n_envs; ++i)
             {
                 std::vector<int> counts = mcts_envs[i]->get_counts();
-                int offset = i * Config::ACTION_SIZE;
-                for (int a = 0; a < Config::ACTION_SIZE; ++a)
+                int offset = i * ACTION_SIZE;
+                for (int a = 0; a < ACTION_SIZE; ++a)
                 {
                     all_counts[offset + a] = counts[a];
                 }

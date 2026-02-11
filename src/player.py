@@ -138,11 +138,13 @@ class AlphaZeroPlayer(MCTSPlayer):
 
 
 class BatchedAlphaZeroPlayer:
-    def __init__(self, policy_value_fn, n_envs, c_init=1.25, c_base=500, n_playout=100, discount=1, alpha=0.3):
+    def __init__(self, policy_value_fn, n_envs, c_init=1.25, c_base=500, n_playout=100, discount=1, alpha=0.3,
+                 game_name='Connect4', board_converter=None):
         self.pv_func = policy_value_fn
-        self.mcts = BatchedMCTS(n_envs, c_init, c_base, discount, alpha, n_playout)
+        self.mcts = BatchedMCTS(n_envs, c_init, c_base, discount, alpha, n_playout,
+                                game_name=game_name, board_converter=board_converter)
         self.n_envs = n_envs
-        self.n_actions = policy_value_fn.n_actions
+        self.n_actions = self.mcts.action_size
         self.discount = discount
 
     def to(self, device='cpu'):

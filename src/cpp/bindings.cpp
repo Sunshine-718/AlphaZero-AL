@@ -3,50 +3,71 @@
 #include <pybind11/stl.h>
 
 #include "BatchedMCTS.h"
+#include "Connect4.h"
+// 添加新游戏时在这里 include，例如:
+// #include "TicTacToe.h"
 
 namespace py = pybind11;
 using namespace AlphaZero;
 
-PYBIND11_MODULE(mcts_cpp, m)
+// 通用注册函数：将 BatchedMCTS<Game> 绑定到 Python，所有维度从 Game::Traits 获取
+template <MCTSGame Game>
+void register_batched_mcts(py::module_ &m, const char *name)
 {
-    m.doc() = "AlphaZero Batched MCTS plugin using pybind11";
+    using BM = BatchedMCTS<Game>;
+    constexpr int ACTION_SIZE = Game::Traits::ACTION_SIZE;
+    constexpr int BOARD_SIZE = Game::Traits::BOARD_SIZE;
 
-    py::class_<BatchedMCTS>(m, "BatchedMCTS")
+    py::class_<BM>(m, name)
         .def(py::init<int, float, float, float, float>(),
              py::arg("n_envs"), py::arg("c_init"), py::arg("c_base"),
              py::arg("discount"), py::arg("alpha"))
 
-        .def("set_seed", &BatchedMCTS::set_seed, "Set random seed for all OpenMP threads")
+        .def("set_seed", &BM::set_seed, "Set random seed for all OpenMP threads")
 
-        .def("reset_env", &BatchedMCTS::reset_env)
+        .def("reset_env", &BM::reset_env)
 
-        .def("get_all_counts", &BatchedMCTS::get_all_counts)
+        .def("get_all_counts", &BM::get_all_counts)
 
-        .def("prune_roots", [](BatchedMCTS &self, 
+        // 暴露游戏维度信息，供 Python 端查询
+        .def_property_readonly_static("action_size",
+            [](py::object) { return ACTION_SIZE; })
+        .def_property_readonly_static("board_size",
+            [](py::object) { return BOARD_SIZE; })
+        .def_property_readonly_static("board_shape",
+            [](py::object) {
+                py::tuple shape(Game::Traits::BOARD_SHAPE.size());
+                for (size_t i = 0; i < Game::Traits::BOARD_SHAPE.size(); ++i)
+                    shape[i] = Game::Traits::BOARD_SHAPE[i];
+                return shape;
+            })
+
+        .def("prune_roots", [](BM &self,
                                py::array_t<int, py::array::c_style | py::array::forcecast> actions)
              {
             py::buffer_info buf = actions.request();
-
             if (buf.ndim != 1) throw std::runtime_error("Actions must be 1D array");
-
             std::span<const int> s(static_cast<int*>(buf.ptr), buf.size);
             self.prune_roots(s); })
 
-        .def("search_batch", [](BatchedMCTS &self, 
-                                py::array_t<int8_t, py::array::c_style | py::array::forcecast> input_boards, 
+        .def("search_batch", [](BM &self,
+                                py::array_t<int8_t, py::array::c_style | py::array::forcecast> input_boards,
                                 py::array_t<int, py::array::c_style | py::array::forcecast> turns)
              {
             auto buf_in = input_boards.request();
             auto buf_turns = turns.request();
-            int batch_size = buf_in.shape[0];
-            
-            // [SECURITY FIX] 防止缓冲区溢出
+            py::ssize_t batch_size = buf_in.shape[0];
+
             if (buf_turns.size != batch_size) throw std::runtime_error("Turns size must match batch size");
 
-            py::array_t<int8_t> out_boards({batch_size, 6, 7});
+            // 从 Traits 动态构建输出形状，不再硬编码
+            std::vector<py::ssize_t> out_shape = {batch_size};
+            for (auto d : Game::Traits::BOARD_SHAPE) out_shape.push_back(d);
+
+            py::array_t<int8_t> out_boards(out_shape);
             py::array_t<float> out_vals(batch_size);
             py::array_t<uint8_t> out_term(batch_size);
-            py::array_t<int> out_turns(batch_size); // [NEW OUTPUT]
+            py::array_t<int> out_turns(batch_size);
 
             int8_t* ptr_in = static_cast<int8_t*>(buf_in.ptr);
             int* ptr_turns = static_cast<int*>(buf_turns.ptr);
@@ -57,19 +78,17 @@ PYBIND11_MODULE(mcts_cpp, m)
             int* ptr_out_turns = static_cast<int*>(out_turns.request().ptr);
 
             {
-                py::gil_scoped_release release; 
+                py::gil_scoped_release release;
                 self.search_batch(ptr_in, ptr_turns, ptr_out_boards, ptr_out_vals, ptr_out_term, ptr_out_turns);
             }
-            
-            // 返回4个元素的元组
+
             return py::make_tuple(out_boards, out_vals, out_term, out_turns); })
 
-        .def("backprop_batch", [](BatchedMCTS &self,
+        .def("backprop_batch", [](BM &self,
                                   py::array_t<float, py::array::c_style | py::array::forcecast> policy_logits,
                                   py::array_t<float, py::array::c_style | py::array::forcecast> values,
                                   py::array_t<uint8_t, py::array::c_style | py::array::forcecast> is_term)
              {
-            
             auto buf_pol = policy_logits.request();
             auto buf_val = values.request();
             auto buf_term = is_term.request();
@@ -82,4 +101,16 @@ PYBIND11_MODULE(mcts_cpp, m)
                 py::gil_scoped_release release;
                 self.backprop_batch(ptr_pol, ptr_val, ptr_term);
             } });
+}
+
+PYBIND11_MODULE(mcts_cpp, m)
+{
+    m.doc() = "AlphaZero Batched MCTS (multi-game support)";
+
+    // === 注册各游戏的 BatchedMCTS ===
+    register_batched_mcts<Connect4>(m, "BatchedMCTS_Connect4");
+
+    // 添加新游戏只需一行:
+    // register_batched_mcts<TicTacToe>(m, "BatchedMCTS_TicTacToe");
+    // register_batched_mcts<Gomoku>(m, "BatchedMCTS_Gomoku");
 }

@@ -1,7 +1,7 @@
 #ifndef D77F1FBF_0C41_461C_8809_93FD96ACA0C5
 #define D77F1FBF_0C41_461C_8809_93FD96ACA0C5
 #pragma once
-#include "Connect4.h"
+#include "GameContext.h"
 #include "MCTSNode.h"
 #include <random>
 #include <vector>
@@ -14,25 +14,30 @@ namespace AlphaZero
         return rng;
     }
 
+    template <MCTSGame Game>
     class MCTS
     {
     public:
+        static constexpr int ACTION_SIZE = Game::Traits::ACTION_SIZE;
+        using Node = MCTSNode<ACTION_SIZE>;
+
         // 节点池
-        std::vector<MCTSNode> node_pool;
+        std::vector<Node> node_pool;
         int32_t root_idx = 0;
         int32_t next_free_node = 0;
 
-        Connect4 sim_env;
+        Game sim_env;
         int32_t current_leaf_idx = -1;
         bool current_flipped = false;
 
         float c_init, c_base, discount, alpha;
+        float noise_epsilon;
 
-        MCTS(float c_i, float c_b, float disc, float a)
-            : c_init(c_i), c_base(c_b), discount(disc), alpha(a)
+        MCTS(float c_i, float c_b, float disc, float a, float noise_eps = 0.25f)
+            : c_init(c_i), c_base(c_b), discount(disc), alpha(a), noise_epsilon(noise_eps)
         {
             // 预分配内存，减少 search 过程中的扩容
-            node_pool.resize(2000); 
+            node_pool.resize(2000);
             reset();
         }
 
@@ -43,7 +48,7 @@ namespace AlphaZero
         }
 
         int32_t allocate_node(int32_t parent, float prior) {
-            if (next_free_node >= node_pool.size()) {
+            if (next_free_node >= static_cast<int32_t>(node_pool.size())) {
                 node_pool.resize(node_pool.size() * 2);
             }
             int32_t idx = next_free_node++;
@@ -54,7 +59,7 @@ namespace AlphaZero
         void prune_root(int action)
         {
             int32_t child_idx = node_pool[root_idx].children[action];
-            if (action >= 0 && action < Config::ACTION_SIZE && child_idx != -1)
+            if (action >= 0 && action < ACTION_SIZE && child_idx != -1)
             {
                 root_idx = child_idx;
                 node_pool[root_idx].parent = -1;
@@ -66,7 +71,7 @@ namespace AlphaZero
             }
         }
 
-        void simulate(const Connect4 &start_state, Connect4 &out_nn_input_board, bool &out_is_terminal, float &out_terminal_val)
+        void simulate(const Game &start_state, Game &out_nn_input_board, bool &out_is_terminal, float &out_terminal_val)
         {
             sim_env = start_state;
             int32_t curr_idx = root_idx;
@@ -77,7 +82,7 @@ namespace AlphaZero
                 float best_score = -std::numeric_limits<float>::infinity();
                 int best_action = -1;
                 float p_n = static_cast<float>(node_pool[curr_idx].n_visits);
-                
+
                 auto valids = sim_env.get_valid_moves();
                 if (valids.empty()) break;
 
@@ -86,7 +91,7 @@ namespace AlphaZero
                     int32_t child_idx = node_pool[curr_idx].children[action];
                     if (child_idx != -1)
                     {
-                        float score = node_pool[child_idx].get_ucb(c_init, c_base, p_n, curr_idx == root_idx);
+                        float score = node_pool[child_idx].get_ucb(c_init, c_base, p_n, curr_idx == root_idx, noise_epsilon);
                         if (score > best_score) {
                             best_score = score;
                             best_action = action;
@@ -150,7 +155,7 @@ namespace AlphaZero
                 auto valids = sim_env.get_valid_moves();
 
                 // Dirichlet 噪声（栈上数组，避免堆分配）
-                float noise_arr[Config::ACTION_SIZE];
+                float noise_arr[ACTION_SIZE];
                 int noise_count = 0;
                 if (node_pool[current_leaf_idx].parent == -1 && alpha > 0.0f)  // 根节点
                 {
@@ -205,8 +210,8 @@ namespace AlphaZero
 
         std::vector<int> get_counts() const
         {
-            std::vector<int> counts(Config::ACTION_SIZE, 0);
-            for (int i = 0; i < Config::ACTION_SIZE; ++i)
+            std::vector<int> counts(ACTION_SIZE, 0);
+            for (int i = 0; i < ACTION_SIZE; ++i)
             {
                 int32_t child_idx = node_pool[root_idx].children[i];
                 if (child_idx != -1)

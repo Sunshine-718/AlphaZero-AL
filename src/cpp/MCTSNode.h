@@ -1,7 +1,6 @@
 #ifndef F7A41D12_1F96_492F_AB14_DA76ADFB91E6
 #define F7A41D12_1F96_492F_AB14_DA76ADFB91E6
 #pragma once
-#include "Constants.h"
 #include <array>
 #include <cmath>
 #include <limits>
@@ -9,11 +8,12 @@
 
 namespace AlphaZero
 {
+    template <int ACTION_SIZE>
     struct MCTSNode
     {
         int32_t parent = -1;
         // 存储子节点在数组中的索引，初始化为 -1
-        std::array<int32_t, Config::ACTION_SIZE> children;
+        std::array<int32_t, ACTION_SIZE> children;
 
         int n_visits = 0;
         float Q = 0.0f;
@@ -37,16 +37,17 @@ namespace AlphaZero
         }
 
         // 计算 UCB 时需要传入父节点的访问次数，因为现在不通过指针找 parent
-        [[nodiscard]] float get_ucb(float c_init, float c_base, float parent_n, bool is_root_node) const {
+        [[nodiscard]] float get_ucb(float c_init, float c_base, float parent_n,
+                                     bool is_root_node, float noise_epsilon) const {
             float effective_prior = prior;
             if (is_root_node) {
-                effective_prior = (1.0f - Config::NOISE_EPSILON) * prior + Config::NOISE_EPSILON * noise;
+                effective_prior = (1.0f - noise_epsilon) * prior + noise_epsilon * noise;
             }
-            
+
             if (n_visits == 0) {
                 return std::numeric_limits<float>::infinity();
             }
-            
+
             float c_puct = c_init + std::log((parent_n + c_base + 1.0f) / c_base);
             float u_score = c_puct * effective_prior * std::sqrt(parent_n) / (1.0f + n_visits);
             return -Q + u_score;

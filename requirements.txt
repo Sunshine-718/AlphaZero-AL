@@ -12,3 +12,4 @@ flask-socketio
 python-socketio
 eventlet
 requests
+pybind11
