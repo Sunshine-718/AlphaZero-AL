@@ -38,12 +38,20 @@ class BatchedMCTS:
         for _ in range(self.n_playout):
             leaf_boards, term_vals, is_term, leaf_turns = self.mcts.search_batch(current_boards, turns)
 
-            probs, values = pv_func.predict(self._convert_board(leaf_boards, leaf_turns))
-            values = values.flatten()
-
-            # 终局状态使用实际胜负值，而非 NN 预测
             term_mask = is_term.astype(bool)
-            values[term_mask] = term_vals[term_mask]
+            values = term_vals.copy()
+
+            # 只对非终局 leaf 调用 NN
+            non_term_mask = ~term_mask
+            if non_term_mask.any():
+                non_term_converted = self._convert_board(leaf_boards[non_term_mask], leaf_turns[non_term_mask])
+                non_term_probs, non_term_vals = pv_func.predict(non_term_converted)
+
+                probs = np.zeros((self.batch_size, self.action_size), dtype=np.float32)
+                probs[non_term_mask] = non_term_probs
+                values[non_term_mask] = non_term_vals.flatten()
+            else:
+                probs = np.zeros((self.batch_size, self.action_size), dtype=np.float32)
 
             self.mcts.backprop_batch(
                 np.ascontiguousarray(probs, dtype=np.float32),
