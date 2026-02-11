@@ -167,20 +167,26 @@ class BatchedAlphaZeroPlayer:
         for i in range(self.n_envs):
             visit = visits[i]
             temp = temps[i]
-            visit_sum = visit.sum()
-            if visit_sum == 0:
-                probs = np.ones_like(visit) / len(visit)
-            else:
-                probs = visit / visit_sum
 
+            # 训练策略目标：与 Python AlphaZeroPlayer 一致，使用 softmax(log(visits)/temp)
+            action_probs = np.zeros(self.n_actions, dtype=np.float32)
+            valid_mask = visit > 0
+            if valid_mask.any():
+                log_visits = np.log(np.maximum(visit[valid_mask], 1e-8))
+                visit_dist = softmax(log_visits / max(temp, 1e-8))
+                action_probs[valid_mask] = visit_dist
+            else:
+                action_probs = np.ones(self.n_actions, dtype=np.float32) / self.n_actions
+
+            # 动作采样
             if temp == 0:
                 action = np.argmax(visit)
             else:
-                visit_temp = np.power(visit, 1.0 / temp)
-                prob_sample = visit_temp / visit_temp.sum()
-                action = np.random.choice(len(visit), p=prob_sample)
+                valid_actions = np.where(valid_mask)[0]
+                action = np.random.choice(valid_actions, p=visit_dist)
+
             batch_actions.append(action)
-            batch_probs.append(probs)
+            batch_probs.append(action_probs)
         actions_array = np.array(batch_actions, dtype=np.int32)
         self.mcts.prune_roots(actions_array)
         return batch_actions, np.array(batch_probs)

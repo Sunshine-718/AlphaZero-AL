@@ -22,12 +22,18 @@ class BatchedMCTS:
         turns = turns.astype(np.int32)
 
         for _ in range(self.n_playout):
-            leaf_boards, _, is_term, leaf_turns = self.mcts.search_batch(current_boards, turns)
+            leaf_boards, term_vals, is_term, leaf_turns = self.mcts.search_batch(current_boards, turns)
 
             probs, values = pv_func.predict(self._convert_board(leaf_boards, leaf_turns))
+            values = values.flatten()
+
+            # 终局状态使用实际胜负值，而非 NN 预测
+            term_mask = is_term.astype(bool)
+            values[term_mask] = term_vals[term_mask]
+
             self.mcts.backprop_batch(
-                np.ascontiguousarray(probs, dtype=np.float32), 
-                np.ascontiguousarray(values.flatten(), dtype=np.float32), 
+                np.ascontiguousarray(probs, dtype=np.float32),
+                np.ascontiguousarray(values, dtype=np.float32),
                 is_term
             )
         return self

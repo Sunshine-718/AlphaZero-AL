@@ -113,7 +113,7 @@ namespace AlphaZero
                 {
                     policy[a] = policy_logits[offset + a];
                 }
-                mcts_envs[i]->backprop(policy, val);
+                mcts_envs[i]->backprop(policy, val, is_term[i] != 0);
             }
         }
 

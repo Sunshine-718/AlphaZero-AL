@@ -134,57 +134,61 @@ namespace AlphaZero
             out_nn_input_board = sim_env;
         }
 
-        void backprop(const std::vector<float> &policy_logits, float value)
+        void backprop(const std::vector<float> &policy_logits, float value, bool is_terminal)
         {
             if (current_leaf_idx == -1) return;
 
-            std::vector<float> final_policy = policy_logits;
-            if (current_flipped)
+            // 终局状态不展开，保持为叶子节点（与 Python MCTS_AZ 行为一致）
+            if (!is_terminal)
             {
-                std::reverse(final_policy.begin(), final_policy.end());
-                sim_env.flip();
-            }
-
-            std::vector<int> valids = sim_env.get_valid_moves();
-
-            std::vector<float> noise_vec;
-            if (node_pool[current_leaf_idx].parent == -1 && alpha > 0.0f)  // 根节点
-            {
-                std::mt19937& rng = get_rng();
-                std::gamma_distribution<float> gamma(alpha, 1.0f);
-
-                float sum = 0.0f;
-                for (size_t i = 0; i < valids.size(); ++i)
+                std::vector<float> final_policy = policy_logits;
+                if (current_flipped)
                 {
-                    float n = gamma(rng);
-                    noise_vec.push_back(n);
-                    sum += n;
+                    std::reverse(final_policy.begin(), final_policy.end());
+                    sim_env.flip();
                 }
-                for (float &n : noise_vec)
-                    n /= sum;
-            }
 
-            float policy_sum = 0.0f;
-            for (int action : valids)
-            {
-                policy_sum += final_policy[action];
-            }
+                std::vector<int> valids = sim_env.get_valid_moves();
 
-            // 展开逻辑
-            int noise_idx = 0;
-            for (int action : valids) {
-                float prob = final_policy[action] / (policy_sum + 1e-8f);
-                if (node_pool[current_leaf_idx].children[action] == -1) {
-                    int32_t new_node = allocate_node(current_leaf_idx, prob);
-                    node_pool[current_leaf_idx].children[action] = new_node;
-                    
-                    // 设置 noise
-                    if (node_pool[current_leaf_idx].parent == -1 && !noise_vec.empty()) {
-                        node_pool[new_node].noise = noise_vec[noise_idx++];
+                std::vector<float> noise_vec;
+                if (node_pool[current_leaf_idx].parent == -1 && alpha > 0.0f)  // 根节点
+                {
+                    std::mt19937& rng = get_rng();
+                    std::gamma_distribution<float> gamma(alpha, 1.0f);
+
+                    float sum = 0.0f;
+                    for (size_t i = 0; i < valids.size(); ++i)
+                    {
+                        float n = gamma(rng);
+                        noise_vec.push_back(n);
+                        sum += n;
+                    }
+                    for (float &n : noise_vec)
+                        n /= sum;
+                }
+
+                float policy_sum = 0.0f;
+                for (int action : valids)
+                {
+                    policy_sum += final_policy[action];
+                }
+
+                // 展开逻辑
+                int noise_idx = 0;
+                for (int action : valids) {
+                    float prob = final_policy[action] / (policy_sum + 1e-8f);
+                    if (node_pool[current_leaf_idx].children[action] == -1) {
+                        int32_t new_node = allocate_node(current_leaf_idx, prob);
+                        node_pool[current_leaf_idx].children[action] = new_node;
+
+                        // 设置 noise
+                        if (node_pool[current_leaf_idx].parent == -1 && !noise_vec.empty()) {
+                            node_pool[new_node].noise = noise_vec[noise_idx++];
+                        }
                     }
                 }
+                node_pool[current_leaf_idx].is_expanded = true;
             }
-            node_pool[current_leaf_idx].is_expanded = true;
 
             // 迭代式更新，替代递归
             int32_t update_idx = current_leaf_idx;

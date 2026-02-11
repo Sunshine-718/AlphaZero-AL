@@ -108,8 +108,8 @@ class Game:
                     play_data = zip(states, traj['actions'], traj['probs'], discount, winner_z, next_states, dones)
                     completed_data[i] = (winner, tuple(play_data))
                     
-                    # 游戏结束，重置该环境的 MCTS 树（可选，取决于是否复用）
-                    # player.reset_env(i) 
+                    # 游戏结束，重置该环境的 MCTS 树
+                    player.mcts.reset_env(i)
                 else:
                     next_active_indices.append(i)
             
