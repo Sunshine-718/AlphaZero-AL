@@ -24,7 +24,7 @@ signal.signal(signal.SIGINT, _stop)
 signal.signal(signal.SIGTERM, _stop)
 
 parser = argparse.ArgumentParser(description="AlphaZero Actor.")
-parser.add_argument('-n', type=int, default=50,
+parser.add_argument('-n', type=int, default=100,
                     help='Number of simulations before AlphaZero make an action')
 parser.add_argument('--host', '-H', type=str, default='127.0.0.1', help='Host IP')
 parser.add_argument('--port', '-P', '-p', type=int, default=7718, help='Port number')
@@ -34,14 +34,14 @@ parser.add_argument('-a', '--alpha', type=float, default=0.3, help='Dirichlet al
 parser.add_argument('--n_play', type=int, default=1, help='n_playout')
 parser.add_argument('--discount', type=float, default=0.99, help='Discount factor')
 parser.add_argument('-t', '--temp', '--temperature', type=float, default=1, help='Softmax temperature')
-parser.add_argument('--tempD', type=float, default=0.93, help='Temperature discount factor')
+parser.add_argument('--tempD', type=float, default=0.9, help='Temperature discount factor')
 parser.add_argument('-m', '--model', type=str, default='CNN', help='Model type (CNN)')
 parser.add_argument('-d', '--device', type=str, default='cuda' if torch.cuda.is_available()
                     else 'cpu', help='Device type')
 parser.add_argument('-e', '--env', '--environment', type=str, default='Connect4', help='Environment name')
 parser.add_argument('--retry', type=int, default=3, help='Retry times')
 
-parser.add_argument('-B', '--batch_size', type=int, default=64, help='Batch size for self-play')
+parser.add_argument('-B', '--batch_size', type=int, default=100, help='Batch size for self-play')
 parser.add_argument('--cache_size', type=int, default=0,
                     help='Transposition table size (0 = disabled, >0 = LRU cache capacity)')
 

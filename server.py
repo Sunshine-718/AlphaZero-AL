@@ -23,16 +23,14 @@ parser.add_argument('--host', '-H', type=str, default='0.0.0.0', help='Host IP')
 parser.add_argument('--port', '-P', '-p', type=int, default=7718, help='Port number')
 parser.add_argument('-n', type=int, default=100,
                     help='Number of simulations before AlphaZero make an action')
-parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
+parser.add_argument('--lr', type=float, default=1e-2, help='Learning rate')
 parser.add_argument('-c', '--c_init', type=float, default=1.25, help='C_puct init')
 parser.add_argument('-a', '--alpha', type=float, default=0.3, help='Dirichlet alpha')
 parser.add_argument('-b', '--batch_size', type=int, default=512, help='Batch size')
 parser.add_argument('--q_size', type=int, default=100, help='Minimum buffer size before training starts')
 parser.add_argument('--buf', '--buffer_size', type=int, default=100000, help='Buffer size')
 parser.add_argument('--mcts_n', type=int, default=1000, help='MCTS n_playout')
-parser.add_argument('--n_play', type=int, default=1, help='n_playout')
 parser.add_argument('--discount', type=float, default=0.99, help='Discount factor')
-parser.add_argument('-t', '--temp', type=float, default=1, help='Softmax temperature')
 parser.add_argument('--thres', type=float, default=0.65, help='Win rate threshold')
 parser.add_argument('--num_eval', type=int, default=50, help='Number of evaluation.')
 parser.add_argument('-m', '--model', type=str, default='CNN', help='Model type (CNN)')
@@ -41,13 +39,11 @@ parser.add_argument('-d', '--device', type=str, default='cuda' if torch.cuda.is_
 parser.add_argument('-e', '--env', '--environment', type=str, default='Connect4', help='Environment name')
 parser.add_argument('--interval', type=int, default=10, help='Eval interval')
 parser.add_argument('--name', type=str, default='AZ', help='Name of AlphaZero')
-parser.add_argument('--no-cache', action='store_false', dest='cache', help='Disable transposition table')
-parser.add_argument('--cache_size', type=int, default=5000, help='LRU transposition table max size')
-parser.add_argument('--pause', action='store_true', help='Pause')
+parser.add_argument('--cache_size', type=int, default=10000, help='LRU transposition table max size')
+
 args = parser.parse_args()
 
 config = {"lr": args.lr,
-          "temp": args.temp,
           "c_puct": args.c_init,
           "n_playout": args.n,
           "discount": args.discount,
@@ -60,7 +56,6 @@ config = {"lr": args.lr,
           "win_rate_threshold": args.thres,
           "interval": args.interval,
           "device": args.device,
-          "use_cache": args.cache,
           "cache_size": args.cache_size}
 
 
@@ -73,12 +68,13 @@ class ServerPipeline(TrainPipeline):
         self._episode_len_lock = threading.Lock()
         self._new_data_event = threading.Event()
         self._inbox: queue.Queue = queue.Queue()
+        self.episode_len = None
 
     def data_collector(self):
         """冷启动阶段等待 buffer 积累到 min_buffer_size，之后直接返回让训练持续跑。"""
         if self._warmed_up:
             with self._episode_len_lock:
-                self.episode_len = int(np.mean(self._episode_len_list)) if self._episode_len_list else 0
+                self.episode_len = int(np.mean(self._episode_len_list)) if self._episode_len_list else None
                 self._episode_len_list.clear()
             return
 
@@ -181,7 +177,7 @@ if __name__ == '__main__':
     log_file = 'flask_access.log'
     with open(log_file, 'w'):
         pass
-    pipeline = ServerPipeline(args.env, args.model, args.name, args.n_play, config,
+    pipeline = ServerPipeline(args.env, args.model, args.name, config,
                                min_buffer_size=args.q_size)
     rows, cols = pipeline.env.board.shape
     buffer = ReplayBuffer(pipeline.net.in_dim, pipeline.buffer_size,
@@ -193,9 +189,8 @@ if __name__ == '__main__':
     worker = threading.Thread(target=pipeline.inbox_worker, args=(buffer,), daemon=True)
     worker.start()
 
-    if not args.pause:
-        t = threading.Thread(target=pipeline, daemon=True)
-        t.start()
+    t = threading.Thread(target=pipeline, daemon=True)
+    t.start()
 
     # Flask 日志配置
     handler = logging.FileHandler(log_file, encoding='utf-8')

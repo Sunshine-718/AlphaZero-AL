@@ -10,7 +10,7 @@ import swanlab
 
 
 class TrainPipeline(ABC):
-    def __init__(self, env_name='Connect4', model='CNN', name='AZ', play_batch_size=1, config=None):
+    def __init__(self, env_name='Connect4', model='CNN', name='AZ', config=None):
         collection = ('Connect4', )  # NBTTT implementation not yet finished.
         if env_name not in collection:
             raise ValueError(f'Environment does not exist, available env: {collection}')
@@ -21,7 +21,6 @@ class TrainPipeline(ABC):
         self.name = f'{name}_{env_name}'
         self.params = './params'
         self.global_step = 0
-        self.play_batch_size = play_batch_size
         self.raw_config = config if config else {}
         for key, value in config.items():
             setattr(self, key, value)
@@ -37,7 +36,7 @@ class TrainPipeline(ABC):
         self.net.load(self.current)
         self.az_player = AlphaZeroPlayer(self.net, c_init=self.c_puct, n_playout=self.n_playout,
                                          discount=self.discount, alpha=self.dirichlet_alpha, is_selfplay=1,
-                                         use_cache=self.use_cache, cache_size=self.cache_size)
+                                         cache_size=self.cache_size)
         self.update_best_net()
         self.elo = Elo(self.init_elo, 1500)
         if not os.path.exists('params'):
@@ -109,7 +108,6 @@ class TrainPipeline(ABC):
         print(f'\tDirichlet alpha: {self.dirichlet_alpha}')
         print(f'\tBuffer size: {self.buffer_size}')
         print(f'\tBatch size: {self.batch_size}')
-        print(f'\tTemperature: {self.temp}')
         print('=' * 50)
 
     def update_best_net(self):
@@ -121,7 +119,6 @@ class TrainPipeline(ABC):
         run_config = {
             'env_name': self.env_name,
             'model': self.net.name(),
-            'play_batch_size': self.play_batch_size,
             'c_puct': self.c_puct,
             'n_playout': self.n_playout,
             'benchmark_n_playout': self.pure_mcts_n_playout,
@@ -129,7 +126,6 @@ class TrainPipeline(ABC):
             'dirichlet_alpha': self.dirichlet_alpha,
             'buffer_size': self.buffer_size,
             'batch_size': self.batch_size,
-            'temp': self.temp
         }
 
         run_config.update(self.raw_config)
@@ -150,6 +146,8 @@ class TrainPipeline(ABC):
 
             print(f'batch i: {self.global_step}, episode_len: {self.episode_len}, '
                   f'loss: {p_loss + v_loss: .8f}, entropy: {entropy: .8f}')
+            if self.episode_len is not None:
+                swanlab.log({'Metric/Episode length': self.episode_len}, step=self.global_step)
             swanlab.log({
                 'Metric/lr': self.net.opt.param_groups[0]['lr'],
                 'Metric/Gradient Norm': grad_norm,
@@ -157,7 +155,6 @@ class TrainPipeline(ABC):
                 'Metric/Loss/Action Loss': p_loss,
                 'Metric/Loss/Value loss': v_loss,
                 'Metric/Entropy': entropy,
-                'Metric/Episode length': self.episode_len
             }, step=self.global_step)
 
             if (self.global_step) % self.interval != 0:
@@ -174,7 +171,7 @@ class TrainPipeline(ABC):
             if self.env_name == 'Connect4':
                 p0, v0, p1, v1 = self.module.inspect(self.net)
                 log_dict = {}
-                swanlab.log({"Metric/initial value/X": v0, "Metric/initial value/O": v1})
+                swanlab.log({"Metric/initial value/X": v0, "Metric/initial value/O": v1}, step=self.global_step)
 
                 # 1. 记录 X 的动作概率 (对应原 Action probability/X)
                 # SwanLab 会在 UI 中创建一个名为 "Action probability/X" 的分组
