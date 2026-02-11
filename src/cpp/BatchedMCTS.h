@@ -2,6 +2,7 @@
 #define CD4397BA_1EEC_4275_BB07_6481002E649E
 #pragma once
 #include "MCTS.h"
+#include <array>
 #include <omp.h>
 #include <span>
 #include <vector>
@@ -105,7 +106,7 @@ namespace AlphaZero
             {
                 float val = values[i];
 
-                std::vector<float> policy(ACTION_SIZE);
+                std::array<float, ACTION_SIZE> policy;
                 int offset = i * ACTION_SIZE;
                 for (int a = 0; a < ACTION_SIZE; ++a)
                 {

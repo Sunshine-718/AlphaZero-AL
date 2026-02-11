@@ -4,6 +4,7 @@
 #include "GameContext.h"
 #include "MCTSNode.h"
 #include <random>
+#include <span>
 #include <vector>
 
 namespace AlphaZero
@@ -138,14 +139,15 @@ namespace AlphaZero
             out_nn_input_board = sim_env;
         }
 
-        void backprop(const std::vector<float> &policy_logits, float value, bool is_terminal)
+        void backprop(std::span<const float> policy_logits, float value, bool is_terminal)
         {
             if (current_leaf_idx == -1) return;
 
             // 终局状态不展开，保持为叶子节点（与 Python MCTS_AZ 行为一致）
             if (!is_terminal)
             {
-                std::vector<float> final_policy = policy_logits;
+                std::array<float, ACTION_SIZE> final_policy;
+                std::copy(policy_logits.begin(), policy_logits.end(), final_policy.begin());
                 if (current_flipped)
                 {
                     std::reverse(final_policy.begin(), final_policy.end());
