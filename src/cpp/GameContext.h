@@ -2,12 +2,12 @@
 #define A586E0F0_FE06_4A91_9BC8_B232FAB0344A
 #pragma once
 #include <array>
-#include <vector>
+#include <type_traits>
 
 template <typename T>
 concept MCTSGame = requires(T t, int action) {
     { t.reset() } -> std::same_as<void>;
-    { t.get_valid_moves() } -> std::same_as<std::vector<int>>;
+    { t.get_valid_moves() };
     { t.step(action) } -> std::same_as<void>;
     { t.check_winner() } -> std::same_as<int>;
     { t.is_full() } -> std::same_as<bool>;

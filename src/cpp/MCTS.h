@@ -3,7 +3,6 @@
 #pragma once
 #include "Connect4.h"
 #include "MCTSNode.h"
-#include <optional>
 #include <random>
 #include <vector>
 
@@ -148,23 +147,26 @@ namespace AlphaZero
                     sim_env.flip();
                 }
 
-                std::vector<int> valids = sim_env.get_valid_moves();
+                auto valids = sim_env.get_valid_moves();
 
-                std::vector<float> noise_vec;
+                // Dirichlet 噪声（栈上数组，避免堆分配）
+                float noise_arr[Config::ACTION_SIZE];
+                int noise_count = 0;
                 if (node_pool[current_leaf_idx].parent == -1 && alpha > 0.0f)  // 根节点
                 {
                     std::mt19937& rng = get_rng();
                     std::gamma_distribution<float> gamma(alpha, 1.0f);
 
                     float sum = 0.0f;
-                    for (size_t i = 0; i < valids.size(); ++i)
+                    for (int i = 0; i < valids.size(); ++i)
                     {
                         float n = gamma(rng);
-                        noise_vec.push_back(n);
+                        noise_arr[i] = n;
                         sum += n;
                     }
-                    for (float &n : noise_vec)
-                        n /= sum;
+                    noise_count = valids.size();
+                    for (int i = 0; i < noise_count; ++i)
+                        noise_arr[i] /= sum;
                 }
 
                 float policy_sum = 0.0f;
@@ -182,8 +184,8 @@ namespace AlphaZero
                         node_pool[current_leaf_idx].children[action] = new_node;
 
                         // 设置 noise
-                        if (node_pool[current_leaf_idx].parent == -1 && !noise_vec.empty()) {
-                            node_pool[new_node].noise = noise_vec[noise_idx++];
+                        if (noise_count > 0) {
+                            node_pool[new_node].noise = noise_arr[noise_idx++];
                         }
                     }
                 }

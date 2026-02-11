@@ -76,6 +76,7 @@ namespace AlphaZero
 
                 std::memcpy(current_game.board, input_boards + offset, Config::ROWS * Config::COLS);
                 current_game.turn = turns[i];
+                current_game.sync_from_board(); // 从 board 数组重建 bitboard 状态
 
                 Connect4 leaf_board;
                 bool is_term;
@@ -89,6 +90,7 @@ namespace AlphaZero
                 // [ROBUSTNESS FIX] 直接返回 C++ 状态中的轮次，不让 Python 猜
                 output_turns[i] = leaf_board.turn;
 
+                // board 数组在 step() 中已同步，无需额外 sync_to_board()
                 std::memcpy(output_boards + offset, leaf_board.board, Config::ROWS * Config::COLS);
             }
         }
