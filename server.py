@@ -23,7 +23,7 @@ parser.add_argument('--host', '-H', type=str, default='0.0.0.0', help='Host IP')
 parser.add_argument('--port', '-P', '-p', type=int, default=7718, help='Port number')
 parser.add_argument('-n', type=int, default=100,
                     help='Number of simulations before AlphaZero make an action')
-parser.add_argument('--lr', type=float, default=1e-2, help='Learning rate')
+parser.add_argument('--lr', type=float, default=3e-4, help='Learning rate')
 parser.add_argument('-c', '--c_init', type=float, default=1.25, help='C_puct init')
 parser.add_argument('-a', '--alpha', type=float, default=0.3, help='Dirichlet alpha')
 parser.add_argument('-b', '--batch_size', type=int, default=512, help='Batch size')

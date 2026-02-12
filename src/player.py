@@ -171,22 +171,22 @@ class BatchedAlphaZeroPlayer:
             visit = visits[i]
             temp = temps[i]
 
-            # 训练策略目标：与 Python AlphaZeroPlayer 一致，使用 softmax(log(visits)/temp)
+            # 训练策略目标：使用原始 count 归一化分布，不受 temp 影响
             action_probs = np.zeros(self.n_actions, dtype=np.float32)
             valid_mask = visit > 0
             if valid_mask.any():
-                log_visits = np.log(np.maximum(visit[valid_mask], 1e-8))
-                visit_dist = softmax(log_visits / max(temp, 1e-8))
-                action_probs[valid_mask] = visit_dist
+                action_probs[valid_mask] = visit[valid_mask] / visit[valid_mask].sum()
             else:
                 action_probs = np.ones(self.n_actions, dtype=np.float32) / self.n_actions
 
-            # 动作采样
-            if temp == 0:
+            # 动作采样：根据 temp 缩放后的分布采样
+            if temp <= 1e-6:
                 action = np.argmax(visit)
             else:
                 valid_actions = np.where(valid_mask)[0]
-                action = np.random.choice(valid_actions, p=visit_dist)
+                scaled = visit[valid_mask] ** (1.0 / temp)
+                sample_dist = scaled / scaled.sum()
+                action = np.random.choice(valid_actions, p=sample_dist)
 
             batch_actions.append(action)
             batch_probs.append(action_probs)

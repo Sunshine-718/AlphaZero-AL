@@ -31,32 +31,7 @@ class Game:
                         print('Game end. Draw')
                 return winner
 
-    def self_play(self, player, temp_discount=0.93):
-        self.env.reset()
-        states, actions, mcts_probs, current_players, next_states = [], [], [], [], []
-        steps = 0
-        while True:
-            temperature = pow(temp_discount, steps)
-            action, probs = player.get_action(self.env, temperature)
-            steps += 1
-            states.append(self.env.current_state().astype(np.int8))
-            actions.append(action)
-            mcts_probs.append(probs)
-            current_players.append(self.env.turn)
-            self.env.step(action)
-            next_states.append(self.env.current_state().astype(np.int8))
-            if self.env.done():
-                winner = self.env.winPlayer()
-                winner_z = np.zeros(len(current_players), dtype=np.int32)
-                if winner != 0:
-                    winner_z[np.array(current_players) == winner] = 1
-                    winner_z[np.array(current_players) != winner] = -1
-                discount = reversed([pow(player.discount, i) for i in range(len(winner_z))])
-                dones = [False] * len(current_players)
-                dones[-1] = True
-                return winner, tuple(zip(states, actions, mcts_probs, discount, winner_z, next_states, dones))
-
-    def batch_self_play(self, player, n_games, temp_discount=0.93):
+    def batch_self_play(self, player, n_games, temperature, temp_thres):
         envs = [self.env.copy() for _ in range(n_games)]
         for env in envs:
             env.reset()
@@ -68,7 +43,7 @@ class Game:
         while active_indices:
             current_boards = np.array([envs[i].board for i in range(n_games)])
             turns = np.array([envs[i].turn for i in range(n_games)], dtype=np.int32)
-            temps = [pow(temp_discount, trajectories[i]['steps']) for i in range(n_games)]
+            temps = [temperature if trajectories[i]['steps'] <= temp_thres else 1e-3 for i in range(n_games)]
             actions, probs = player.get_action(current_boards, turns, temps)
             next_active_indices = []
             for i in active_indices:

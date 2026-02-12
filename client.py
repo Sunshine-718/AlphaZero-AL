@@ -33,8 +33,8 @@ parser.add_argument('--c_base', type=float, default=500, help='C_puct base')
 parser.add_argument('-a', '--alpha', type=float, default=0.3, help='Dirichlet alpha')
 parser.add_argument('--n_play', type=int, default=1, help='n_playout')
 parser.add_argument('--discount', type=float, default=0.975, help='Discount factor')
-parser.add_argument('-t', '--temp', '--temperature', type=float, default=1, help='Softmax temperature')
-parser.add_argument('--tempD', type=float, default=0.9, help='Temperature discount factor')
+parser.add_argument('-t', '--temp', type=float, default=1, help='Softmax temperature')
+parser.add_argument('--temp_thres', type=float, default=6, help='Step threshold to change temperature to -> 0')
 parser.add_argument('-m', '--model', type=str, default='CNN', help='Model type (CNN)')
 parser.add_argument('-d', '--device', type=str, default='cuda' if torch.cuda.is_available()
                     else 'cpu', help='Device type')
@@ -110,7 +110,7 @@ class Actor:
         data = []
         try:
             start_time = time.time()
-            results = self.game.batch_self_play(self.az_player, self.batch_size, args.tempD)
+            results = self.game.batch_self_play(self.az_player, self.batch_size, args.temp, args.temp_thres)
             for _, play_data in results:
                 data.append(play_data)
             duration = time.time() - start_time
