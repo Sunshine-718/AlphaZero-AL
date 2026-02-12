@@ -184,8 +184,9 @@ class BatchedAlphaZeroPlayer:
                 action = np.argmax(visit)
             else:
                 valid_actions = np.where(valid_mask)[0]
-                scaled = visit[valid_mask] ** (1.0 / temp)
-                sample_dist = scaled / scaled.sum()
+                # 用 log 域计算 N^(1/temp)，等价但数值稳定
+                log_visits = np.log(np.maximum(visit[valid_mask], 1e-8))
+                sample_dist = softmax(log_visits / temp)
                 action = np.random.choice(valid_actions, p=sample_dist)
 
             batch_actions.append(action)
