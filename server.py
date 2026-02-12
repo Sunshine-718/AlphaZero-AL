@@ -30,7 +30,7 @@ parser.add_argument('-b', '--batch_size', type=int, default=512, help='Batch siz
 parser.add_argument('--q_size', type=int, default=100, help='Minimum buffer size before training starts')
 parser.add_argument('--buf', '--buffer_size', type=int, default=100000, help='Buffer size')
 parser.add_argument('--mcts_n', type=int, default=1000, help='MCTS n_playout')
-parser.add_argument('--discount', type=float, default=0.99, help='Discount factor')
+parser.add_argument('--discount', type=float, default=0.975, help='Discount factor')
 parser.add_argument('--thres', type=float, default=0.65, help='Win rate threshold')
 parser.add_argument('--num_eval', type=int, default=50, help='Number of evaluation.')
 parser.add_argument('-m', '--model', type=str, default='CNN', help='Model type (CNN)')

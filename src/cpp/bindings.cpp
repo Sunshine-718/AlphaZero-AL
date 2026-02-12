@@ -42,11 +42,16 @@ void register_batched_mcts(py::module_ &m, const char *name)
                 return shape;
             })
 
+        .def("get_num_envs", &BM::get_num_envs)
+
         .def("prune_roots", [](BM &self,
                                py::array_t<int, py::array::c_style | py::array::forcecast> actions)
              {
             py::buffer_info buf = actions.request();
             if (buf.ndim != 1) throw std::runtime_error("Actions must be 1D array");
+            if (buf.size != self.get_num_envs())
+                throw std::runtime_error("prune_roots: actions size (" + std::to_string(buf.size) +
+                                         ") must match n_envs (" + std::to_string(self.get_num_envs()) + ")");
             std::span<const int> s(static_cast<int*>(buf.ptr), buf.size);
             self.prune_roots(s); })
 
@@ -58,6 +63,9 @@ void register_batched_mcts(py::module_ &m, const char *name)
             auto buf_turns = turns.request();
             py::ssize_t batch_size = buf_in.shape[0];
 
+            if (batch_size != self.get_num_envs())
+                throw std::runtime_error("search_batch: input_boards batch size (" + std::to_string(batch_size) +
+                                         ") must match n_envs (" + std::to_string(self.get_num_envs()) + ")");
             if (buf_turns.size != batch_size) throw std::runtime_error("Turns size must match batch size");
 
             // 从 Traits 动态构建输出形状，不再硬编码
@@ -92,6 +100,17 @@ void register_batched_mcts(py::module_ &m, const char *name)
             auto buf_pol = policy_logits.request();
             auto buf_val = values.request();
             auto buf_term = is_term.request();
+
+            int n = self.get_num_envs();
+            if (buf_pol.shape[0] != n)
+                throw std::runtime_error("backprop_batch: policy_logits batch size (" + std::to_string(buf_pol.shape[0]) +
+                                         ") must match n_envs (" + std::to_string(n) + ")");
+            if (buf_val.size != n)
+                throw std::runtime_error("backprop_batch: values size (" + std::to_string(buf_val.size) +
+                                         ") must match n_envs (" + std::to_string(n) + ")");
+            if (buf_term.size != n)
+                throw std::runtime_error("backprop_batch: is_term size (" + std::to_string(buf_term.size) +
+                                         ") must match n_envs (" + std::to_string(n) + ")");
 
             float* ptr_pol = static_cast<float*>(buf_pol.ptr);
             float* ptr_val = static_cast<float*>(buf_val.ptr);

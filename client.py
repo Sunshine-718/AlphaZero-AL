@@ -32,7 +32,7 @@ parser.add_argument('-c', '--c_init', type=float, default=1.25, help='C_puct ini
 parser.add_argument('--c_base', type=float, default=500, help='C_puct base')
 parser.add_argument('-a', '--alpha', type=float, default=0.3, help='Dirichlet alpha')
 parser.add_argument('--n_play', type=int, default=1, help='n_playout')
-parser.add_argument('--discount', type=float, default=0.99, help='Discount factor')
+parser.add_argument('--discount', type=float, default=0.975, help='Discount factor')
 parser.add_argument('-t', '--temp', '--temperature', type=float, default=1, help='Softmax temperature')
 parser.add_argument('--tempD', type=float, default=0.9, help='Temperature discount factor')
 parser.add_argument('-m', '--model', type=str, default='CNN', help='Model type (CNN)')

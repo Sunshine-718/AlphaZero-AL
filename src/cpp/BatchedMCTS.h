@@ -48,6 +48,8 @@ namespace AlphaZero
             }
         }
 
+        int get_num_envs() const { return n_envs; }
+
         void reset_env(int env_idx)
         {
             if (env_idx >= 0 && env_idx < n_envs)

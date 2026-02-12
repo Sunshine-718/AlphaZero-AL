@@ -113,12 +113,14 @@ namespace AlphaZero
             {
                 out_is_terminal = true;
                 out_terminal_val = -1.0f;
+                out_nn_input_board = sim_env;
                 return;
             }
             else if (sim_env.is_full())
             {
                 out_is_terminal = true;
                 out_terminal_val = 0.0f;
+                out_nn_input_board = sim_env;
                 return;
             }
 
