@@ -1,405 +1,552 @@
-# ======= 配置区：所有重要参数在这里集中定义 =======
 from src.game import Game
 from src.player import Human, AlphaZeroPlayer
 from src.environments import load
 import torch.nn.functional as F
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QPainter
-from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QSpinBox, QComboBox, QPushButton, QCheckBox
+from PyQt5.QtCore import Qt, QTimer, QRectF, QPointF
+from PyQt5.QtGui import QPainter, QColor, QFont, QPen, QLinearGradient, QRadialGradient, QPainterPath
+from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
+                             QLabel, QSpinBox, QComboBox, QPushButton, QFrame,
+                             QSizePolicy, QSplitter, QGroupBox)
 import time
 import torch
-import os
-from PyQt5.QtGui import QColor
 
-c_init = 1.25
-ENV_NAME = 'Connect4'
-NETWORK_DEFAULT = 'CNN'
-MODEL_NAME = 'AZ'
-MODEL_TYPE_DEFAULT = 'current'
-N_PLAYOUT_DEFAULT = 500
-N_PLAYOUT_MIN = 1
-N_PLAYOUT_MAX = 10000
+# ── 配置 ──────────────────────────────────────────────────────────────────────
+ENV_NAME            = 'Connect4'
+NETWORK_DEFAULT     = 'CNN'
+MODEL_NAME          = 'AZ'
+MODEL_TYPE_DEFAULT  = 'current'
+N_PLAYOUT_DEFAULT   = 500
+ANIMATION_MS        = 30
+C_INIT              = 1.25
+PARAMS_PATH_FMT     = './params/{model_name}_{env_name}_{network}_{model_type}.pt'
 
-ANIMATION_INTERVAL_DEFAULT = 40   # ms
-ANIMATION_INTERVAL_MIN = 10
-ANIMATION_INTERVAL_MAX = 1000
+# ── 颜色主题（深色） ─────────────────────────────────────────────────────────
+BG          = QColor(24, 26, 31)        # 窗口底色
+BOARD_BG    = QColor(30, 33, 40)        # 棋盘背景
+GRID_CLR    = QColor(55, 60, 72)        # 网格线
+CELL_BG     = QColor(18, 20, 26)        # 空格
+RED_DARK    = QColor(200, 50,  50)
+RED_LIGHT   = QColor(240, 90,  90)
+YEL_DARK    = QColor(200, 170, 20)
+YEL_LIGHT   = QColor(250, 210, 50)
+ACCENT      = QColor(82, 139, 255)      # 蓝色高亮（最后落子标记）
+TEXT_MAIN   = "#e0e4ef"
+TEXT_DIM    = "#6a7089"
+PANEL_BG    = "#1a1d24"
+CARD_BG     = "#22262f"
+BTN_NORMAL  = "#3a4055"
+BTN_HOVER   = "#4a5070"
+BTN_ACTIVE  = "#5263a8"
 
-PLAYER_COLOR_DEFAULT = 1         # 1: Human(X), -1: AI(X)
-CELL_SIZE = 60
-MARGIN = 40
+STYLESHEET = f"""
+QWidget {{
+    background-color: {PANEL_BG};
+    color: {TEXT_MAIN};
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 13px;
+}}
+QGroupBox {{
+    background-color: {CARD_BG};
+    border: 1px solid #2e3240;
+    border-radius: 8px;
+    margin-top: 10px;
+    padding-top: 8px;
+    font-weight: bold;
+    color: {TEXT_MAIN};
+}}
+QGroupBox::title {{
+    subcontrol-origin: margin;
+    left: 10px;
+    color: #8899cc;
+}}
+QLabel {{
+    color: {TEXT_MAIN};
+    background: transparent;
+}}
+QLabel#dim {{
+    color: {TEXT_DIM};
+    font-size: 11px;
+}}
+QComboBox, QSpinBox {{
+    background-color: #2a2e3a;
+    border: 1px solid #3a4055;
+    border-radius: 5px;
+    padding: 4px 8px;
+    color: {TEXT_MAIN};
+    min-height: 28px;
+}}
+QComboBox:hover, QSpinBox:hover {{
+    border: 1px solid {ACCENT.name()};
+}}
+QComboBox::drop-down {{
+    border: none;
+    width: 20px;
+}}
+QPushButton {{
+    background-color: {BTN_NORMAL};
+    color: {TEXT_MAIN};
+    border: none;
+    border-radius: 6px;
+    padding: 8px 16px;
+    font-weight: bold;
+    min-height: 34px;
+}}
+QPushButton:hover {{
+    background-color: {BTN_HOVER};
+}}
+QPushButton:pressed {{
+    background-color: {BTN_ACTIVE};
+}}
+QPushButton#primary {{
+    background-color: {BTN_ACTIVE};
+}}
+QPushButton#primary:hover {{
+    background-color: #6273b8;
+}}
+QFrame#separator {{
+    color: #2e3240;
+}}
+"""
 
-CONTROL_PANEL_X = 500
-CONTROL_PANEL_Y = 20
-CONTROL_PANEL_WIDTH = 200
-CONTROL_PANEL_HEIGHT = 460  # ↑ 高度 +60 以容纳新控件
 
-WINDOW_TITLE = "AlphaZero Connect4 GUI"
-PARAMS_PATH_FMT = './params/{model_name}_{env_name}_{network}_{model_type}.pt'
+class BoardWidget(QWidget):
+    """仅负责绘制棋盘，不处理业务逻辑。"""
+    CELL   = 72
+    MARGIN = 24
 
-# 颜色定义（1 为红，-1 为黄）
-COLOR_MAP = {
-    1: QColor(255, 0, 0),      # 红色
-    -1: QColor(255, 255, 0)    # 黄色
-}
-# ================================================
+    def __init__(self, env, parent=None):
+        super().__init__(parent)
+        self.env = env
+        cols, rows = 7, 6
+        w = self.CELL * cols + self.MARGIN * 2
+        h = self.CELL * rows + self.MARGIN * 2
+        self.setFixedSize(w, h)
+        self.last_move    = None
+        self.anim_row     = -1
+        self.anim_col     = -1
+        self.anim_color   = None
 
+    # ── 绘制 ─────────────────────────────────────────────────────────────────
+    def paintEvent(self, _):
+        qp = QPainter(self)
+        qp.setRenderHint(QPainter.Antialiasing)
+        self._draw_background(qp)
+        self._draw_grid(qp)
+        self._draw_pieces(qp)
+        self._draw_last_move(qp)
+        self._draw_anim_piece(qp)
 
-class Connect4GUI(QWidget):
-    def __init__(self):
-        super().__init__()
-        # === 参数引用区 ===
-        self.env_name = ENV_NAME
-        self.network = NETWORK_DEFAULT
-        self.model_name = MODEL_NAME
-        self.model_type = MODEL_TYPE_DEFAULT
-        self.n_playout = N_PLAYOUT_DEFAULT
-        self.animation_interval = ANIMATION_INTERVAL_DEFAULT
-        self.player_color = PLAYER_COLOR_DEFAULT
-        self.last_probs = None
-        self.last_move = None
-        self.ai_thinking_time = -1
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.animate_drop)
-        self.reload_timer = QTimer()
-        self.reload_timer.setSingleShot(True)
-        self.reload_timer.timeout.connect(self.auto_reload_model)
+    def _draw_background(self, qp):
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(self.rect()), 16, 16)
+        qp.fillPath(path, BOARD_BG)
 
-        self.env_module = load(self.env_name)
-        self.env = self.env_module.Env()
-        self.game = Game(self.env)
+    def _draw_grid(self, qp):
+        qp.setPen(QPen(GRID_CLR, 1))
+        m, c = self.MARGIN, self.CELL
+        for col in range(1, 7):
+            x = m + col * c
+            qp.drawLine(x, m, x, m + 6 * c)
+        for row in range(1, 6):
+            y = m + row * c
+            qp.drawLine(m, y, m + 7 * c, y)
 
-        # === 控制面板 ===
-        self.control_panel = QWidget(self)
-        self.layout = QVBoxLayout(self.control_panel)
-
-        # 顶部：胜负信息标签
-        self.result_label = QLabel("")
-        self.layout.insertWidget(0, self.result_label)
-
-        # n_playout 控件
-        self.n_playout_label = QLabel("模拟次数 (n_playout):")
-        self.n_playout_input = QSpinBox()
-        self.n_playout_input.setMinimum(N_PLAYOUT_MIN)
-        self.n_playout_input.setMaximum(N_PLAYOUT_MAX)
-        self.n_playout_input.setValue(self.n_playout)
-        self.n_playout_input.valueChanged.connect(lambda _: self.reload_timer.start(500))
-        self.layout.addWidget(self.n_playout_label)
-        self.layout.addWidget(self.n_playout_input)
-
-        # 网络结构选择
-        self.network_label = QLabel("网络结构:")
-        self.network_choice = QComboBox()
-        self.network_choice.addItems(["CNN", "ViT"])
-        self.network_choice.setCurrentText(self.network)
-        self.network_choice.currentIndexChanged.connect(lambda _: self.reload_timer.start(500))
-        self.layout.addWidget(self.network_label)
-        self.layout.addWidget(self.network_choice)
-
-        # 模型类型选择
-        self.model_type_label = QLabel("模型类型:")
-        self.model_type_choice = QComboBox()
-        self.model_type_choice.addItems(["current", "best"])
-        self.model_type_choice.setCurrentText(self.model_type)
-        self.model_type_choice.currentIndexChanged.connect(lambda _: self.reload_timer.start(500))
-        self.layout.addWidget(self.model_type_label)
-        self.layout.addWidget(self.model_type_choice)
-
-        # 玩家先手选择
-        self.player_label = QLabel("选择玩家先手:")
-        self.player_choice = QComboBox()
-        self.player_choice.addItems(["Human (X)", "AI (X)"])
-        self.player_choice.currentIndexChanged.connect(lambda: (self.auto_reload_model(), self.start_game()))
-        self.layout.addWidget(self.player_label)
-        self.layout.addWidget(self.player_choice)
-
-        # 动画速度
-        self.speed_label = QLabel("动画速度 (ms):")
-        self.speed_input = QSpinBox()
-        self.speed_input.setMinimum(ANIMATION_INTERVAL_MIN)
-        self.speed_input.setMaximum(ANIMATION_INTERVAL_MAX)
-        self.speed_input.setValue(self.animation_interval)
-        self.speed_input.valueChanged.connect(lambda _: self.reload_timer.start(500))
-        self.layout.addWidget(self.speed_label)
-        self.layout.addWidget(self.speed_input)
-
-        # 重新开始按钮
-        self.reset_button = QPushButton("重新开始")
-        self.reset_button.clicked.connect(lambda: (self.auto_reload_model(), self.start_game()))
-        self.layout.addWidget(self.reset_button)
-
-        # AI 思考时间
-        self.thinking_time_label = QLabel("AI 思考时间: -")
-        self.layout.addWidget(self.thinking_time_label)
-
-        # 勝平負概率显示标签（已移到底部，见下方新增代码）
-
-        # 布局与窗口设置
-        self.control_panel.setGeometry(
-            CONTROL_PANEL_X, CONTROL_PANEL_Y,
-            CONTROL_PANEL_WIDTH, CONTROL_PANEL_HEIGHT
-        )
-        self.cell_size = CELL_SIZE
-        self.margin = MARGIN
-        self.setFixedSize(
-            self.cell_size * 7 + self.margin * 2 + CONTROL_PANEL_WIDTH,
-            self.cell_size * 6 + self.margin * 2 + 60
-        )
-        self.setWindowTitle(WINDOW_TITLE)
-
-        # 新增：底部横向显示胜率标签
-        from PyQt5.QtWidgets import QHBoxLayout
-
-        self.bottom_widget = QWidget(self)
-        self.bottom_layout = QHBoxLayout(self.bottom_widget)
-        self.bottom_layout.setContentsMargins(0, 0, 0, 0)
-        self.bottom_widget.setGeometry(
-            0,
-            self.height() - 40,
-            self.width(),
-            40
-        )
-        self.winrate_label = QLabel("Win: -%, Draw: -%, Lose: -%")
-        self.winrate_label.setAlignment(Qt.AlignCenter)
-        self.bottom_layout.addWidget(self.winrate_label)
-        self.bottom_widget.show()
-
-        # 状态变量
-        self.animating = False
-        self.animation_row = -1
-        self.animation_col = -1
-        self.animation_color = None
-
-        # 初始化 AlphaZero / Human 玩家
-        self.az_player = AlphaZeroPlayer(
-            None,
-            c_init=None,
-            n_playout=None,
-            discount=0.99,
-            is_selfplay=0,
-            cache_size=10000
-        )
-        self.auto_reload_model()
-        self.current_player = [None, self.human, self.az_player]
-
-        # 开局
-        self.start_game()
-
-    def auto_reload_model(self):
-        """读取控件当前值，重新加载模型 / Player 对象"""
-        self.n_playout = self.n_playout_input.value()
-        self.network = self.network_choice.currentText()
-        self.model_type = self.model_type_choice.currentText()
-        self.animation_interval = self.speed_input.value()
-        self.timer.setInterval(self.animation_interval)
-        self.player_color = 1 if self.player_choice.currentText() == "Human (X)" else -1
-
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        net_class = getattr(self.env_module, self.network)
-        net = net_class(lr=0, device=device)  # lr=0 → 推理模式
-        net.eval()
-        # 注册原始网络以供获取价值头
-        self.net = net
-
-        model_path = PARAMS_PATH_FMT.format(
-            model_name=self.model_name,
-            env_name=self.env_name,
-            network=self.network,
-            model_type=self.model_type
-        )
-        self.net.load(model_path)
-
-        self.az_player.reload(self.net, c_init, self.n_playout, is_self_play=0)
-        self.az_player.eval()
-        self.human = Human()
-
-    def start_game(self):
-        self.env.reset()
-        self.last_probs = None
-        self.last_move = None
-        self.ai_thinking_time = -1
-        self.thinking_time_label.setText("AI 思考时间: -")
-        self.result_label.setText("")
-        self.update()
-        # 重置时更新初始胜平负概率
-        self.update_winrate()
-        if self.env.turn == -1 * self.player_color:
-            self.ai_move()
-
-    def paintEvent(self, event):
-        qp = QPainter()
-        qp.begin(self)
-        self.draw_board(qp)
-        qp.end()
-
-    def draw_board(self, qp):
+    def _board(self):
         state = self.env.current_state()
-        board = (state[0, 0] - state[0, 1]).astype(int)
-        qp.setPen(Qt.black)
-        spacing = 2
-        left = self.margin
-        top = self.margin
-        right = self.margin + self.cell_size * 7
-        bottom = self.margin + self.cell_size * 6
-        for c in range(1, 7):
-            x = self.margin + c * self.cell_size
-            qp.drawLine(x, top + spacing, x, bottom - spacing)
-        for r in range(1, 6):
-            y = self.margin + r * self.cell_size
-            qp.drawLine(left + spacing, y, right - spacing, y)
-        qp.drawLine(left, top, left, bottom)
-        qp.drawLine(right, top, right, bottom)
-        qp.drawLine(left, top, right, top)
-        qp.drawLine(left, bottom, right, bottom)
-        qp.drawRect(left + spacing, top + spacing, right - left - 2 * spacing, bottom - top - 2 * spacing)
-        padding = 15
-        diameter = self.cell_size - padding
+        return (state[0, 0] - state[0, 1]).astype(int)
+
+    def _draw_pieces(self, qp):
+        board = self._board()
         for r in range(6):
             for c in range(7):
-                center_x = self.margin + c * self.cell_size + self.cell_size // 2
-                center_y = self.margin + r * self.cell_size + self.cell_size // 2
-                if board[r][c] == 1:
-                    qp.setBrush(COLOR_MAP[1])
-                elif board[r][c] == -1:
-                    qp.setBrush(COLOR_MAP[-1])
-                else:
-                    qp.setBrush(QColor(255, 255, 255))
-                qp.drawEllipse(center_x - diameter // 2, center_y - diameter // 2, diameter, diameter)
-        if self.last_move:
-            r, c = self.last_move
-            x = self.margin + c * self.cell_size
-            y = self.margin + r * self.cell_size
-            qp.setPen(QColor(255, 0, 0))
-            qp.setBrush(Qt.NoBrush)
-            qp.drawRect(x + 5, y + 5, self.cell_size - 10, self.cell_size - 10)
-        if self.animating and self.animation_row >= 0:
-            center_x = self.margin + self.animation_col * self.cell_size + self.cell_size // 2
-            center_y = self.margin + self.animation_row * self.cell_size + self.cell_size // 2
-            qp.setBrush(self.animation_color)
-            qp.drawEllipse(center_x - diameter // 2, center_y - diameter // 2, diameter, diameter)
+                v = board[r][c]
+                cx = self.MARGIN + c * self.CELL + self.CELL // 2
+                cy = self.MARGIN + r * self.CELL + self.CELL // 2
+                self._draw_circle(qp, cx, cy, v)
 
-    def mousePressEvent(self, event):
-        """仅在棋盘区域接收点击；控制面板或空白处点击无效。"""
-        # 动画或对局结束时忽略
-        if self.env.done() or self.animating:
+    def _draw_circle(self, qp, cx, cy, value, radius=None):
+        r = radius or (self.CELL // 2 - 8)
+        if value == 0:
+            qp.setBrush(CELL_BG)
+            qp.setPen(QPen(GRID_CLR, 1))
+            qp.drawEllipse(QPointF(cx, cy), r, r)
             return
+        dark  = RED_DARK  if value == 1 else YEL_DARK
+        light = RED_LIGHT if value == 1 else YEL_LIGHT
+        grad = QRadialGradient(cx - r * 0.3, cy - r * 0.3, r * 1.2)
+        grad.setColorAt(0, light)
+        grad.setColorAt(1, dark)
+        qp.setBrush(grad)
+        qp.setPen(Qt.NoPen)
+        qp.drawEllipse(QPointF(cx, cy), r, r)
 
-        # 计算棋盘的像素边界
-        x, y = event.x(), event.y()
-        board_left = self.margin
-        board_top = self.margin
-        board_right = board_left + self.cell_size * 7
-        board_bottom = board_top + self.cell_size * 6
-
-        # 若点击不在棋盘矩形内，直接忽略
-        if not (board_left <= x < board_right and board_top <= y < board_bottom):
+    def _draw_last_move(self, qp):
+        if self.last_move is None:
             return
+        r, c = self.last_move
+        cx = self.MARGIN + c * self.CELL + self.CELL // 2
+        cy = self.MARGIN + r * self.CELL + self.CELL // 2
+        radius = self.CELL // 2 - 8
+        qp.setBrush(Qt.NoBrush)
+        pen = QPen(ACCENT, 3)
+        qp.setPen(pen)
+        qp.drawEllipse(QPointF(cx, cy), radius + 4, radius + 4)
 
-        # 以下保持原有落子逻辑
-        if self.env.turn == self.player_color:
-            col = (x - self.margin) // self.cell_size
-            if col in self.env.valid_move():
-                row = self.find_drop_row(col)
-                if row != -1:
-                    self.last_move = (row, col)
-                    self.start_animation(
-                        row, col,
-                        COLOR_MAP[self.player_color],
-                        lambda: self.after_move(col)
-                    )
-
-    def ai_move(self):
-        if self.animating:
+    def _draw_anim_piece(self, qp):
+        if self.anim_row < 0 or self.anim_col < 0:
             return
-        start = time.time()
-        action, probs = self.az_player.get_action(self.env)
-        self.ai_thinking_time = time.time() - start
-        self.thinking_time_label.setText(f"AI 思考时间: {self.ai_thinking_time:.2f} 秒")
-        self.last_probs = probs
-        # 每步落子后更新胜平负概率
-        self.update_winrate()
-        row = self.find_drop_row(action)
-        if row != -1:
-            self.last_move = (row, action)
-            self.start_animation(row, action, COLOR_MAP[-self.player_color], lambda: self.after_move(action))
+        cx = self.MARGIN + self.anim_col * self.CELL + self.CELL // 2
+        cy = self.MARGIN + self.anim_row * self.CELL + self.CELL // 2
+        v = 1 if self.anim_color == RED_DARK else -1
+        self._draw_circle(qp, cx, cy, v)
 
-    def after_move(self, col):
-        self.env.step(col)
-        self.update()
-        self.update_winrate()
-        if self.env.done():
-            self.show_result()
-            return
-        if self.env.turn == -1 * self.player_color:
-            self.ai_move()
-        if self.env.turn == -1 * self.player_color:
-            from PyQt5.QtCore import QTimer
-            QTimer.singleShot(50, self.ai_move)
-
-    def update_winrate(self):
-        """计算并更新当前局面胜平负概率显示"""
-        with torch.no_grad():
-            state = self.env.current_state()
-            state_tensor = torch.from_numpy(state).float().to(self.net.device).unsqueeze(0)
-            if state_tensor.dim() == 5:
-                state_tensor = state_tensor.squeeze(1)
-            _, value_logit = self.net(state_tensor)
-            value_probs = F.softmax(value_logit, dim=-1)[0].cpu().numpy()
-        draw_prob = value_probs[0] * 100
-        win_prob = value_probs[1] * 100
-        lose_prob = value_probs[2] * 100
-        self.winrate_label.setText(
-            f"Win: {win_prob:.1f}%, Draw: {draw_prob:.1f}%, Lose: {lose_prob:.1f}%"
-        )
+    def col_at(self, x):
+        """屏幕 x 坐标 → 列号，超出棋盘返回 -1。"""
+        rel = x - self.MARGIN
+        if rel < 0 or rel >= self.CELL * 7:
+            return -1
+        return rel // self.CELL
 
     def find_drop_row(self, col):
-        state = self.env.current_state()
-        board = (state[0, 0] - state[0, 1]).astype(int)
+        board = self._board()
         for row in range(5, -1, -1):
             if board[row][col] == 0:
                 return row
         return -1
 
-    def start_animation(self, target_row, col, color, callback):
-        self.animating = True
-        self.animation_row = -1
-        self.animation_col = col
-        self.animation_color = color
-        self.animation_callback = callback
-        self.animation_target_row = target_row
-        self.timer.start(self.animation_interval)
 
-    def animate_drop(self):
-        if self.animation_row < self.animation_target_row:
-            self.animation_row += 1
-            self.update()
+class WinRateBar(QWidget):
+    """横向三色胜率条。"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(20)
+        self.win = self.draw = self.lose = 0.0
+
+    def set_rates(self, win, draw, lose):
+        self.win, self.draw, self.lose = win, draw, lose
+        self.update()
+
+    def paintEvent(self, _):
+        qp = QPainter(self)
+        qp.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(0, 0, w, h), h // 2, h // 2)
+        qp.setClipPath(path)
+        x = 0
+        for ratio, color in [(self.win, RED_DARK), (self.draw, QColor(80, 90, 110)), (self.lose, YEL_DARK)]:
+            pw = int(w * ratio)
+            qp.fillRect(x, 0, pw, h, color)
+            x += pw
+
+
+class ControlPanel(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+        self.setFixedWidth(220)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(12)
+
+        # ── 状态卡片 ─────────────────────────────────────────────────────────
+        status_box = QGroupBox("对局状态")
+        sl = QVBoxLayout(status_box)
+        self.result_label = QLabel("")
+        self.result_label.setWordWrap(True)
+        self.result_label.setAlignment(Qt.AlignCenter)
+        f = self.result_label.font()
+        f.setPointSize(14)
+        f.setBold(True)
+        self.result_label.setFont(f)
+        sl.addWidget(self.result_label)
+
+        self.thinking_label = QLabel("AI 思考时间: —")
+        self.thinking_label.setObjectName("dim")
+        self.thinking_label.setAlignment(Qt.AlignCenter)
+        sl.addWidget(self.thinking_label)
+
+        # 胜率数字
+        rate_row = QHBoxLayout()
+        self.win_lbl  = self._rate_lbl("Win",  RED_DARK.name())
+        self.draw_lbl = self._rate_lbl("Draw", "#505a6e")
+        self.lose_lbl = self._rate_lbl("Lose", YEL_DARK.name())
+        rate_row.addWidget(self.win_lbl)
+        rate_row.addWidget(self.draw_lbl)
+        rate_row.addWidget(self.lose_lbl)
+        sl.addLayout(rate_row)
+
+        self.bar = WinRateBar()
+        sl.addWidget(self.bar)
+        root.addWidget(status_box)
+
+        # ── 设置卡片 ─────────────────────────────────────────────────────────
+        cfg_box = QGroupBox("设置")
+        cl = QVBoxLayout(cfg_box)
+        cl.setSpacing(8)
+
+        cl.addWidget(QLabel("网络结构:"))
+        self.network_cb = QComboBox()
+        self.network_cb.addItems(["CNN", "ViT"])
+        cl.addWidget(self.network_cb)
+
+        cl.addWidget(QLabel("模型权重:"))
+        self.model_type_cb = QComboBox()
+        self.model_type_cb.addItems(["current", "best"])
+        cl.addWidget(self.model_type_cb)
+
+        cl.addWidget(QLabel("先手:"))
+        self.player_cb = QComboBox()
+        self.player_cb.addItems(["我先手 (X)", "AI 先手 (X)"])
+        cl.addWidget(self.player_cb)
+
+        cl.addWidget(QLabel("模拟次数:"))
+        self.n_playout_spin = QSpinBox()
+        self.n_playout_spin.setRange(1, 10000)
+        self.n_playout_spin.setValue(N_PLAYOUT_DEFAULT)
+        cl.addWidget(self.n_playout_spin)
+
+        root.addWidget(cfg_box)
+
+        # ── 操作按钮 ──────────────────────────────────────────────────────────
+        btn_row = QHBoxLayout()
+        self.undo_btn = QPushButton("悔棋")
+        self.undo_btn.setEnabled(False)
+        btn_row.addWidget(self.undo_btn)
+        self.restart_btn = QPushButton("重新开始")
+        self.restart_btn.setObjectName("primary")
+        btn_row.addWidget(self.restart_btn)
+        root.addLayout(btn_row)
+
+        root.addStretch()
+
+    @staticmethod
+    def _rate_lbl(prefix, color):
+        lbl = QLabel(f"<font color='{color}'><b>{prefix}</b></font><br>—%")
+        lbl.setAlignment(Qt.AlignCenter)
+        lbl.setTextFormat(Qt.RichText)
+        return lbl
+
+    def set_rates(self, win, draw, lose):
+        self.win_lbl.setText( f"<font color='{RED_DARK.name()}'><b>Win</b></font><br>{win:.1f}%")
+        self.draw_lbl.setText(f"<font color='#505a6e'><b>Draw</b></font><br>{draw:.1f}%")
+        self.lose_lbl.setText(f"<font color='{YEL_DARK.name()}'><b>Lose</b></font><br>{lose:.1f}%")
+        self.bar.set_rates(win / 100, draw / 100, lose / 100)
+
+    def set_thinking(self, seconds):
+        if seconds < 0:
+            self.thinking_label.setText("AI 思考时间: —")
         else:
-            self.timer.stop()
-            self.animating = False
-            self.animation_callback()
-            if self.env.turn == -1 * self.player_color and not self.env.done():
-                from PyQt5.QtCore import QTimer
-                QTimer.singleShot(50, self.ai_move)
+            self.thinking_label.setText(f"AI 思考时间: {seconds:.2f} s")
 
-    # 只在顶部显示胜负，不再弹窗
-    def show_result(self):
+    def set_result(self, text, color="#e0e4ef"):
+        self.result_label.setText(f"<font color='{color}'>{text}</font>")
+        self.result_label.setTextFormat(Qt.RichText)
+
+
+class Connect4GUI(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("AlphaZero Connect4")
+        self.setStyleSheet(STYLESHEET)
+        self.setWindowFlags(Qt.Window)
+
+        # 环境
+        self.env_module = load(ENV_NAME)
+        self.env = self.env_module.Env()
+
+        # 子控件
+        self.board = BoardWidget(self.env)
+        self.panel = ControlPanel()
+
+        # 顶层布局
+        h = QHBoxLayout(self)
+        h.setContentsMargins(16, 16, 16, 16)
+        h.setSpacing(16)
+        h.addWidget(self.board)
+        h.addWidget(self.panel)
+        self.adjustSize()
+        self.setFixedSize(self.sizeHint())
+
+        # 动画定时器
+        self.anim_timer = QTimer()
+        self.anim_timer.timeout.connect(self._step_animation)
+        self.anim_target_row = -1
+        self.anim_callback   = None
+        self.animating       = False
+
+        # 悔棋历史栈：每次人类落子前保存 (env_copy, last_move)
+        self._history: list = []
+
+        # 延迟重载（避免控件变更时频繁重载）
+        self.reload_timer = QTimer()
+        self.reload_timer.setSingleShot(True)
+        self.reload_timer.timeout.connect(self._reload_and_restart)
+
+        # 仅重载模型权重/参数，不重置棋局（不清空悔棋栈）
+        self._settings_timer = QTimer()
+        self._settings_timer.setSingleShot(True)
+        self._settings_timer.timeout.connect(self._reload_model)
+
+        # 玩家对象
+        self.human     = Human()
+        self.az_player = AlphaZeroPlayer(None, c_init=None, n_playout=None,
+                                         discount=0.99, is_selfplay=0, cache_size=10000)
+        self._reload_model()
+
+        # 连接信号
+        self.panel.network_cb.currentIndexChanged.connect(lambda _: self._settings_timer.start(400))
+        self.panel.model_type_cb.currentIndexChanged.connect(lambda _: self._settings_timer.start(400))
+        self.panel.n_playout_spin.valueChanged.connect(lambda _: self._settings_timer.start(400))
+        self.panel.player_cb.currentIndexChanged.connect(lambda _: self.reload_timer.start(100))
+        self.panel.restart_btn.clicked.connect(self._reload_and_restart)
+        self.panel.undo_btn.clicked.connect(self._undo)
+
+        self._start_game()
+
+    # ── 模型管理 ──────────────────────────────────────────────────────────────
+    def _reload_model(self):
+        network    = self.panel.network_cb.currentText()
+        model_type = self.panel.model_type_cb.currentText()
+        n_playout  = self.panel.n_playout_spin.value()
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        net = getattr(self.env_module, network)(lr=0, device=device)
+        net.eval()
+        self.net = net
+        path = PARAMS_PATH_FMT.format(model_name=MODEL_NAME, env_name=ENV_NAME,
+                                      network=network, model_type=model_type)
+        self.net.load(path)
+        self.az_player.reload(self.net, C_INIT, n_playout, is_self_play=0)
+        self.az_player.eval()
+        self.player_color = 1 if "我先手" in self.panel.player_cb.currentText() else -1
+
+    def _reload_and_restart(self):
+        self._reload_model()
+        self._start_game()
+
+    # ── 游戏流程 ──────────────────────────────────────────────────────────────
+    def _start_game(self):
+        self.env.reset()
+        self.board.last_move  = None
+        self.board.anim_row   = -1
+        self.board.anim_col   = -1
+        self.board.anim_color = None
+        self.board.update()
+        self.panel.set_result("")
+        self.panel.set_thinking(-1)
+        self._history.clear()
+        self.panel.undo_btn.setEnabled(False)
+        self._update_winrate()
+        if self.env.turn != self.player_color:
+            QTimer.singleShot(100, self._ai_move)
+
+    def _update_winrate(self):
+        with torch.no_grad():
+            state = self.env.current_state()
+            t = torch.from_numpy(state).float().to(self.net.device).unsqueeze(0)
+            if t.dim() == 5:
+                t = t.squeeze(1)
+            _, vl = self.net(t)
+            vp = F.softmax(vl, dim=-1)[0].cpu().tolist()
+        draw, win, lose = vp[0] * 100, vp[1] * 100, vp[2] * 100
+        self.panel.set_rates(win, draw, lose)
+
+    def _ai_move(self):
+        if self.animating or self.env.done():
+            return
+        t0 = time.time()
+        action, _ = self.az_player.get_action(self.env)
+        self.panel.set_thinking(time.time() - t0)
+        row = self.board.find_drop_row(action)
+        if row != -1:
+            self.board.last_move = (row, action)
+            self._start_animation(row, action, RED_DARK if -self.player_color == 1 else YEL_DARK,
+                                  lambda: self._after_move(action))
+
+    def _after_move(self, col):
+        self.env.step(col)
+        self._update_winrate()
+        self.board.update()
+        if self.env.done():
+            self._show_result()
+            return
+        if self.env.turn != self.player_color:
+            QTimer.singleShot(60, self._ai_move)
+
+    def _show_result(self):
         winner = self.env.winPlayer()
         if winner == self.player_color:
-            self.result_label.setText("你赢了！点击重新开始。")
+            self.panel.set_result("你赢了！", "#5cb85c")
         elif winner == -self.player_color:
-            self.result_label.setText("你输了！点击重新开始。")
+            self.panel.set_result("你输了！", "#d9534f")
         else:
-            self.result_label.setText("平局！点击重新开始。")
+            self.panel.set_result("平局！", "#f0ad4e")
+
+    # ── 动画 ──────────────────────────────────────────────────────────────────
+    def _start_animation(self, target_row, col, color, callback):
+        self.animating        = True
+        self.anim_target_row  = target_row
+        self.anim_callback    = callback
+        self.board.anim_row   = -1
+        self.board.anim_col   = col
+        self.board.anim_color = color
+        self.anim_timer.start(ANIMATION_MS)
+
+    def _step_animation(self):
+        if self.board.anim_row < self.anim_target_row:
+            self.board.anim_row += 1
+            self.board.update()
+        else:
+            self.anim_timer.stop()
+            self.board.anim_row = -1
+            self.board.update()
+            self.animating = False
+            self.anim_callback()
+
+    def _undo(self):
+        """悔棋：回退到人类上一次落子前的状态（撤销人类 + AI 各一步）。"""
+        if not self._history or self.animating:
+            return
+        saved_env, saved_last_move = self._history.pop()
+        # Cython env 的 board 属性不可直接赋值，改为替换 env 对象本身
+        self.env = saved_env
+        self.board.env = saved_env
+        self.board.last_move = saved_last_move
+        self.board.anim_row  = -1
+        self.board.anim_col  = -1
+        self.board.update()
+        self.panel.set_result("")
+        self.panel.undo_btn.setEnabled(bool(self._history))
+        self._update_winrate()
+
+    # ── 鼠标交互 ─────────────────────────────────────────────────────────────
+    def mousePressEvent(self, event):
+        if self.animating or self.env.done():
+            return
+        if self.env.turn != self.player_color:
+            return
+        # 将点击坐标转换到 board 子控件的本地坐标
+        local = self.board.mapFromParent(event.pos())
+        col = self.board.col_at(local.x())
+        if col < 0 or col not in self.env.valid_move():
+            return
+        row = self.board.find_drop_row(col)
+        if row == -1:
+            return
+        # 落子前保存快照（env + last_move），用于悔棋
+        self._history.append((self.env.copy(), self.board.last_move))
+        self.panel.undo_btn.setEnabled(True)
+
+        self.board.last_move = (row, col)
+        color = RED_DARK if self.player_color == 1 else YEL_DARK
+        self._start_animation(row, col, color, lambda: self._after_move(col))
 
 
 if __name__ == "__main__":
     torch.set_num_threads(1)
     torch.set_num_interop_threads(1)
-
-    from PyQt5.QtWidgets import QApplication
     app = QApplication([])
-    from PyQt5.QtGui import QFont
-    app.setFont(QFont('Microsoft YaHei', 12))
-    app.setStyleSheet("QLabel { color: #222; }")
+    app.setFont(QFont("Segoe UI", 11))
     gui = Connect4GUI()
     gui.show()
     app.exec_()

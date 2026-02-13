@@ -7,6 +7,7 @@ import pickle
 import logging
 import threading
 import numpy as np
+import torch.distributed as dist
 from src.pipeline import TrainPipeline
 from src.ReplayBuffer import ReplayBuffer
 from flask import Flask, request, jsonify
@@ -17,6 +18,9 @@ import sys
 TOTAL_RECEIVED_BYTES = 0
 TOTAL_SENT_BYTES = 0
 # -----------------------
+
+# 内存中缓存的最新权重：(mtime: float, payload: bytes)
+_cached_weights: tuple = (0.0, b'')
 
 parser = argparse.ArgumentParser(description='AlphaZero Training Server')
 parser.add_argument('--host', '-H', type=str, default='0.0.0.0', help='Host IP')
@@ -70,6 +74,12 @@ class ServerPipeline(TrainPipeline):
         self._inbox: queue.Queue = queue.Queue()
         self.episode_len = None
 
+    def _on_weights_saved(self):
+        global _cached_weights
+        mtime = os.path.getmtime(self.current)
+        payload = pickle.dumps(self.net.state_dict(), protocol=pickle.HIGHEST_PROTOCOL)
+        _cached_weights = (mtime, payload)
+
     def data_collector(self):
         """冷启动阶段等待 buffer 积累到 min_buffer_size，之后直接返回让训练持续跑。"""
         if self._warmed_up:
@@ -112,30 +122,17 @@ def upload():
 
 @app.route('/weights', methods=['GET'])
 def weights():
-    try:
-        mtime = os.path.getmtime(pipeline.current)
-    except FileNotFoundError:
-        mtime = time.time()
+    global _cached_weights, TOTAL_SENT_BYTES
+    mtime, payload = _cached_weights
     try:
         client_ts = float(request.args.get('ts', 0))
     except ValueError:
         client_ts = 0
     if client_ts == 0:
         print(f'Client {request.remote_addr}:{request.environ.get("REMOTE_PORT")} connected.')
-    if mtime > client_ts and os.path.exists(pipeline.current):
-        while True:
-            try:
-                params = torch.load(pipeline.current, map_location='cpu')['model_state_dict']
-                break
-            except RuntimeError:
-                time.sleep(1)
-
-        payload = pickle.dumps(params, protocol=pickle.HIGHEST_PROTOCOL)
-        payload_len = len(payload)
-        global TOTAL_SENT_BYTES
-        TOTAL_SENT_BYTES += payload_len
-        print(f"[[TRAFFIC_LOG::SENT::+::{payload_len}]]", file=sys.stdout)
-
+    if mtime > client_ts and payload:
+        TOTAL_SENT_BYTES += len(payload)
+        print(f"[[TRAFFIC_LOG::SENT::+::{len(payload)}]]", file=sys.stdout)
         return payload, 200, {
             'Content-Type': 'application/octet-stream',
             'X-Timestamp': str(mtime)
@@ -162,42 +159,79 @@ def reset_traffic():
     return jsonify({'status': 'success', 'message': 'Traffic stats reset'})
 
 
-def setup_seed(seed: int):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+def set_seed(seed: int, rank: int = 0):
+    worker_seed = seed + rank
+    random.seed(worker_seed)
+    np.random.seed(worker_seed)
+    torch.manual_seed(worker_seed)
+    torch.cuda.manual_seed(worker_seed)
+    torch.cuda.manual_seed_all(worker_seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
 
+def setup_ddp():
+    dist.init_process_group(backend="nccl")
+    local_rank = int(os.environ["LOCAL_RANK"])
+    torch.cuda.set_device(local_rank)
+    return local_rank
+
+
+def cleanup_ddp():
+    dist.destroy_process_group()
+
+
 if __name__ == '__main__':
-    setup_seed(0)
-    log_file = 'flask_access.log'
-    with open(log_file, 'w'):
-        pass
+    # Detect if launched via torchrun (DDP mode)
+    if "LOCAL_RANK" in os.environ:
+        local_rank = setup_ddp()
+        world_size = dist.get_world_size()
+        args.device = f"cuda:{local_rank}"
+    else:
+        local_rank = 0
+        world_size = 1
+
+    set_seed(0, local_rank)
+
     pipeline = ServerPipeline(args.env, args.model, args.name, config,
-                               min_buffer_size=args.q_size)
-    rows, cols = pipeline.env.board.shape
-    buffer = ReplayBuffer(pipeline.net.in_dim, pipeline.buffer_size,
-                          pipeline.net.n_actions, rows, cols,
-                          device=pipeline.device)
-    pipeline.init_buffer(buffer)
+                               min_buffer_size=args.q_size,
+                               rank=local_rank, world_size=world_size)
 
-    # 启动后台数据搬运线程：inbox → buffer（持续运行）
-    worker = threading.Thread(target=pipeline.inbox_worker, args=(buffer,), daemon=True)
-    worker.start()
+    if local_rank == 0:
+        log_file = 'flask_access.log'
+        with open(log_file, 'w'):
+            pass
 
-    t = threading.Thread(target=pipeline, daemon=True)
-    t.start()
+        rows, cols = pipeline.env.board.shape
+        buffer = ReplayBuffer(pipeline.net.in_dim, pipeline.buffer_size,
+                              pipeline.net.n_actions, rows, cols,
+                              device=pipeline.device)
+        pipeline.init_buffer(buffer)
 
-    # Flask 日志配置
-    handler = logging.FileHandler(log_file, encoding='utf-8')
-    handler.setLevel(logging.INFO)
-    log = logging.getLogger('werkzeug')
-    log.setLevel(logging.INFO)
-    log.handlers = [handler]
-    app.logger.handlers = [handler]
+        # 启动后台数据搬运线程：inbox → buffer（持续运行）
+        worker = threading.Thread(target=pipeline.inbox_worker, args=(buffer,), daemon=True)
+        worker.start()
 
-    app.run(host=args.host, port=args.port, debug=False, use_reloader=False)
+        # Flask 日志配置
+        handler = logging.FileHandler(log_file, encoding='utf-8')
+        handler.setLevel(logging.INFO)
+        log = logging.getLogger('werkzeug')
+        log.setLevel(logging.INFO)
+        log.handlers = [handler]
+        app.logger.handlers = [handler]
+
+        # Start training loop in background; Flask serves in main thread
+        t = threading.Thread(target=pipeline, daemon=True)
+        t.start()
+
+        try:
+            app.run(host=args.host, port=args.port, debug=False, use_reloader=False)
+        finally:
+            if world_size > 1:
+                cleanup_ddp()
+    else:
+        # Non-zero ranks: participate in DDP training only (no Flask, no buffer)
+        try:
+            pipeline()
+        finally:
+            cleanup_ddp()

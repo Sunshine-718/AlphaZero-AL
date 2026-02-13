@@ -91,3 +91,58 @@ class Game:
             active_indices = next_active_indices
 
         return completed_data
+
+    def streaming_self_play(self, player, n_games, temperature, temp_thres):
+        """与 batch_self_play 语义相同，但 slot 游戏结束后立刻重置开新局，
+        始终保持满 batch，避免 batch 末尾空洞浪费 MCTS 算力。"""
+        batch_size = player.mcts.batch_size
+        envs = [self.env.copy() for _ in range(batch_size)]
+        for i, env in enumerate(envs):
+            env.reset()
+            player.mcts.reset_env(i)
+        trajectories = [{'states': [], 'actions': [], 'probs': [], 'players': [], 'steps': 0}
+                        for _ in range(batch_size)]
+        completed_data = []
+
+        while len(completed_data) < n_games:
+            current_boards = np.array([env.board for env in envs])
+            turns = np.array([env.turn for env in envs], dtype=np.int32)
+            temps = [temperature if trajectories[i]['steps'] <= temp_thres else 1e-3
+                     for i in range(batch_size)]
+            actions, probs = player.get_action(current_boards, turns, temps)
+
+            for i in range(batch_size):
+                action = actions[i]
+                prob = probs[i]
+                env = envs[i]
+                traj = trajectories[i]
+
+                state_feature = env.current_state()[0].astype(np.int8)
+                traj['states'].append(state_feature)
+                traj['actions'].append(action)
+                traj['probs'].append(prob)
+                traj['players'].append(env.turn)
+                traj['steps'] += 1
+
+                env.step(action)
+                if env.done():
+                    winner = env.winPlayer()
+                    states = traj['states']
+                    end_state_feature = env.current_state()[0].astype(np.int8)
+                    next_states = states[1:] + [end_state_feature]
+                    winner_z = np.zeros(len(traj['players']), dtype=np.int32)
+                    if winner != 0:
+                        winner_z[np.array(traj['players']) == winner] = 1
+                        winner_z[np.array(traj['players']) != winner] = -1
+                    discount = list(reversed([pow(player.discount, k) for k in range(len(winner_z))]))
+                    dones = [False] * len(traj['players'])
+                    dones[-1] = True
+                    play_data = tuple(zip(states, traj['actions'], traj['probs'], discount, winner_z, next_states, dones))
+                    completed_data.append((winner, play_data))
+
+                    # 立刻重置该 slot，开新局
+                    env.reset()
+                    player.mcts.reset_env(i)
+                    trajectories[i] = {'states': [], 'actions': [], 'probs': [], 'players': [], 'steps': 0}
+
+        return completed_data[:n_games]

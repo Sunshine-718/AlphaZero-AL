@@ -31,6 +31,8 @@ class BatchedMCTS:
         self._convert_board = board_converter or _default_convert_board
         # cache_size=0 表示禁用置换表；>0 则启用 LRU 置换表
         self.cache = LRUCache(cache_size) if cache_size > 0 else None
+        # 预分配 board 转换 buffer，避免 MCTS 热循环里频繁 malloc
+        self._conv_buf = np.zeros((batch_size, 3, *self.board_shape), dtype=np.float32)
 
     def batch_playout(self, pv_func, current_boards, turns):
         """ current_boards: shape [batch_size, *board_shape], X: 1, O: -1
@@ -48,15 +50,17 @@ class BatchedMCTS:
             non_term_mask = ~term_mask
             probs = np.zeros((self.batch_size, self.action_size), dtype=np.float32)
             if non_term_mask.any():
+                non_term_indices = np.where(non_term_mask)[0]
+                n_non_term = len(non_term_indices)
                 if self.cache is None:
-                    # 置换表未启用：全部送 NN
-                    non_term_converted = self._convert_board(leaf_boards[non_term_mask], leaf_turns[non_term_mask])
-                    non_term_probs, non_term_vals = pv_func.predict(non_term_converted)
+                    # 置换表未启用：全部送 NN，写入预分配 buffer
+                    conv = self._convert_board(leaf_boards[non_term_mask], leaf_turns[non_term_mask])
+                    self._conv_buf[:n_non_term] = conv
+                    non_term_probs, non_term_vals = pv_func.predict(self._conv_buf[:n_non_term])
                     probs[non_term_mask] = non_term_probs
                     values[non_term_mask] = non_term_vals.flatten()
                 else:
                     # 置换表启用：先查缓存，cache miss 的再批量送 NN
-                    non_term_indices = np.where(non_term_mask)[0]
                     miss_indices = []
                     for i in non_term_indices:
                         # key = 棋盘原始字节 + turn 字节（43 bytes，含 turn 信息）
@@ -69,10 +73,12 @@ class BatchedMCTS:
                             miss_indices.append(i)
 
                     if miss_indices:
+                        n_miss = len(miss_indices)
                         miss_boards = leaf_boards[miss_indices]
                         miss_turns  = leaf_turns[miss_indices]
-                        miss_converted = self._convert_board(miss_boards, miss_turns)
-                        miss_probs, miss_vals = pv_func.predict(miss_converted)
+                        conv = self._convert_board(miss_boards, miss_turns)
+                        self._conv_buf[:n_miss] = conv
+                        miss_probs, miss_vals = pv_func.predict(self._conv_buf[:n_miss])
                         miss_vals = miss_vals.flatten()
                         for j, i in enumerate(miss_indices):
                             probs[i]  = miss_probs[j]
@@ -80,7 +86,7 @@ class BatchedMCTS:
                             key = leaf_boards[i].tobytes() + leaf_turns[i].item().to_bytes(1, 'little', signed=True)
                             self.cache.put(key, (miss_probs[j].copy(), miss_vals[j].item()))
                             # 覆盖 state 字段为 converted board，供 refresh_cache 批量重算
-                            self.cache._od[key]['state'] = miss_converted[j:j+1]
+                            self.cache._od[key]['state'] = conv[j:j+1]
 
             self.mcts.backprop_batch(
                 np.ascontiguousarray(probs, dtype=np.float32),

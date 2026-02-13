@@ -8,28 +8,19 @@ from torch.utils.data import TensorDataset, DataLoader
 
 
 class ReplayBuffer:
-    _instance = None
-    _initialized = False
-
-    def __new__(cls, *args, **kwargs):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
-
     def __init__(self, state_dim, capacity, action_dim, row, col, replay_ratio=0.25, device='cpu', balance_done_value=True):
-        if not self._initialized:
-            self.state = torch.empty((capacity, state_dim, row, col), dtype=torch.int8, device=device)
-            self.action = torch.empty((capacity, 1), dtype=torch.int16, device=device)
-            self.prob = torch.empty((capacity, action_dim), dtype=torch.float32, device=device)
-            self.discount = torch.empty((capacity, 1), dtype=torch.float32, device=device)
-            self.winner = torch.full((capacity, 1), 0, dtype=torch.int8, device=device)
-            self.next_state = torch.empty_like(self.state, dtype=torch.int8, device=device)
-            self.done = torch.empty_like(self.discount, dtype=torch.bool, device=device)
-            self.replay_ratio = replay_ratio
-            self.device = device
-            self.balance_done_value = balance_done_value
-            self.current_capacity = capacity
-            self._ptr = 0
+        self.state = torch.empty((capacity, state_dim, row, col), dtype=torch.int8, device=device)
+        self.action = torch.empty((capacity, 1), dtype=torch.int16, device=device)
+        self.prob = torch.empty((capacity, action_dim), dtype=torch.float32, device=device)
+        self.discount = torch.empty((capacity, 1), dtype=torch.float32, device=device)
+        self.winner = torch.full((capacity, 1), 0, dtype=torch.int8, device=device)
+        self.next_state = torch.empty_like(self.state, dtype=torch.int8, device=device)
+        self.done = torch.empty_like(self.discount, dtype=torch.bool, device=device)
+        self.replay_ratio = replay_ratio
+        self.device = device
+        self.balance_done_value = balance_done_value
+        self.current_capacity = capacity
+        self._ptr = 0
 
     def save(self, path):
         state_dict = {
