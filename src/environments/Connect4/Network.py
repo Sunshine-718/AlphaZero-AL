@@ -155,7 +155,9 @@ class CNN(Base):
             t = t.pin_memory().to(self.device, dtype=torch.float32, non_blocking=True)
         else:
             t = t.float()
+        player = t[:, -1, 0, 0].view(-1)
         log_prob, value_log_prob = self.forward(t)
         value_prob = value_log_prob.exp()
-        value = value_prob[:, 1] - value_prob[:, 2]
+        draw_bias = -player  # player=1 → -1, player=-1 → +1
+        value = player * (value_prob[:, 1] - value_prob[:, 2]) + draw_bias * value_prob[:, 0]
         return log_prob.exp().cpu().numpy(), value.cpu().view(-1, 1).numpy()

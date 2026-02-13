@@ -70,10 +70,7 @@ class Game:
                     end_state_feature = env.current_state()[0].astype(np.int8)
                     next_states = states[1:] + [end_state_feature]
                     
-                    winner_z = np.zeros(len(traj['players']), dtype=np.int32)
-                    if winner != 0:
-                        winner_z[np.array(traj['players']) == winner] = 1
-                        winner_z[np.array(traj['players']) != winner] = -1
+                    winner_z = np.full(len(traj['players']), winner, dtype=np.int32)
                     
                     discount = reversed([pow(player.discount, k) for k in range(len(winner_z))])
                     dones = [False] * len(traj['players'])
@@ -137,11 +134,7 @@ class Game:
                     T = len(traj['players'])
                     states = traj['states']
                     next_states = states[1:] + [env.current_state()[0].astype(np.int8)]
-                    winner_z = np.zeros(T, dtype=np.int32)
-                    if winner != 0:
-                        player_arr = np.array(traj['players'])
-                        winner_z[player_arr == winner] = 1
-                        winner_z[player_arr != winner] = -1
+                    winner_z = np.full(T, winner, dtype=np.int32)
                     # 从预算好的向量直接切片并逆序，避免 pow 循环
                     discount = _disc_base[T - 1::-1]
                     dones = np.zeros(T, dtype=bool)

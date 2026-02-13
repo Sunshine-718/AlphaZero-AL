@@ -448,7 +448,11 @@ class Connect4GUI(QWidget):
                 t = t.squeeze(1)
             _, vl = self.net(t)
             vp = F.softmax(vl, dim=-1)[0].cpu().tolist()
-        draw, win, lose = vp[0] * 100, vp[1] * 100, vp[2] * 100
+        draw = vp[0] * 100
+        if self.player_color == 1:
+            win, lose = vp[1] * 100, vp[2] * 100
+        else:
+            win, lose = vp[2] * 100, vp[1] * 100
         self.panel.set_rates(win, draw, lose)
 
     def _ai_move(self):
