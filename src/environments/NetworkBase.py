@@ -11,6 +11,7 @@ from abc import ABC
 from copy import deepcopy
 from sklearn.metrics import f1_score
 
+
 class Base(ABC, nn.Module):
     def save(self, path=None):
         while True:
@@ -38,7 +39,7 @@ class Base(ABC, nn.Module):
         return self
 
     def train_step(self, dataloader, augment):
-        p_l, v_l = [], []
+        p_l, v_l, const_loss = [], [], []
         self.train()
         for _ in range(10):
             for batch in dataloader:
@@ -50,17 +51,39 @@ class Base(ABC, nn.Module):
                 value_oppo[value_oppo == 1] = -2
                 value_oppo = (-value_oppo).view(-1,).long()
                 self.opt.zero_grad()
-                log_p_pred, value_pred = self(state)
+                layer_weight = [0.1, 0.1, 0.1]
+                total_const_loss = 0
+                batch_split = state.shape[0] // 2
+                x = state
+                for i, layer in enumerate(self.hidden):
+                    x = layer(x)
+                    feat = x
+                    feat_original = feat[:batch_split]
+                    feat_augmented = feat[batch_split:]
+                    feat_original_flipped = torch.flip(feat_original, dims=[3])
+                    layer_loss = 1 - F.cosine_similarity(feat_original_flipped, feat_augmented, dim=1).mean()
+                    total_const_loss += layer_loss * layer_weight[i]
+                hidden_out = x
+                log_p_pred = self.policy_head(hidden_out)
+                value_pred = self.value_head(hidden_out)
+                log_p_flipped = torch.flip(log_p_pred[:batch_split], dims=[1])
+                target_p = log_p_pred[batch_split:].exp()  # 还原回概率分布
+                policy_const_loss = F.kl_div(log_p_flipped, target_p, reduction='batchmean')
+                total_const_loss += policy_const_loss
+                value_const_loss = F.kl_div(value_pred[:batch_split], value_pred[batch_split:].exp(), reduction='batchmean')
+                total_const_loss += value_const_loss
+                
                 _, next_value_pred = self(next_state)
                 v_loss = (F.nll_loss(value_pred, value, reduction='none') * discount).mean()
                 v_loss += (F.nll_loss(next_value_pred, value_oppo, reduction='none') * discount).mean()
                 p_loss = torch.mean(torch.sum(-prob * log_p_pred - 0.01 * log_p_pred, dim=1))
-                loss = p_loss + v_loss
+                loss = p_loss + v_loss + total_const_loss
                 loss.backward()
                 nn.utils.clip_grad_norm_(self.parameters(), 0.5)
                 self.opt.step()
                 p_l.append(p_loss.item())
                 v_l.append(v_loss.item())
+                const_loss.append(total_const_loss.item())
         self.scheduler.step()
         self.eval()
         with torch.no_grad():
@@ -73,4 +96,4 @@ class Base(ABC, nn.Module):
                 param_norm = param.grad.data.norm(2)
                 total_norm += param_norm.item() ** 2
             total_norm = total_norm ** 0.5
-        return np.mean(p_l), np.mean(v_l), float(entropy), total_norm, f1
+        return np.mean(p_l), np.mean(v_l), np.mean(const_loss), float(entropy), total_norm, f1

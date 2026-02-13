@@ -52,10 +52,10 @@ class TrainPipeline(ABC):
     def policy_update(self):
         dataloader = self.buffer.sample(self.batch_size)
 
-        p_l, v_l, ent, g_n, f1 = self.net.train_step(dataloader, self.module.augment)
+        p_l, v_l, const_loss, ent, g_n, f1 = self.net.train_step(dataloader, self.module.augment)
 
         print(f'F1 score (new): {f1: .3f}')
-        return p_l, v_l, ent, g_n, f1
+        return p_l, v_l, const_loss, ent, g_n, f1
 
     def update_elo(self):
         print('Updating elo score...')
@@ -141,7 +141,7 @@ class TrainPipeline(ABC):
             self.data_collector()
             p_loss, v_loss, entropy, grad_norm = float('inf'), float('inf'), float('inf'), float('inf')
             self.global_step += 1
-            p_loss, v_loss, entropy, grad_norm, f1 = self.policy_update()
+            p_loss, v_loss, const_loss, entropy, grad_norm, f1 = self.policy_update()
             self.net.save(self.current)
 
             print(f'batch i: {self.global_step}, episode_len: {self.episode_len}, '
@@ -154,6 +154,7 @@ class TrainPipeline(ABC):
                 'Metric/F1 score': f1,
                 'Metric/Loss/Action Loss': p_loss,
                 'Metric/Loss/Value loss': v_loss,
+                'Metric/Loss/Consistency loss': const_loss,
                 'Metric/Entropy': entropy,
             }, step=self.global_step)
 
