@@ -75,7 +75,7 @@ class ServerPipeline(TrainPipeline):
         """冷启动阶段等待 buffer 积累到 min_buffer_size，之后直接返回让训练持续跑。"""
         if self._warmed_up:
             with self._episode_len_lock:
-                self.episode_len = int(np.mean(self._episode_len_list)) if self._episode_len_list else None
+                self.episode_len = float(np.mean(self._episode_len_list)) if self._episode_len_list else None
                 self._episode_len_list.clear()
             return
 
