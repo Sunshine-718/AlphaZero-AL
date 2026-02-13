@@ -100,9 +100,9 @@ class Base(ABC, nn.Module):
         finally:
             for h in hooks:
                 h.remove()
+            self.eval()
 
         self.scheduler.step()
-        self.eval()
         with torch.no_grad():
             _, new_v = self(state)
         f1 = f1_score(value.cpu().numpy(), torch.argmax(new_v, dim=-1).cpu().numpy(), average='macro')

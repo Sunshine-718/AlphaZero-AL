@@ -87,12 +87,12 @@ class ReplayBuffer:
         if isinstance(prob, np.ndarray):
             prob = torch.from_numpy(prob).float().to(self.device)
         self.prob[idx] = prob
-        self.discount[idx] = discount
-        self.winner[idx] = winner
+        self.discount[idx] = float(discount)
+        self.winner[idx] = int(winner)
         if isinstance(next_state, np.ndarray):
             next_state = torch.from_numpy(next_state).float().to(self.device)
         self.next_state[idx] = next_state
-        self.done[idx] = done
+        self.done[idx] = bool(done)
         return idx
 
     def get(self, indices):

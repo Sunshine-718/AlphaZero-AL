@@ -19,8 +19,6 @@ TOTAL_RECEIVED_BYTES = 0
 TOTAL_SENT_BYTES = 0
 # -----------------------
 
-# 内存中缓存的最新权重：(mtime: float, payload: bytes)
-_cached_weights: tuple = (0.0, b'')
 
 parser = argparse.ArgumentParser(description='AlphaZero Training Server')
 parser.add_argument('--host', '-H', type=str, default='0.0.0.0', help='Host IP')
@@ -74,12 +72,6 @@ class ServerPipeline(TrainPipeline):
         self._inbox: queue.Queue = queue.Queue()
         self.episode_len = None
 
-    def _on_weights_saved(self):
-        global _cached_weights
-        mtime = os.path.getmtime(self.current)
-        payload = pickle.dumps(self.net.state_dict(), protocol=pickle.HIGHEST_PROTOCOL)
-        _cached_weights = (mtime, payload)
-
     def data_collector(self):
         """冷启动阶段等待 buffer 积累到 min_buffer_size，之后直接返回让训练持续跑。"""
         if self._warmed_up:
@@ -122,15 +114,23 @@ def upload():
 
 @app.route('/weights', methods=['GET'])
 def weights():
-    global _cached_weights, TOTAL_SENT_BYTES
-    mtime, payload = _cached_weights
+    global TOTAL_SENT_BYTES
+    path = pipeline.current
+    try:
+        mtime = os.path.getmtime(path)
+    except FileNotFoundError:
+        return '', 304
     try:
         client_ts = float(request.args.get('ts', 0))
     except ValueError:
         client_ts = 0
     if client_ts == 0:
         print(f'Client {request.remote_addr}:{request.environ.get("REMOTE_PORT")} connected.')
-    if mtime > client_ts and payload:
+    if mtime > client_ts:
+        payload = pickle.dumps(
+            torch.load(path, map_location='cpu', weights_only=True)["model_state_dict"],
+            protocol=pickle.HIGHEST_PROTOCOL
+        )
         TOTAL_SENT_BYTES += len(payload)
         print(f"[[TRAFFIC_LOG::SENT::+::{len(payload)}]]", file=sys.stdout)
         return payload, 200, {

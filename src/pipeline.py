@@ -60,8 +60,10 @@ class TrainPipeline(ABC):
 
     def policy_update(self):
         if self.world_size > 1:
+            # rank 0 采样 batch_size * world_size 条，每张卡各得 batch_size 条（标准数据切分并行）
+            total_samples = self.batch_size * self.world_size
             if self.rank == 0:
-                dataloader = self.buffer.sample(self.batch_size)
+                dataloader = self.buffer.sample(total_samples)
                 tensors = [torch.cat([batch[i] for batch in dataloader], dim=0).to(self.device).float()
                            for i in range(7)]
                 n = torch.tensor([tensors[0].shape[0]], dtype=torch.long, device=self.device)
@@ -82,7 +84,10 @@ class TrainPipeline(ABC):
             for i, (shape, orig_dtype) in enumerate(zip(shapes, orig_dtypes)):
                 buf = tensors[i] if self.rank == 0 else torch.empty(shape, dtype=torch.float32, device=self.device)
                 dist.broadcast(buf, src=0)
-                broadcast_tensors.append(buf.to(dtype=orig_dtype))
+                # 每张卡切取属于自己的那份 batch_size 条数据
+                per_rank = n_samples // self.world_size
+                shard = buf[self.rank * per_rank: (self.rank + 1) * per_rank]
+                broadcast_tensors.append(shard.to(dtype=orig_dtype))
 
             dataloader = DataLoader(TensorDataset(*broadcast_tensors), self.batch_size, shuffle=True)
         else:

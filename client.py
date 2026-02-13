@@ -31,7 +31,7 @@ parser.add_argument('--port', '-P', '-p', type=int, default=7718, help='Port num
 parser.add_argument('-c', '--c_init', type=float, default=1.25, help='C_puct init')
 parser.add_argument('--c_base', type=float, default=500, help='C_puct base')
 parser.add_argument('-a', '--alpha', type=float, default=0.3, help='Dirichlet alpha')
-parser.add_argument('--n_play', type=int, default=1, help='n_playout')
+parser.add_argument('--n_play', type=int, default=1, help='每次上传前收集的局数')
 parser.add_argument('--discount', type=float, default=0.975, help='Discount factor')
 parser.add_argument('-t', '--temp', type=float, default=1, help='Softmax temperature')
 parser.add_argument('--temp_thres', type=float, default=12, help='Step threshold to change temperature to -> 0')

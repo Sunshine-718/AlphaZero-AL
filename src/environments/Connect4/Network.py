@@ -138,7 +138,6 @@ class CNN(Base):
 
     @torch.no_grad()
     def policy(self, state):
-        self.eval()
         if isinstance(state, np.ndarray):
             state = torch.from_numpy(state).float().to(self.device)
         hidden = self.hidden(state)
@@ -146,15 +145,17 @@ class CNN(Base):
 
     @torch.no_grad()
     def value(self, state):
-        self.eval()
         hidden = self.hidden(state)
         return self.value_head(hidden).exp().cpu().numpy()
 
     @torch.no_grad()
     def predict(self, state):
-        state = torch.from_numpy(state).float().to(self.device)
-        self.eval()
-        log_prob, value_log_prob = self.forward(state)
+        t = torch.from_numpy(state)
+        if self.device != 'cpu':
+            t = t.pin_memory().to(self.device, dtype=torch.float32, non_blocking=True)
+        else:
+            t = t.float()
+        log_prob, value_log_prob = self.forward(t)
         value_prob = value_log_prob.exp()
         value = value_prob[:, 1] - value_prob[:, 2]
         return log_prob.exp().cpu().numpy(), value.cpu().view(-1, 1).numpy()
