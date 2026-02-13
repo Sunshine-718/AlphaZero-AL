@@ -7,20 +7,16 @@ from .game import Game
 from copy import deepcopy
 from .environments import load
 from .player import MCTSPlayer, AlphaZeroPlayer, NetworkPlayer
-import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import TensorDataset, DataLoader
 import swanlab
 
 
 class TrainPipeline(ABC):
-    def __init__(self, env_name='Connect4', model='CNN', name='AZ', config=None, rank=0, world_size=1):
+    def __init__(self, env_name='Connect4', model='CNN', name='AZ', config=None):
         collection = ('Connect4', )
         if env_name not in collection:
             raise ValueError(f'Environment does not exist, available env: {collection}')
         self.env_name = env_name
-        self.rank = rank
-        self.world_size = world_size
         self.module = load(env_name)
         self.env = self.module.Env()
         self.game = Game(self.env)
@@ -40,7 +36,6 @@ class TrainPipeline(ABC):
         self.current = f'{self.params}/{self.name}_{self.net.name()}_current.pt'
         self.best = f'{self.params}/{self.name}_{self.net.name()}_best.pt'
         self.net.load(self.current)
-        self.ddp_net = DDP(self.net, device_ids=[rank], find_unused_parameters=False) if world_size > 1 else self.net
         self.az_player = AlphaZeroPlayer(self.net, c_init=self.c_puct, n_playout=self.n_playout,
                                          discount=self.discount, alpha=self.dirichlet_alpha, is_selfplay=1,
                                          cache_size=self.cache_size)
@@ -59,42 +54,8 @@ class TrainPipeline(ABC):
         ...
 
     def policy_update(self):
-        if self.world_size > 1:
-            # rank 0 采样 batch_size * world_size 条，每张卡各得 batch_size 条（标准数据切分并行）
-            total_samples = self.batch_size * self.world_size
-            if self.rank == 0:
-                dataloader = self.buffer.sample(total_samples)
-                tensors = [torch.cat([batch[i] for batch in dataloader], dim=0).to(self.device).float()
-                           for i in range(7)]
-                n = torch.tensor([tensors[0].shape[0]], dtype=torch.long, device=self.device)
-            else:
-                n = torch.tensor([0], dtype=torch.long, device=self.device)
-
-            dist.broadcast(n, src=0)
-            n_samples = n.item()
-
-            rows, cols = self.env.board.shape
-            shapes = [(n_samples, self.net.in_dim, rows, cols), (n_samples, 1),
-                      (n_samples, self.net.n_actions), (n_samples, 1), (n_samples, 1),
-                      (n_samples, self.net.in_dim, rows, cols), (n_samples, 1)]
-            orig_dtypes = [torch.float32, torch.int16, torch.float32, torch.float32,
-                           torch.int8, torch.float32, torch.bool]
-
-            broadcast_tensors = []
-            for i, (shape, orig_dtype) in enumerate(zip(shapes, orig_dtypes)):
-                buf = tensors[i] if self.rank == 0 else torch.empty(shape, dtype=torch.float32, device=self.device)
-                dist.broadcast(buf, src=0)
-                # 每张卡切取属于自己的那份 batch_size 条数据
-                per_rank = n_samples // self.world_size
-                shard = buf[self.rank * per_rank: (self.rank + 1) * per_rank]
-                broadcast_tensors.append(shard.to(dtype=orig_dtype))
-
-            dataloader = DataLoader(TensorDataset(*broadcast_tensors), self.batch_size, shuffle=True)
-        else:
-            dataloader = self.buffer.sample(self.batch_size)
-
-        p_l, v_l, const_loss, ent, g_n, f1 = self.net.train_step(dataloader, self.module.augment,
-                                                                   ddp_model=self.ddp_net)
+        dataloader = self.buffer.sample(self.batch_size)
+        p_l, v_l, const_loss, ent, g_n, f1 = self.net.train_step(dataloader, self.module.augment)
         print(f'F1 score (new): {f1: .3f}')
         return p_l, v_l, const_loss, ent, g_n, f1
 
@@ -176,66 +137,51 @@ class TrainPipeline(ABC):
             swanlab.log(log_dict, step=self.global_step)
 
     def run(self):
-        if self.rank == 0:
-            print('=' * 50)
-            print(f'Hyperparameters:\n'
-                  f'\tC_puct: {self.c_puct}\n'
-                  f'\tSimulation (AlphaZero): {self.n_playout}\n'
-                  f'\tSimulation (Benchmark): {self.pure_mcts_n_playout}\n'
-                  f'\tDiscount: {self.discount}\n'
-                  f'\tDirichlet alpha: {self.dirichlet_alpha}\n'
-                  f'\tBuffer size: {self.buffer_size}\n'
-                  f'\tBatch size: {self.batch_size}')
-            print('=' * 50)
+        print('=' * 50)
+        print(f'Hyperparameters:\n'
+              f'\tC_puct: {self.c_puct}\n'
+              f'\tSimulation (AlphaZero): {self.n_playout}\n'
+              f'\tSimulation (Benchmark): {self.pure_mcts_n_playout}\n'
+              f'\tDiscount: {self.discount}\n'
+              f'\tDirichlet alpha: {self.dirichlet_alpha}\n'
+              f'\tBuffer size: {self.buffer_size}\n'
+              f'\tBatch size: {self.batch_size}')
+        print('=' * 50)
 
-            run_config = {'env_name': self.env_name, 'model': self.net.name()}
-            run_config.update(self.raw_config)
-            swanlab.init(project="AlphaZero-AL", experiment_name=self.name, config=run_config)
-            self.buffer.load('./dataset/dataset.pt')
+        run_config = {'env_name': self.env_name, 'model': self.net.name()}
+        run_config.update(self.raw_config)
+        swanlab.init(project="AlphaZero-AL", experiment_name=self.name, config=run_config)
+        self.buffer.load('./dataset/dataset.pt')
 
         best_counter = 0
 
         while True:
-            if self.rank == 0:
-                self.data_collector()
-
-            if self.world_size > 1:
-                dist.barrier()
-
+            self.data_collector()
             self.global_step += 1
             p_loss, v_loss, const_loss, entropy, grad_norm, f1 = self.policy_update()
-
-            if self.world_size > 1:
-                dist.barrier()
-
-            if self.rank == 0:
-                self.net.save(self.current)
-                self._on_weights_saved()
-                print(f'batch i: {self.global_step}, episode_len: {self.episode_len}, '
-                      f'loss: {p_loss + v_loss: .8f}, entropy: {entropy: .8f}')
-                self._log_train_step(p_loss, v_loss, const_loss, entropy, grad_norm, f1)
+            self.net.save(self.current)
+            self._on_weights_saved()
+            print(f'batch i: {self.global_step}, episode_len: {self.episode_len}, '
+                  f'loss: {p_loss + v_loss: .8f}, entropy: {entropy: .8f}')
+            self._log_train_step(p_loss, v_loss, const_loss, entropy, grad_norm, f1)
 
             if self.global_step % self.interval != 0:
                 continue
 
-            if self.world_size > 1:
-                dist.barrier()
+            print(f'current self-play batch: {self.global_step + 1}')
+            r_a, r_b = self.update_elo()
+            print(f'Elo score: AlphaZero: {r_a: .2f}, Benchmark: {r_b: .2f}')
 
-            if self.rank == 0:
-                print(f'current self-play batch: {self.global_step + 1}')
-                r_a, r_b = self.update_elo()
-                print(f'Elo score: AlphaZero: {r_a: .2f}, Benchmark: {r_b: .2f}')
+            flag, win_rate = self.select_best_player(self.num_eval)
+            new_best = best_counter + 1 if flag else None
+            self._log_eval(r_a, r_b, win_rate, new_best)
 
-                flag, win_rate = self.select_best_player(self.num_eval)
-                new_best = best_counter + 1 if flag else None
-                self._log_eval(r_a, r_b, win_rate, new_best)
-
-                if flag:
-                    print('New best policy!!')
-                    best_counter += 1
-                    self.net.save(self.best)
-                    os.makedirs('dataset', exist_ok=True)
-                    self.buffer.save('./dataset/dataset.pt')
+            if flag:
+                print('New best policy!!')
+                best_counter += 1
+                self.net.save(self.best)
+                os.makedirs('dataset', exist_ok=True)
+                self.buffer.save('./dataset/dataset.pt')
 
     def __call__(self):
         self.run()

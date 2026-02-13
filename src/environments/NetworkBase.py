@@ -38,16 +38,11 @@ class Base(ABC, nn.Module):
                 print(f'Failed to load parameters.\n{e}')
         return self
 
-    def train_step(self, dataloader, augment, ddp_model=None):
-        if ddp_model is None:
-            ddp_model = self
-        # Access the underlying module (works for both DDP-wrapped and raw models)
-        raw_model = ddp_model.module if hasattr(ddp_model, 'module') else ddp_model
-
+    def train_step(self, dataloader, augment):
         # Register forward hooks on hidden layers to capture intermediate features
         feats = {}
         hooks = []
-        for i, layer in enumerate(raw_model.hidden):
+        for i, layer in enumerate(self.hidden):
             def make_hook(idx):
                 def hook(m, inp, out):
                     feats[idx] = out
@@ -55,7 +50,7 @@ class Base(ABC, nn.Module):
             hooks.append(layer.register_forward_hook(make_hook(i)))
 
         p_l, v_l, const_loss = [], [], []
-        ddp_model.train()
+        self.train()
         try:
             for _ in range(10):
                 for batch in dataloader:
@@ -68,9 +63,8 @@ class Base(ABC, nn.Module):
                     total_const_loss = 0
                     batch_split = state.shape[0] // 2
 
-                    # Single forward pass through DDP wrapper — hooks capture intermediate features
                     feats.clear()
-                    log_p_pred, value_pred = ddp_model(state)
+                    log_p_pred, value_pred = self(state)
 
                     # Per-layer consistency loss using hook-captured features
                     for i in range(len(layer_weight)):

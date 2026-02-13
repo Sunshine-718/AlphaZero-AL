@@ -7,7 +7,6 @@ import pickle
 import logging
 import threading
 import numpy as np
-import torch.distributed as dist
 from src.pipeline import TrainPipeline
 from src.ReplayBuffer import ReplayBuffer
 from flask import Flask, request, jsonify
@@ -159,79 +158,46 @@ def reset_traffic():
     return jsonify({'status': 'success', 'message': 'Traffic stats reset'})
 
 
-def set_seed(seed: int, rank: int = 0):
-    worker_seed = seed + rank
-    random.seed(worker_seed)
-    np.random.seed(worker_seed)
-    torch.manual_seed(worker_seed)
-    torch.cuda.manual_seed(worker_seed)
-    torch.cuda.manual_seed_all(worker_seed)
+def set_seed(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
 
-def setup_ddp():
-    dist.init_process_group(backend="nccl")
-    local_rank = int(os.environ["LOCAL_RANK"])
-    torch.cuda.set_device(local_rank)
-    return local_rank
-
-
-def cleanup_ddp():
-    dist.destroy_process_group()
-
-
 if __name__ == '__main__':
-    # Detect if launched via torchrun (DDP mode)
-    if "LOCAL_RANK" in os.environ:
-        local_rank = setup_ddp()
-        world_size = dist.get_world_size()
-        args.device = f"cuda:{local_rank}"
-    else:
-        local_rank = 0
-        world_size = 1
-
-    set_seed(0, local_rank)
+    set_seed(0)
 
     pipeline = ServerPipeline(args.env, args.model, args.name, config,
-                               min_buffer_size=args.q_size,
-                               rank=local_rank, world_size=world_size)
+                               min_buffer_size=args.q_size)
 
-    if local_rank == 0:
-        log_file = 'flask_access.log'
-        with open(log_file, 'w'):
-            pass
+    log_file = 'flask_access.log'
+    with open(log_file, 'w'):
+        pass
 
-        rows, cols = pipeline.env.board.shape
-        buffer = ReplayBuffer(pipeline.net.in_dim, pipeline.buffer_size,
-                              pipeline.net.n_actions, rows, cols,
-                              device=pipeline.device)
-        pipeline.init_buffer(buffer)
+    rows, cols = pipeline.env.board.shape
+    buffer = ReplayBuffer(pipeline.net.in_dim, pipeline.buffer_size,
+                          pipeline.net.n_actions, rows, cols,
+                          device=pipeline.device)
+    pipeline.init_buffer(buffer)
 
-        # 启动后台数据搬运线程：inbox → buffer（持续运行）
-        worker = threading.Thread(target=pipeline.inbox_worker, args=(buffer,), daemon=True)
-        worker.start()
+    # 启动后台数据搬运线程：inbox → buffer（持续运行）
+    worker = threading.Thread(target=pipeline.inbox_worker, args=(buffer,), daemon=True)
+    worker.start()
 
-        # Flask 日志配置
-        handler = logging.FileHandler(log_file, encoding='utf-8')
-        handler.setLevel(logging.INFO)
-        log = logging.getLogger('werkzeug')
-        log.setLevel(logging.INFO)
-        log.handlers = [handler]
-        app.logger.handlers = [handler]
+    # Flask 日志配置
+    handler = logging.FileHandler(log_file, encoding='utf-8')
+    handler.setLevel(logging.INFO)
+    log = logging.getLogger('werkzeug')
+    log.setLevel(logging.INFO)
+    log.handlers = [handler]
+    app.logger.handlers = [handler]
 
-        # Start training loop in background; Flask serves in main thread
-        t = threading.Thread(target=pipeline, daemon=True)
-        t.start()
+    # Start training loop in background; Flask serves in main thread
+    t = threading.Thread(target=pipeline, daemon=True)
+    t.start()
 
-        try:
-            app.run(host=args.host, port=args.port, debug=False, use_reloader=False)
-        finally:
-            if world_size > 1:
-                cleanup_ddp()
-    else:
-        # Non-zero ranks: participate in DDP training only (no Flask, no buffer)
-        try:
-            pipeline()
-        finally:
-            cleanup_ddp()
+    app.run(host=args.host, port=args.port, debug=False, use_reloader=False)
