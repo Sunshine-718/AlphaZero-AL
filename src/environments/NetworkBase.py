@@ -89,7 +89,7 @@ class Base(ABC, nn.Module):
                     total_const_loss += value_const_loss
 
                     v_loss = (F.nll_loss(value_pred, value, reduction='none') * discount).mean()
-                    p_loss = torch.mean(torch.sum(-prob * log_p_pred - 0.01 * log_p_pred, dim=1))
+                    p_loss = torch.mean(torch.sum(-prob * log_p_pred, dim=1))
                     loss = p_loss + v_loss + total_const_loss
                     loss.backward()
                     nn.utils.clip_grad_norm_(self.parameters(), 0.5)
