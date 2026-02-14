@@ -109,21 +109,16 @@ def inspect(net, board=None):
 
 
 def augment(batch):
-    state, action, prob, discount, winner, next_state, done = batch
+    state, prob, winner = batch
 
     state_flipped = torch.flip(state, dims=[3])
-    next_state_flipped = torch.flip(next_state, dims=[3])
     prob_flipped = torch.flip(prob, dims=[1])
 
     state = torch.cat([state, state_flipped], dim=0)
-    next_state = torch.cat([next_state, next_state_flipped], dim=0)
-    action = torch.cat([action, 6 - action], dim=0)
     prob = torch.cat([prob, prob_flipped], dim=0)
-    discount = torch.cat([discount, discount], dim=0)
-    done = torch.cat([done, done], dim=0)
     winner = torch.cat([winner, winner], dim=0)
 
-    return state, action, prob, discount, winner, next_state, done
+    return state, prob, winner
 
 
 @njit

@@ -10,12 +10,8 @@ from torch.utils.data import TensorDataset, DataLoader
 class ReplayBuffer:
     def __init__(self, state_dim, capacity, action_dim, row, col, replay_ratio=0.25, device='cpu', balance_done_value=True):
         self.state = torch.empty((capacity, state_dim, row, col), dtype=torch.int8, device=device)
-        self.action = torch.empty((capacity, 1), dtype=torch.int16, device=device)
         self.prob = torch.empty((capacity, action_dim), dtype=torch.float32, device=device)
-        self.discount = torch.empty((capacity, 1), dtype=torch.float32, device=device)
         self.winner = torch.full((capacity, 1), 0, dtype=torch.int8, device=device)
-        self.next_state = torch.empty_like(self.state, dtype=torch.int8, device=device)
-        self.done = torch.empty_like(self.discount, dtype=torch.bool, device=device)
         self.replay_ratio = replay_ratio
         self.device = device
         self.balance_done_value = balance_done_value
@@ -25,12 +21,8 @@ class ReplayBuffer:
     def save(self, path):
         state_dict = {
             'state': self.state,
-            'action': self.action,
             'prob': self.prob,
-            'discount': self.discount,
             'winner': self.winner,
-            'next_state': self.next_state,
-            'done': self.done,
             '_ptr': self._ptr,
             'current_capacity': self.current_capacity
         }
@@ -41,12 +33,8 @@ class ReplayBuffer:
             state_dict = torch.load(path, map_location=self.device)
             capacity = min(self.state.shape[0], state_dict['state'].shape[0])
             self.state[:capacity].copy_(state_dict['state'][:capacity])
-            self.action[:capacity].copy_(state_dict['action'][:capacity])
             self.prob[:capacity].copy_(state_dict['prob'][:capacity])
-            self.discount[:capacity].copy_(state_dict['discount'][:capacity])
             self.winner[:capacity].copy_(state_dict['winner'][:capacity])
-            self.next_state[:capacity].copy_(state_dict['next_state'][:capacity])
-            self.done[:capacity].copy_(state_dict['done'][:capacity])
             self._ptr = state_dict['_ptr']
         except Exception as e:
             print(e)
@@ -60,44 +48,30 @@ class ReplayBuffer:
 
     def reset(self):
         self.state = torch.empty_like(self.state)
-        self.action = torch.empty_like(self.action)
         self.prob = torch.empty_like(self.prob)
-        self.discount = torch.empty_like(self.discount)
         self.winner = torch.empty_like(self.winner)
-        self.next_state = torch.empty_like(self.next_state)
-        self.done = torch.empty_like(self.done)
         self._ptr = 0
 
     def to(self, device='cpu'):
         self.state = self.state.to(device)
         self.prob = self.prob.to(device)
-        self.discount = self.discount.to(device)
         self.winner = self.winner.to(device)
-        self.next_state = self.next_state.to(device)
-        self.done = self.done.to(device)
         self.device = device
 
-    def store(self, state, action, prob, discount, winner, next_state, done):
+    def store(self, state, prob, winner):
         idx = self._ptr % self.current_capacity
         self._ptr += 1
         if isinstance(state, np.ndarray):
             state = torch.from_numpy(state).float().to(self.device)
         self.state[idx] = state
-        self.action[idx] = action
         if isinstance(prob, np.ndarray):
             prob = torch.from_numpy(prob).float().to(self.device)
         self.prob[idx] = prob
-        self.discount[idx] = float(discount)
         self.winner[idx] = int(winner)
-        if isinstance(next_state, np.ndarray):
-            next_state = torch.from_numpy(next_state).float().to(self.device)
-        self.next_state[idx] = next_state
-        self.done[idx] = bool(done)
         return idx
 
     def get(self, indices):
-        return self.state[indices].float(), self.action[indices], self.prob[indices], self.discount[indices], \
-            self.winner[indices], self.next_state[indices].float(), self.done[indices]
+        return self.state[indices].float(), self.prob[indices], self.winner[indices]
 
     def sample(self, batch_size):
         total_samples = len(self)

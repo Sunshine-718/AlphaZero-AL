@@ -54,7 +54,7 @@ class Base(ABC, nn.Module):
         try:
             for _ in range(10):
                 for batch in dataloader:
-                    state, _, prob, discount, winner, _, _ = augment(batch)
+                    state, prob, winner = augment(batch)
                     value = deepcopy(winner)
                     value[value == -1] = 2
                     value = value.view(-1,).long()
@@ -82,7 +82,7 @@ class Base(ABC, nn.Module):
                     value_const_loss = F.kl_div(value_pred[:batch_split], value_pred[batch_split:].exp(), reduction='batchmean')
                     total_const_loss += value_const_loss
 
-                    v_loss = (F.nll_loss(value_pred, value, reduction='none') * discount).mean()
+                    v_loss = (F.nll_loss(value_pred, value, reduction='none')).mean()
                     p_loss = torch.mean(torch.sum(-prob * log_p_pred, dim=1))
                     loss = p_loss + v_loss + total_const_loss
                     loss.backward()

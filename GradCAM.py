@@ -113,7 +113,7 @@ def get_target_blocks(model):
     遍历模型，寻找所有的 ResidualGLUConv2d 模块。
     这些是网络中的主要卷积块。
     """
-    target_types = (ResidualGLUConv2d, ConvGLU, torch.nn.Conv2d) # 你也可以把 ConvGLU 加进去: (ResidualGLUConv2d, ConvGLU)
+    target_types = (ConvGLU, torch.nn.Conv2d) # 你也可以把 ConvGLU 加进去: (ResidualGLUConv2d, ConvGLU)
     
     for name, module in model.named_modules():
         if isinstance(module, target_types):
@@ -126,7 +126,7 @@ if __name__ == "__main__":
     
     try:
         # 请确保这里的路径是正确的
-        checkpoint = torch.load("./params/AZ_Connect4_CNN_current.pt", map_location=device)
+        checkpoint = torch.load("./params/AZ_Connect4_CNN_best.pt", map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
         print("Loaded pretrained weights")
     except Exception as e:
