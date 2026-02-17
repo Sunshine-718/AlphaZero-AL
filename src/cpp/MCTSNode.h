@@ -44,10 +44,6 @@ namespace AlphaZero
                 effective_prior = (1.0f - noise_epsilon) * prior + noise_epsilon * noise;
             }
 
-            if (n_visits == 0) {
-                return std::numeric_limits<float>::infinity();
-            }
-
             float c_puct = c_init + std::log((parent_n + c_base + 1.0f) / c_base);
             float u_score = c_puct * effective_prior * std::sqrt(parent_n) / (1.0f + n_visits);
             return -Q + u_score;

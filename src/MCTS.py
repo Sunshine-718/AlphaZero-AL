@@ -51,11 +51,8 @@ class TreeNode:
             prior = (1 - eps) * self.prior + eps * self.noise
         else:
             prior = self.prior
-        if self.n_visits == 0:
-            self.u = float('inf')
-        else:
-            self.u = (c_init + math.log((1 + self.parent.n_visits + c_base) / c_base)
-                      ) * prior * math.sqrt(self.parent.n_visits) / (1 + self.n_visits)
+        self.u = (c_init + math.log((1 + self.parent.n_visits + c_base) / c_base)
+                  ) * prior * math.sqrt(self.parent.n_visits) / (1 + self.n_visits)
         return -self.Q + self.u
 
     def UCT(self, c_init, c_base):
