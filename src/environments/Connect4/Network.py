@@ -5,8 +5,6 @@
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch.optim import NAdam
 from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
 from ..NetworkBase import Base
 
@@ -105,25 +103,15 @@ class CNN(Base):
         self.apply(self.init_weights)
         nn.init.constant_(self.policy_head[-2].linear.weight, 0)
         nn.init.constant_(self.value_head[-2].linear.weight, 0)
-        self.opt = self.configure_optimizers(lr, 0.01)
+        self.opt = torch.optim.SGD(self.parameters(), lr, 0.9, weight_decay=1e-4)
         scheduler_warmup = LinearLR(self.opt, start_factor=0.01, total_iters=10)
         scheduler_cosine = CosineAnnealingLR(self.opt, T_max=200, eta_min=lr * 0.1)
         self.scheduler = SequentialLR(self.opt, schedulers=[scheduler_warmup, scheduler_cosine], milestones=[10])
         self.to(self.device)
-    
-    def configure_optimizers(self, lr, weight_decay):
-        param_dict = {pn: p for pn, p in self.named_parameters() if p.requires_grad}
-        decay_params = [p for np, p in param_dict.items() if (not np.endswith('.bias')) and ('norm' not in np)]
-        nodecay_params = [p for np, p in param_dict.items() if (np.endswith('.bias') or 'norm' in np)]
-        optim_grops = [
-            {'params': decay_params, 'weight_decay': weight_decay},
-            {'params': nodecay_params, 'weight_decay': 0}
-        ]
-        return NAdam(optim_grops, lr=lr, decoupled_weight_decay=True)
 
     def init_weights(self, m):
         if isinstance(m, (nn.Conv2d, nn.Linear)):
-            nn.init.xavier_normal_(m.weight)
+            nn.init.orthogonal_(m.weight)
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
 
