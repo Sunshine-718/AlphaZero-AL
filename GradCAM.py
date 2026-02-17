@@ -126,7 +126,7 @@ if __name__ == "__main__":
     
     try:
         # 请确保这里的路径是正确的
-        checkpoint = torch.load("./params/AZ_Connect4_CNN_best.pt", map_location=device)
+        checkpoint = torch.load("./params/AZ_Connect4_CNN_current.pt", map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
         print("Loaded pretrained weights")
     except Exception as e:

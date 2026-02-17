@@ -28,10 +28,9 @@ parser.add_argument('-n', type=int, default=100,
                     help='Number of simulations before AlphaZero make an action')
 parser.add_argument('--host', '-H', type=str, default='127.0.0.1', help='Host IP')
 parser.add_argument('--port', '-P', '-p', type=int, default=7718, help='Port number')
-parser.add_argument('-c', '--c_init', type=float, default=1.25, help='C_puct init')
+parser.add_argument('-c', '--c_init', type=float, default=1., help='C_puct init')
 parser.add_argument('--c_base', type=float, default=500, help='C_puct base')
-parser.add_argument('-a', '--alpha', type=float, default=0.3, help='Dirichlet alpha')
-parser.add_argument('--n_play', type=int, default=1, help='每次上传前收集的局数')
+parser.add_argument('-a', '--alpha', type=float, default=0.7, help='Dirichlet alpha')
 parser.add_argument('--discount', type=float, default=0.975, help='Discount factor')
 parser.add_argument('-t', '--temp', type=float, default=1, help='Softmax temperature')
 parser.add_argument('--temp_thres', type=float, default=12, help='Step threshold to change temperature to -> 0')
@@ -105,7 +104,7 @@ class Actor:
             print(f"[[TRAFFIC_LOG::UPLOAD::+::{upload_size}]]")
         # ----------------------------------------
 
-    def data_collector(self, n_games=args.n_play):
+    def data_collector(self):
         self.load_weights()
         data = []
         try:

@@ -17,7 +17,10 @@ MODEL_NAME          = 'AZ'
 MODEL_TYPE_DEFAULT  = 'current'
 N_PLAYOUT_DEFAULT   = 500
 ANIMATION_MS        = 30
-C_INIT              = 1.25
+C_INIT              = 1
+DISCOUNT            = 0.975
+ALPHA               = 0.
+
 PARAMS_PATH_FMT     = './params/{model_name}_{env_name}_{network}_{model_type}.pt'
 
 # ── 颜色主题（深色） ─────────────────────────────────────────────────────────
@@ -391,7 +394,7 @@ class Connect4GUI(QWidget):
         # 玩家对象
         self.human     = Human()
         self.az_player = AlphaZeroPlayer(None, c_init=None, n_playout=None,
-                                         discount=0.99, is_selfplay=0, cache_size=10000)
+                                         discount=DISCOUNT, alpha=ALPHA,is_selfplay=0,cache_size=10000)
         self._reload_model()
 
         # 连接信号
@@ -416,7 +419,7 @@ class Connect4GUI(QWidget):
         path = PARAMS_PATH_FMT.format(model_name=MODEL_NAME, env_name=ENV_NAME,
                                       network=network, model_type=model_type)
         self.net.load(path)
-        self.az_player.reload(self.net, C_INIT, n_playout, is_self_play=0)
+        self.az_player.reload(self.net, C_INIT, n_playout, ALPHA, is_self_play=0)
         self.az_player.eval()
         self.player_color = 1 if "我先手" in self.panel.player_cb.currentText() else -1
 

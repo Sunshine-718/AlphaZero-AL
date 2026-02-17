@@ -47,7 +47,11 @@ class NetworkPlayer(Player):
         action_probs = tuple(zip(valid, probs.flatten()[valid]))
         actions, probs = list(zip(*action_probs))
         probs = np.array(probs, dtype=np.float32)
-        probs /= probs.sum()
+        total = probs.sum()
+        if total > 0 and np.isfinite(total):
+            probs /= total
+        else:
+            probs = np.ones_like(probs) / len(probs)
         if self.deterministic:
             action = actions[np.argmax(probs)]
         else:
@@ -122,7 +126,7 @@ class AlphaZeroPlayer(MCTSPlayer):
     def get_action(self, env, temp=0):
         action_probs = np.zeros((self.n_actions,), dtype=np.float32)
         actions, visits = self.mcts.get_action_visits(env)
-        visit_dist = softmax(np.log(visits) / max(temp, 1e-8))
+        visit_dist = softmax(np.log(np.maximum(visits, 1e-8)) / max(temp, 1e-8))
         action_probs[list(actions)] = visit_dist
         if temp == 0:
             probs = np.zeros((len(visits),), dtype=np.float32)

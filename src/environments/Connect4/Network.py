@@ -106,8 +106,8 @@ class CNN(Base):
         nn.init.constant_(self.policy_head[-2].linear.weight, 0)
         nn.init.constant_(self.value_head[-2].linear.weight, 0)
         self.opt = self.configure_optimizers(lr, 0.01)
-        scheduler_warmup = LinearLR(self.opt, start_factor=1e-8, total_iters=10)
-        scheduler_cosine = CosineAnnealingLR(self.opt, T_max=100, eta_min=lr * 0.1)
+        scheduler_warmup = LinearLR(self.opt, start_factor=0.01, total_iters=10)
+        scheduler_cosine = CosineAnnealingLR(self.opt, T_max=200, eta_min=lr * 0.1)
         self.scheduler = SequentialLR(self.opt, schedulers=[scheduler_warmup, scheduler_cosine], milestones=[10])
         self.to(self.device)
     
@@ -158,6 +158,5 @@ class CNN(Base):
         player = t[:, -1, 0, 0].view(-1)
         log_prob, value_log_prob = self.forward(t)
         value_prob = value_log_prob.exp()
-        draw_bias = -player  # player=1 → -1, player=-1 → +1
-        value = player * (value_prob[:, 1] - value_prob[:, 2]) + draw_bias * value_prob[:, 0]
+        value = player * (value_prob[:, 1] - value_prob[:, 2])
         return log_prob.exp().cpu().numpy(), value.cpu().view(-1, 1).numpy()

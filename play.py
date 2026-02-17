@@ -19,8 +19,8 @@ parser.add_argument('--model', type=str, default='current', help='Model type')
 parser.add_argument('--network', type=str, default='CNN', help='Network type')
 parser.add_argument('--env', type=str, default='Connect4', help='env name')
 parser.add_argument('--name', type=str, default='AZ', help='Model name')
-parser.add_argument('-c', '--c_init', type=float, default=1.25, help='C_puct init')
-parser.add_argument('-a', '--alpha', type=float, default=0.7, help='Dirichlet alpha')
+parser.add_argument('-c', '--c_init', type=float, default=4, help='C_puct init')
+parser.add_argument('-a', '--alpha', type=float, default=0.1, help='Dirichlet alpha')
 
 args = parser.parse_args()
 device = 'cuda' if torch.cuda.is_available() else 'cpu'

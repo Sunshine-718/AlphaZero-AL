@@ -2,6 +2,7 @@ import os
 import time
 import random
 import torch
+import torch.distributed as dist
 import queue
 import pickle
 import logging
@@ -24,15 +25,15 @@ parser.add_argument('--host', '-H', type=str, default='0.0.0.0', help='Host IP')
 parser.add_argument('--port', '-P', '-p', type=int, default=7718, help='Port number')
 parser.add_argument('-n', type=int, default=100,
                     help='Number of simulations before AlphaZero make an action')
-parser.add_argument('--lr', type=float, default=3e-4, help='Learning rate')
-parser.add_argument('-c', '--c_init', type=float, default=1.25, help='C_puct init')
-parser.add_argument('-a', '--alpha', type=float, default=0.3, help='Dirichlet alpha')
+parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
+parser.add_argument('-c', '--c_init', type=float, default=1., help='C_puct init')
+parser.add_argument('-a', '--alpha', type=float, default=0.7, help='Dirichlet alpha')
 parser.add_argument('-b', '--batch_size', type=int, default=512, help='Batch size')
 parser.add_argument('--q_size', type=int, default=100, help='Minimum buffer size before training starts')
 parser.add_argument('--buf', '--buffer_size', type=int, default=100000, help='Buffer size')
 parser.add_argument('--mcts_n', type=int, default=1000, help='MCTS n_playout')
 parser.add_argument('--discount', type=float, default=0.975, help='Discount factor')
-parser.add_argument('--thres', type=float, default=0.65, help='Win rate threshold')
+parser.add_argument('--thres', type=float, default=0.6, help='Win rate threshold')
 parser.add_argument('--num_eval', type=int, default=50, help='Number of evaluation.')
 parser.add_argument('-m', '--model', type=str, default='CNN', help='Model type (CNN)')
 parser.add_argument('-d', '--device', type=str, default='cuda' if torch.cuda.is_available()
@@ -41,8 +42,9 @@ parser.add_argument('-e', '--env', '--environment', type=str, default='Connect4'
 parser.add_argument('--interval', type=int, default=10, help='Eval interval')
 parser.add_argument('--name', type=str, default='AZ', help='Name of AlphaZero')
 parser.add_argument('--cache_size', type=int, default=10000, help='LRU transposition table max size')
+parser.add_argument("--actor", type=str, default="best", help="Which weight are actors using?")
 
-args = parser.parse_args()
+args, _ = parser.parse_known_args()
 
 config = {"lr": args.lr,
           "c_puct": args.c_init,
@@ -114,7 +116,9 @@ def upload():
 @app.route('/weights', methods=['GET'])
 def weights():
     global TOTAL_SENT_BYTES
-    path = pipeline.current
+    path = pipeline.current if args.actor == "current" else pipeline.best
+    if pipeline.r_a < pipeline.r_b:
+        path = pipeline.current
     try:
         mtime = os.path.getmtime(path)
     except FileNotFoundError:
@@ -169,35 +173,60 @@ def set_seed(seed: int):
 
 
 if __name__ == '__main__':
+    # DDP 环境检测
+    rank = int(os.environ.get('RANK', 0))
+    local_rank = int(os.environ.get('LOCAL_RANK', 0))
+    world_size = int(os.environ.get('WORLD_SIZE', 1))
+    is_ddp = world_size > 1
+
+    if is_ddp:
+        dist.init_process_group(backend='nccl')
+        torch.cuda.set_device(local_rank)
+        args.device = f'cuda:{local_rank}'
+        config['device'] = args.device
+
+    # 统一种子初始化模型（保证各 rank 权重一致）
     set_seed(0)
 
     pipeline = ServerPipeline(args.env, args.model, args.name, config,
-                               min_buffer_size=args.q_size)
+                               min_buffer_size=args.q_size,
+                               rank=rank, world_size=world_size,
+                               local_rank=local_rank)
 
-    log_file = 'flask_access.log'
-    with open(log_file, 'w'):
-        pass
+    # 模型初始化后按 rank 重设种子（训练多样性）
+    set_seed(rank)
 
-    rows, cols = pipeline.env.board.shape
-    buffer = ReplayBuffer(pipeline.net.in_dim, pipeline.buffer_size,
-                          pipeline.net.n_actions, rows, cols,
-                          device=pipeline.device)
-    pipeline.init_buffer(buffer)
+    if rank == 0:
+        log_file = 'flask_access.log'
+        with open(log_file, 'w'):
+            pass
 
-    # 启动后台数据搬运线程：inbox → buffer（持续运行）
-    worker = threading.Thread(target=pipeline.inbox_worker, args=(buffer,), daemon=True)
-    worker.start()
+        rows, cols = pipeline.env.board.shape
+        buffer = ReplayBuffer(pipeline.net.in_dim, pipeline.buffer_size,
+                              pipeline.net.n_actions, rows, cols,
+                              device=pipeline.device)
+        pipeline.init_buffer(buffer)
 
-    # Flask 日志配置
-    handler = logging.FileHandler(log_file, encoding='utf-8')
-    handler.setLevel(logging.INFO)
-    log = logging.getLogger('werkzeug')
-    log.setLevel(logging.INFO)
-    log.handlers = [handler]
-    app.logger.handlers = [handler]
+        # 启动后台数据搬运线程：inbox → buffer（持续运行）
+        worker = threading.Thread(target=pipeline.inbox_worker, args=(buffer,), daemon=True)
+        worker.start()
 
-    # Start training loop in background; Flask serves in main thread
-    t = threading.Thread(target=pipeline, daemon=True)
-    t.start()
+        # Flask 日志配置
+        handler = logging.FileHandler(log_file, encoding='utf-8')
+        handler.setLevel(logging.INFO)
+        log = logging.getLogger('werkzeug')
+        log.setLevel(logging.INFO)
+        log.handlers = [handler]
+        app.logger.handlers = [handler]
 
-    app.run(host=args.host, port=args.port, debug=False, use_reloader=False)
+        # Start training loop in background; Flask serves in main thread
+        t = threading.Thread(target=pipeline, daemon=True)
+        t.start()
+
+        app.run(host=args.host, port=args.port, debug=False, use_reloader=False)
+    else:
+        # 非零 rank：直接进入训练循环，在 barrier 处同步
+        pipeline()
+
+    if is_ddp:
+        dist.destroy_process_group()
