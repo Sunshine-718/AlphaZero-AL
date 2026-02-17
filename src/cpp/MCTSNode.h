@@ -3,7 +3,6 @@
 #pragma once
 #include <array>
 #include <cmath>
-#include <limits>
 #include <cstdint>
 
 namespace AlphaZero
@@ -38,15 +37,16 @@ namespace AlphaZero
 
         // 计算 UCB 时需要传入父节点的访问次数，因为现在不通过指针找 parent
         [[nodiscard]] float get_ucb(float c_init, float c_base, float parent_n,
-                                     bool is_root_node, float noise_epsilon) const {
+                                     bool is_root_node, float noise_epsilon, float fpu_value) const {
             float effective_prior = prior;
             if (is_root_node) {
                 effective_prior = (1.0f - noise_epsilon) * prior + noise_epsilon * noise;
             }
 
+            float q_value = (n_visits == 0) ? fpu_value : -Q;
             float c_puct = c_init + std::log((parent_n + c_base + 1.0f) / c_base);
             float u_score = c_puct * effective_prior * std::sqrt(parent_n) / (1.0f + n_visits);
-            return -Q + u_score;
+            return q_value + u_score;
         }
     };
 }

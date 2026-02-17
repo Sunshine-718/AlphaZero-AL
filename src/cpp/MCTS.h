@@ -33,9 +33,10 @@ namespace AlphaZero
 
         float c_init, c_base, discount, alpha;
         float noise_epsilon;
+        float fpu_reduction;
 
-        MCTS(float c_i, float c_b, float disc, float a, float noise_eps = 0.25f)
-            : c_init(c_i), c_base(c_b), discount(disc), alpha(a), noise_epsilon(noise_eps)
+        MCTS(float c_i, float c_b, float disc, float a, float noise_eps = 0.25f, float fpu_red = 0.4f)
+            : c_init(c_i), c_base(c_b), discount(disc), alpha(a), noise_epsilon(noise_eps), fpu_reduction(fpu_red)
         {
             // 预分配内存，减少 search 过程中的扩容
             node_pool.resize(2000);
@@ -48,8 +49,10 @@ namespace AlphaZero
             root_idx = allocate_node(-1, 1.0f);
         }
 
-        int32_t allocate_node(int32_t parent, float prior) {
-            if (next_free_node >= static_cast<int32_t>(node_pool.size())) {
+        int32_t allocate_node(int32_t parent, float prior)
+        {
+            if (next_free_node >= static_cast<int32_t>(node_pool.size()))
+            {
                 node_pool.resize(node_pool.size() * 2);
             }
             int32_t idx = next_free_node++;
@@ -65,8 +68,7 @@ namespace AlphaZero
                 root_idx = child_idx;
                 node_pool[root_idx].parent = -1;
                 // 注意：数组结构下，剪枝后的老节点依然占据空间，直到下次 reset()
-            }
-            else
+            } else
             {
                 reset();
             }
@@ -87,13 +89,26 @@ namespace AlphaZero
                 auto valids = sim_env.get_valid_moves();
                 if (valids.empty()) break;
 
+                float parent_value = node_pool[curr_idx].Q;
+                float seen_policy = 0.0f;
+                for (int action : valids)
+                {
+                    int32_t child_idx = node_pool[curr_idx].children[action];
+                    if (child_idx != -1 && node_pool[child_idx].n_visits > 0)
+                    {
+                        seen_policy += node_pool[child_idx].prior;
+                    }
+                }
+                float fpu_value = parent_value - fpu_reduction * std::sqrt(seen_policy);
+
                 for (int action : valids)
                 {
                     int32_t child_idx = node_pool[curr_idx].children[action];
                     if (child_idx != -1)
                     {
-                        float score = node_pool[child_idx].get_ucb(c_init, c_base, p_n, curr_idx == root_idx, noise_epsilon);
-                        if (score > best_score) {
+                        float score = node_pool[child_idx].get_ucb(c_init, c_base, p_n, curr_idx == root_idx, noise_epsilon, fpu_value);
+                        if (score > best_score)
+                        {
                             best_score = score;
                             best_action = action;
                         }
@@ -115,8 +130,7 @@ namespace AlphaZero
                 out_terminal_val = -1.0f;
                 out_nn_input_board = sim_env;
                 return;
-            }
-            else if (sim_env.is_full())
+            } else if (sim_env.is_full())
             {
                 out_is_terminal = true;
                 out_terminal_val = 0.0f;
@@ -133,8 +147,7 @@ namespace AlphaZero
             {
                 sim_env.flip();
                 current_flipped = true;
-            }
-            else
+            } else
             {
                 current_flipped = false;
             }
@@ -163,7 +176,7 @@ namespace AlphaZero
                 int noise_count = 0;
                 if (node_pool[current_leaf_idx].parent == -1 && alpha > 0.0f)  // 根节点
                 {
-                    std::mt19937& rng = get_rng();
+                    std::mt19937 &rng = get_rng();
                     std::gamma_distribution<float> gamma(alpha, 1.0f);
 
                     float sum = 0.0f;
@@ -186,14 +199,17 @@ namespace AlphaZero
 
                 // 展开逻辑
                 int noise_idx = 0;
-                for (int action : valids) {
+                for (int action : valids)
+                {
                     float prob = final_policy[action] / (policy_sum + 1e-8f);
-                    if (node_pool[current_leaf_idx].children[action] == -1) {
+                    if (node_pool[current_leaf_idx].children[action] == -1)
+                    {
                         int32_t new_node = allocate_node(current_leaf_idx, prob);
                         node_pool[current_leaf_idx].children[action] = new_node;
 
                         // 设置 noise
-                        if (noise_count > 0) {
+                        if (noise_count > 0)
+                        {
                             node_pool[new_node].noise = noise_arr[noise_idx++];
                         }
                     }
@@ -204,7 +220,8 @@ namespace AlphaZero
             // 迭代式更新，替代递归
             int32_t update_idx = current_leaf_idx;
             float val = value;
-            while (update_idx != -1) {
+            while (update_idx != -1)
+            {
                 node_pool[update_idx].n_visits++;
                 node_pool[update_idx].Q += (val - node_pool[update_idx].Q) / node_pool[update_idx].n_visits;
                 val = -val * discount;

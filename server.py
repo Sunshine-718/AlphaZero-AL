@@ -27,6 +27,9 @@ parser.add_argument('-n', type=int, default=100,
                     help='Number of simulations before AlphaZero make an action')
 parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
 parser.add_argument('-c', '--c_init', type=float, default=4, help='C_puct init')
+parser.add_argument('--c_base_factor', type=float, default=10, help='C_puct base factor')
+parser.add_argument('--fpu_reduction', type=float, default=0.4, help='FPU reduction factor')
+parser.add_argument('--eps', type=float, default=0.25, help='PUCT epsilon for noise mixing')
 parser.add_argument('-a', '--alpha', type=float, default=0.7, help='Dirichlet alpha')
 parser.add_argument('-b', '--batch_size', type=int, default=512, help='Batch size')
 parser.add_argument('--q_size', type=int, default=100, help='Minimum buffer size before training starts')
@@ -48,6 +51,9 @@ args, _ = parser.parse_known_args()
 
 config = {"lr": args.lr,
           "c_puct": args.c_init,
+          "c_base": args.n * args.c_base_factor,
+          "fpu_reduction": args.fpu_reduction,
+          "eps": args.eps,
           "n_playout": args.n,
           "discount": args.discount,
           "buffer_size": args.buf,
@@ -189,9 +195,9 @@ if __name__ == '__main__':
     set_seed(0)
 
     pipeline = ServerPipeline(args.env, args.model, args.name, config,
-                               min_buffer_size=args.q_size,
-                               rank=rank, world_size=world_size,
-                               local_rank=local_rank)
+                              min_buffer_size=args.q_size,
+                              rank=rank, world_size=world_size,
+                              local_rank=local_rank)
 
     # 模型初始化后按 rank 重设种子（训练多样性）
     set_seed(rank)

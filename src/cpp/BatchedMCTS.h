@@ -21,13 +21,13 @@ namespace AlphaZero
 
     public:
         BatchedMCTS(int num_envs, float c_init, float c_base, float discount, float alpha,
-                    float noise_epsilon = 0.25f)
+                    float noise_epsilon = 0.25f, float fpu_reduction = 0.4f)
             : n_envs(num_envs)
         {
             mcts_envs.reserve(n_envs);
             for (int i = 0; i < n_envs; ++i)
             {
-                mcts_envs.push_back(std::make_unique<MCTS<Game>>(c_init, c_base, discount, alpha, noise_epsilon));
+                mcts_envs.push_back(std::make_unique<MCTS<Game>>(c_init, c_base, discount, alpha, noise_epsilon, fpu_reduction));
             }
         }
 
@@ -87,7 +87,7 @@ namespace AlphaZero
 
                 Game leaf_board;
                 bool is_term;
-                float term_val;
+                float term_val = 0.0f;
 
                 mcts_envs[i]->simulate(current_game, leaf_board, is_term, term_val);
 

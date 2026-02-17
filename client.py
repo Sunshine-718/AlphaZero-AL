@@ -29,8 +29,10 @@ parser.add_argument('-n', type=int, default=100,
 parser.add_argument('--host', '-H', type=str, default='127.0.0.1', help='Host IP')
 parser.add_argument('--port', '-P', '-p', type=int, default=7718, help='Port number')
 parser.add_argument('-c', '--c_init', type=float, default=4, help='C_puct init')
-parser.add_argument('--c_base', type=float, default=500, help='C_puct base')
+parser.add_argument('--c_base_factor', type=float, default=10, help='C_puct base factor')
+parser.add_argument('--fpu_reduction', type=float, default=0.4, help='FPU reduction factor')
 parser.add_argument('-a', '--alpha', type=float, default=0.7, help='Dirichlet alpha')
+parser.add_argument('--noise_eps', type=float, default=0.25, help='Noise epsilon')
 parser.add_argument('--discount', type=float, default=0.975, help='Discount factor')
 parser.add_argument('-t', '--temp', type=float, default=1, help='Softmax temperature')
 parser.add_argument('--temp_thres', type=float, default=12, help='Step threshold to change temperature to -> 0')
@@ -68,11 +70,13 @@ class Actor:
         self.az_player = BatchedAlphaZeroPlayer(self.net,
                                                 n_envs=self.batch_size,
                                                 c_init=args.c_init,
-                                                c_base=args.c_base,
+                                                c_base=args.n * args.c_base_factor,
                                                 n_playout=args.n,
                                                 discount=args.discount,
                                                 alpha=args.alpha,
-                                                cache_size=args.cache_size)
+                                                cache_size=args.cache_size,
+                                                noise_epsilon=args.noise_eps,
+                                                fpu_reduction=args.fpu_reduction)
         self.mtime = 0
 
     def load_weights(self):

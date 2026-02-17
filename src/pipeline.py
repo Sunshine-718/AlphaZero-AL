@@ -51,7 +51,7 @@ class TrainPipeline(ABC):
 
         self.az_player = AlphaZeroPlayer(self.net, c_init=self.c_puct, n_playout=self.n_playout,
                                          discount=self.discount, alpha=self.dirichlet_alpha, is_selfplay=1,
-                                         cache_size=self.cache_size)
+                                         cache_size=self.cache_size, eps=self.eps)
         self.update_best_net()
         self.elo = Elo(self.init_elo, 1500)
         self.r_a = 0

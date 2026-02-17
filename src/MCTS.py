@@ -8,7 +8,7 @@ from .Cache import LRUCache as Cache
 
 
 class TreeNode:
-    def __init__(self, parent, prior, discount, dirichlet_noise=None):
+    def __init__(self, parent, prior, discount, dirichlet_noise=None, eps=0.25):
         self.parent = parent
         self.children = {}
         self.n_visits = 0
@@ -17,6 +17,7 @@ class TreeNode:
         self.prior = prior
         self.discount = discount
         self.noise = dirichlet_noise if dirichlet_noise is not None else prior
+        self.eps = eps
         self.deterministic = False
 
     def train(self):
@@ -45,15 +46,15 @@ class TreeNode:
     def is_root(self):
         return self.parent is None
 
-    def PUCT(self, c_init, c_base):
-        eps = 0.25
+    def PUCT(self, c_init, c_base, fpu_value=0.0):
         if self.parent.is_root:
-            prior = (1 - eps) * self.prior + eps * self.noise
+            prior = (1 - self.eps) * self.prior + self.eps * self.noise
         else:
             prior = self.prior
         self.u = (c_init + math.log((1 + self.parent.n_visits + c_base) / c_base)
                   ) * prior * math.sqrt(self.parent.n_visits) / (1 + self.n_visits)
-        return -self.Q + self.u
+        q_value = fpu_value if self.n_visits == 0 else -self.Q
+        return q_value + self.u
 
     def UCT(self, c_init, c_base):
         if self.n_visits == 0:
@@ -63,22 +64,27 @@ class TreeNode:
                       ) * math.sqrt(math.log(self.parent.n_visits) / self.n_visits)
         return -self.Q + self.u
 
-    def UCB(self, c_init, c_base, UCT=False):
+    def UCB(self, c_init, c_base, UCT=False, fpu_value=0.0):
         if UCT:
             return self.UCT(c_init, c_base)
         else:
-            return self.PUCT(c_init, c_base)
+            return self.PUCT(c_init, c_base, fpu_value)
 
     def expand(self, action_probs, noise=None):
         for idx, (action, prior) in enumerate(action_probs):
             if action not in self.children:
                 if self.deterministic or noise is None:
-                    self.children[action] = TreeNode(self, prior, self.discount, None)
+                    self.children[action] = TreeNode(self, prior, self.discount, None, self.eps)
                 else:
-                    self.children[action] = TreeNode(self, prior, self.discount, noise[idx])
+                    self.children[action] = TreeNode(self, prior, self.discount, noise[idx], self.eps)
 
-    def select(self, c_init, c_base, UCT=False):
-        return max(self.children.items(), key=lambda action_node: action_node[1].UCB(c_init, c_base, UCT))
+    def select(self, c_init, c_base, UCT=False, fpu_reduction=0.4):
+        if UCT:
+            fpu_value = 0.0
+        else:
+            seen_policy = sum(c.prior for c in self.children.values() if c.n_visits > 0)
+            fpu_value = self.Q - fpu_reduction * math.sqrt(seen_policy)
+        return max(self.children.items(), key=lambda action_node: action_node[1].UCB(c_init, c_base, UCT, fpu_value))
 
     def update(self, leaf_value):
         if self.parent:
@@ -89,14 +95,16 @@ class TreeNode:
 
 
 class MCTS:
-    def __init__(self, policy_value_fn, c_init, n_playout, discount, alpha):
-        self.root = TreeNode(None, 1, discount, None)
+    def __init__(self, policy_value_fn, c_init, n_playout, discount, alpha, eps=0.25, fpu_reduction=0.4):
+        self.root = TreeNode(None, 1, discount, None, eps)
         self.policy = policy_value_fn
         self.c_init = c_init
         self.c_base = 500
         self.n_playout = n_playout
         self.alpha = alpha
+        self.eps = eps
         self.deterministic = False
+        self.fpu_reduction = fpu_reduction
 
     def train(self):
         self.root.train()
@@ -109,7 +117,7 @@ class MCTS:
     def select_leaf_node(self, env, UCT=False):
         node = self.root
         while not node.is_leaf:
-            action, node = node.select(self.c_init, self.c_base, UCT)
+            action, node = node.select(self.c_init, self.c_base, UCT, self.fpu_reduction)
             env.step(action)
         return node
 
@@ -137,8 +145,8 @@ class MCTS:
 
 
 class MCTS_AZ(MCTS):
-    def __init__(self, policy_value_fn, c_init, n_playout, discount, alpha, cache_size):
-        super().__init__(policy_value_fn, c_init, n_playout, discount, alpha)
+    def __init__(self, policy_value_fn, c_init, n_playout, discount, alpha, cache_size, eps=0.25, fpu_reduction=0.4):
+        super().__init__(policy_value_fn, c_init, n_playout, discount, alpha, eps, fpu_reduction)
         self.cache = Cache(cache_size)
         self.use_cache = cache_size > 0
 

@@ -85,7 +85,7 @@ class ResidualBlock(nn.Module):
 
 
 class CNN(Base):
-    def __init__(self, lr, in_dim=3, h_dim=32, out_dim=7, dropout=0.05, device='cpu'):
+    def __init__(self, lr, in_dim=3, h_dim=64, out_dim=7, dropout=0.0, device='cpu'):
         super().__init__()
         self.in_dim = in_dim
         self.hidden = nn.Sequential(ResidualGLUConv2d(in_dim, h_dim, dropout),
