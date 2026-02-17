@@ -26,7 +26,7 @@ parser.add_argument('--port', '-P', '-p', type=int, default=7718, help='Port num
 parser.add_argument('-n', type=int, default=100,
                     help='Number of simulations before AlphaZero make an action')
 parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
-parser.add_argument('-c', '--c_init', type=float, default=1., help='C_puct init')
+parser.add_argument('-c', '--c_init', type=float, default=4, help='C_puct init')
 parser.add_argument('-a', '--alpha', type=float, default=0.7, help='Dirichlet alpha')
 parser.add_argument('-b', '--batch_size', type=int, default=512, help='Batch size')
 parser.add_argument('--q_size', type=int, default=100, help='Minimum buffer size before training starts')

@@ -28,7 +28,7 @@ parser.add_argument('-n', type=int, default=100,
                     help='Number of simulations before AlphaZero make an action')
 parser.add_argument('--host', '-H', type=str, default='127.0.0.1', help='Host IP')
 parser.add_argument('--port', '-P', '-p', type=int, default=7718, help='Port number')
-parser.add_argument('-c', '--c_init', type=float, default=1., help='C_puct init')
+parser.add_argument('-c', '--c_init', type=float, default=4, help='C_puct init')
 parser.add_argument('--c_base', type=float, default=500, help='C_puct base')
 parser.add_argument('-a', '--alpha', type=float, default=0.7, help='Dirichlet alpha')
 parser.add_argument('--discount', type=float, default=0.975, help='Discount factor')
