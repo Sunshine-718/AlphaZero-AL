@@ -83,7 +83,7 @@ class ResidualBlock(nn.Module):
 
 
 class CNN(Base):
-    def __init__(self, lr, in_dim=3, h_dim=64, out_dim=7, dropout=0.0, device='cpu'):
+    def __init__(self, lr, in_dim=3, h_dim=64, out_dim=7, dropout=0.1, device='cpu'):
         super().__init__()
         self.in_dim = in_dim
         self.hidden = nn.Sequential(ResidualGLUConv2d(in_dim, h_dim, dropout),
@@ -91,22 +91,22 @@ class CNN(Base):
                                     ResidualGLUConv2d(h_dim, h_dim, dropout))
         self.policy_head = nn.Sequential(ResidualGLUConv2d(h_dim, 3, dropout),
                                          nn.Flatten(),
-                                         ResidualBlock(6 * 7 * 3, 7, dropout=0.),
+                                         nn.Linear(6 * 7 * 3, 7,),
                                          nn.LogSoftmax(dim=-1))
         self.value_head = nn.Sequential(ResidualGLUConv2d(h_dim, 3, dropout),
                                         nn.Flatten(),
                                         ResidualBlock(6 * 7 * 3, 6 * 7 * 3, dropout=dropout),
-                                        ResidualBlock(6 * 7 * 3, 3, dropout=0.),
+                                        nn.Linear(6 * 7 * 3, 3),
                                         nn.LogSoftmax(dim=-1))
         self.device = device
         self.n_actions = out_dim
         self.apply(self.init_weights)
-        nn.init.constant_(self.policy_head[-2].linear.weight, 0)
-        nn.init.constant_(self.value_head[-2].linear.weight, 0)
+        nn.init.constant_(self.policy_head[-2].weight, 0)
+        nn.init.constant_(self.value_head[-2].weight, 0)
         self.opt = torch.optim.SGD(self.parameters(), lr, 0.9, weight_decay=1e-4)
-        scheduler_warmup = LinearLR(self.opt, start_factor=0.01, total_iters=10)
-        scheduler_cosine = CosineAnnealingLR(self.opt, T_max=200, eta_min=lr * 0.1)
-        self.scheduler = SequentialLR(self.opt, schedulers=[scheduler_warmup, scheduler_cosine], milestones=[10])
+        scheduler_warmup = LinearLR(self.opt, start_factor=0.01, total_iters=50)
+        scheduler_cosine = CosineAnnealingLR(self.opt, T_max=300, eta_min=lr * 0.1)
+        self.scheduler = SequentialLR(self.opt, schedulers=[scheduler_warmup, scheduler_cosine], milestones=[50])
         self.to(self.device)
 
     def init_weights(self, m):
