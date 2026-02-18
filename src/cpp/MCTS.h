@@ -67,10 +67,43 @@ namespace AlphaZero
             {
                 root_idx = child_idx;
                 node_pool[root_idx].parent = -1;
-                // 注意：数组结构下，剪枝后的老节点依然占据空间，直到下次 reset()
+                // 为新 root 的子节点刷新 Dirichlet 噪声
+                apply_root_noise();
             } else
             {
                 reset();
+            }
+        }
+
+        // 为当前 root 的所有已有子节点重新生成 Dirichlet 噪声
+        void apply_root_noise()
+        {
+            if (alpha <= 0.0f || !node_pool[root_idx].is_expanded) return;
+
+            std::mt19937 &rng = get_rng();
+            std::gamma_distribution<float> gamma(alpha, 1.0f);
+
+            int32_t valid_children[ACTION_SIZE];
+            int n_valid = 0;
+            for (int a = 0; a < ACTION_SIZE; ++a)
+            {
+                if (node_pool[root_idx].children[a] != -1)
+                {
+                    valid_children[n_valid++] = node_pool[root_idx].children[a];
+                }
+            }
+            if (n_valid == 0) return;
+
+            float noise_arr[ACTION_SIZE];
+            float sum = 0.0f;
+            for (int i = 0; i < n_valid; ++i)
+            {
+                noise_arr[i] = gamma(rng);
+                sum += noise_arr[i];
+            }
+            for (int i = 0; i < n_valid; ++i)
+            {
+                node_pool[valid_children[i]].noise = noise_arr[i] / sum;
             }
         }
 
