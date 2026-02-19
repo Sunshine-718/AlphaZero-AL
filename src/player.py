@@ -47,11 +47,7 @@ class NetworkPlayer(Player):
         action_probs = tuple(zip(valid, probs.flatten()[valid]))
         actions, probs = list(zip(*action_probs))
         probs = np.array(probs, dtype=np.float32)
-        total = probs.sum()
-        if total > 0 and np.isfinite(total):
-            probs /= total
-        else:
-            probs = np.ones_like(probs) / len(probs)
+        probs /= probs.sum()
         if self.deterministic:
             action = actions[np.argmax(probs)]
         else:
@@ -126,13 +122,12 @@ class AlphaZeroPlayer(MCTSPlayer):
     def get_action(self, env, temp=0):
         action_probs = np.zeros((self.n_actions,), dtype=np.float32)
         actions, visits = self.mcts.get_action_visits(env)
-        visit_dist = softmax(np.log(np.maximum(visits, 1e-8)) / max(temp, 1e-8))
-        action_probs[list(actions)] = visit_dist
         if temp == 0:
-            probs = np.zeros((len(visits),), dtype=np.float32)
+            probs = np.zeros(len(visits), dtype=np.float32)
             probs[np.where(np.array(visits) == max(visits))] = 1 / list(visits).count(max(visits))
         else:
-            probs = visit_dist
+            probs = softmax(np.log(visits) / temp)
+        action_probs[list(actions)] = probs
         action = np.random.choice(actions, p=probs)
         if self.is_selfplay:
             self.mcts.prune_root(action)
@@ -178,10 +173,7 @@ class BatchedAlphaZeroPlayer:
             # 训练策略目标：使用原始 count 归一化分布，不受 temp 影响
             action_probs = np.zeros(self.n_actions, dtype=np.float32)
             valid_mask = visit > 0
-            if valid_mask.any():
-                action_probs[valid_mask] = visit[valid_mask] / visit[valid_mask].sum()
-            else:
-                action_probs = np.ones(self.n_actions, dtype=np.float32) / self.n_actions
+            action_probs[valid_mask] = visit[valid_mask] / visit[valid_mask].sum()
 
             # 动作采样：根据 temp 缩放后的分布采样
             if temp <= 1e-6:
@@ -189,7 +181,7 @@ class BatchedAlphaZeroPlayer:
             else:
                 valid_actions = np.where(valid_mask)[0]
                 # 用 log 域计算 N^(1/temp)，等价但数值稳定
-                log_visits = np.log(np.maximum(visit[valid_mask], 1e-8))
+                log_visits = np.log(visit[valid_mask])
                 sample_dist = softmax(log_visits / temp)
                 action = np.random.choice(valid_actions, p=sample_dist)
 

@@ -8,6 +8,7 @@ import argparse
 import signal
 import time
 import warnings
+import traceback
 
 warnings.filterwarnings('error', category=RuntimeWarning)
 
@@ -142,7 +143,7 @@ if __name__ == '__main__':
                 time.sleep(1)
             continue
         except Exception as e:
-            print(f"Unexpected error: {e}")
-            time.sleep(1)
+            traceback.print_exc()
+            break
 
     print('Client quit')

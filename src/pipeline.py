@@ -77,6 +77,7 @@ class TrainPipeline(ABC):
             state = dataset.tensors[0].to(self.device).contiguous()
             prob = dataset.tensors[1].to(self.device).contiguous()
             winner = dataset.tensors[2].to(self.device).contiguous().float()
+            steps_to_end = dataset.tensors[3].to(self.device).contiguous().float()
             meta = torch.tensor([state.shape[0], state.shape[1], state.shape[2],
                                  state.shape[3], prob.shape[1]],
                                 dtype=torch.long, device=self.device)
@@ -91,13 +92,16 @@ class TrainPipeline(ABC):
             state = torch.empty((N, C, H, W), dtype=torch.float32, device=self.device)
             prob = torch.empty((N, A), dtype=torch.float32, device=self.device)
             winner = torch.empty((N, 1), dtype=torch.float32, device=self.device)
+            steps_to_end = torch.empty((N, 1), dtype=torch.float32, device=self.device)
 
         dist.broadcast(state, src=0)
         dist.broadcast(prob, src=0)
         dist.broadcast(winner, src=0)
+        dist.broadcast(steps_to_end, src=0)
 
         winner = winner.to(torch.int8)
-        dataset = TensorDataset(state, prob, winner)
+        steps_to_end = steps_to_end.to(torch.int8)
+        dataset = TensorDataset(state, prob, winner, steps_to_end)
         return DataLoader(dataset, self.batch_size, shuffle=True)
 
     def policy_update(self):
@@ -108,7 +112,7 @@ class TrainPipeline(ABC):
             dataloader = self.buffer.sample(self.batch_size)
 
         model_for_training = self.ddp_net if self.is_ddp else None
-        p_l, v_l, const_loss, ent, g_n, f1 = self.net.train_step(
+        p_l, v_l, s_l, const_loss, ent, g_n, f1 = self.net.train_step(
             dataloader, self.module.augment, ddp_model=model_for_training)
 
         if self.is_ddp:
@@ -116,7 +120,7 @@ class TrainPipeline(ABC):
 
         if self.rank == 0:
             print(f'F1 score (new): {f1: .3f}')
-        return p_l, v_l, const_loss, ent, g_n, f1
+        return p_l, v_l, s_l, const_loss, ent, g_n, f1
 
     def update_elo(self):
         print('Updating elo score...')
@@ -225,20 +229,20 @@ class TrainPipeline(ABC):
         n_envs = visits.shape[0]
         actions = np.argmax(visits, axis=1).astype(np.int32)
         for i in active_idx:
-            v = visits[i].astype(np.float64)
-            if v.sum() == 0:
-                continue
-            log_v = np.log(np.maximum(v, 1e-8))
+            v = visits[i]
+            valid_mask = v > 0
+            valid_actions = np.where(valid_mask)[0]
+            log_v = np.log(v[valid_mask].astype(np.float64))
             log_v -= log_v.max()
             probs = np.exp(log_v / temp)
             probs /= probs.sum()
-            actions[i] = np.random.choice(len(probs), p=probs)
+            actions[i] = np.random.choice(valid_actions, p=probs)
         return actions
 
     def update_best_net(self):
         self.best_net = deepcopy(self.net)
 
-    def _log_train_step(self, p_loss, v_loss, const_loss, entropy, grad_norm, f1):
+    def _log_train_step(self, p_loss, v_loss, s_loss, const_loss, entropy, grad_norm, f1):
         if self.episode_len is not None:
             swanlab.log({'Metric/Episode length': self.episode_len}, step=self.global_step)
         swanlab.log({
@@ -247,6 +251,7 @@ class TrainPipeline(ABC):
             'Metric/F1 score': f1,
             'Metric/Loss/Action Loss': p_loss,
             'Metric/Loss/Value loss': v_loss,
+            'Metric/Loss/Steps loss': s_loss,
             'Metric/Loss/Consistency loss': const_loss,
             'Metric/Entropy': entropy,
         }, step=self.global_step)
@@ -299,14 +304,14 @@ class TrainPipeline(ABC):
                 self.data_collector()
                 self.global_step += 1
 
-            p_loss, v_loss, const_loss, entropy, grad_norm, f1 = self.policy_update()
+            p_loss, v_loss, s_loss, const_loss, entropy, grad_norm, f1 = self.policy_update()
 
             if self.rank == 0:
                 self.net.save(self.current)
                 self._on_weights_saved()
                 print(f'batch i: {self.global_step}, episode_len: {self.episode_len}, '
-                      f'loss: {p_loss + v_loss: .8f}, entropy: {entropy: .8f}')
-                self._log_train_step(p_loss, v_loss, const_loss, entropy, grad_norm, f1)
+                      f'loss: {p_loss + v_loss + s_loss: .8f}, entropy: {entropy: .8f}')
+                self._log_train_step(p_loss, v_loss, s_loss, const_loss, entropy, grad_norm, f1)
 
                 if self.global_step % self.interval == 0:
                     print(f'current self-play batch: {self.global_step + 1}')

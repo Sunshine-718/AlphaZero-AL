@@ -18,8 +18,8 @@ MODEL_TYPE_DEFAULT  = 'current'
 N_PLAYOUT_DEFAULT   = 500
 ANIMATION_MS        = 30
 C_INIT              = 1
-DISCOUNT            = 0.975
-ALPHA               = 0.
+DISCOUNT            = 1
+ALPHA               = 1.55
 
 PARAMS_PATH_FMT     = './params/{model_name}_{env_name}_{network}_{model_type}.pt'
 
@@ -449,7 +449,7 @@ class Connect4GUI(QWidget):
             t = torch.from_numpy(state).float().to(self.net.device).unsqueeze(0)
             if t.dim() == 5:
                 t = t.squeeze(1)
-            _, vl = self.net(t)
+            _, vl, _ = self.net(t)
             vp = F.softmax(vl, dim=-1)[0].cpu().tolist()
         draw = vp[0] * 100
         if self.player_color == 1:

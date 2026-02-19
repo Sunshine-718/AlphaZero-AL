@@ -70,10 +70,12 @@ class Game:
                     end_state_feature = env.current_state()[0].astype(np.int8)
                     next_states = states[1:] + [end_state_feature]
                     
-                    winner_z = np.full(len(traj['players']), winner, dtype=np.int32)
-                    
+                    T = len(traj['players'])
+                    winner_z = np.full(T, winner, dtype=np.int32)
+                    steps_to_end = np.arange(T - 1, -1, -1, dtype=np.int32)
+
                     # 此时 states 的 list 元素形状为 (3, 6, 7)，符合 dataset 预期
-                    play_data = zip(states, traj['probs'], winner_z)
+                    play_data = zip(states, traj['probs'], winner_z, steps_to_end)
                     completed_data[i] = (winner, tuple(play_data))
                     
                     # 游戏结束，重置该环境的 MCTS 树
@@ -131,8 +133,8 @@ class Game:
                     states = traj['states']
                     next_states = states[1:] + [env.current_state()[0].astype(np.int8)]
                     winner_z = np.full(T, winner, dtype=np.int32)
-                    # 从预算好的向量直接切片并逆序，避免 pow 循环
-                    play_data = tuple(zip(states, traj['probs'], winner_z))
+                    steps_to_end = np.arange(T - 1, -1, -1, dtype=np.int32)
+                    play_data = tuple(zip(states, traj['probs'], winner_z, steps_to_end))
                     completed_data.append((winner, play_data))
 
                     # 立刻重置该 slot，开新局

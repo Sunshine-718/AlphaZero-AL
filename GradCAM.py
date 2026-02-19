@@ -43,7 +43,7 @@ class GradCAM:
             board = board[np.newaxis, ...]
             
         board_tensor = torch.from_numpy(board).to(self.model.device)
-        prob, value = self.model(board_tensor)
+        prob, value, _ = self.model(board_tensor)
 
         if class_idx is None:
             class_idx = prob.argmax().item()
@@ -122,7 +122,7 @@ def get_target_blocks(model):
 if __name__ == "__main__":
     # 1. 初始化
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = CNN(lr=0, in_dim=3, h_dim=32, out_dim=7, dropout=0.05, device=device)
+    model = CNN(lr=0, device=device)
     
     try:
         # 请确保这里的路径是正确的
