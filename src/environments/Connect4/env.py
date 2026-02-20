@@ -8,6 +8,8 @@ from ..Environment import Environment
 
 
 class Env(Environment):
+    NUM_SYMMETRIES = 2  # 0=identity, 1=horizontal flip
+
     def __init__(self, board=None):
         super().__init__()
         self.board = np.zeros((6, 7), dtype=np.float32) if board is None else board
@@ -127,28 +129,23 @@ class Env(Environment):
         print('0 1 2 3 4 5 6')
         print('=' * 20)
 
-    def flip(self, inplace: bool = False):
+    def apply_symmetry(self, sym_id: int, inplace: bool = False):
+        """sym_id=0: identity, sym_id=1: horizontal flip"""
         target = self if inplace else self.copy()
+        if sym_id == 0:
+            return target
         target.board = target.board[:, ::-1]
-
-        # [关键] 翻转 last_move 的列坐标
         if target.last_move is not None:
             r, c = target.last_move
             target.last_move = (r, 6 - c)
-
         return target
 
-    def flip_action(self, col: int) -> int:
-        # 保持原有逻辑：如果棋盘对称则不翻转action，否则翻转
-        # 这里为了简化和Cython保持一致，直接用Python实现简单检测
-        # 注意：如果您的训练代码强烈依赖原有的对称检测逻辑，请保留此段
-        # 如果追求速度，通常直接返回 6 - col 即可，但这取决于策略网络的训练方式
-        return 6 - col
+    @staticmethod
+    def inverse_symmetry_action(sym_id: int, col: int) -> int:
+        """对 action 应用对称逆变换"""
+        return col if sym_id == 0 else 6 - col
 
-    def random_flip(self, p: float = 0.5):
-        env_copy = self.copy()
-        flipped = False
-        if np.random.rand() < p:
-            env_copy.flip(inplace=True)
-            flipped = True
-        return env_copy, flipped
+    def random_symmetry(self):
+        """随机选一种对称变换，返回 (env_copy, sym_id)"""
+        sym_id = np.random.randint(0, self.NUM_SYMMETRIES)
+        return self.apply_symmetry(sym_id), sym_id

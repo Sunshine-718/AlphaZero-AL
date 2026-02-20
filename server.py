@@ -46,6 +46,7 @@ parser.add_argument('--interval', type=int, default=10, help='Eval interval')
 parser.add_argument('--name', type=str, default='AZ', help='Name of AlphaZero')
 parser.add_argument('--cache_size', type=int, default=10000, help='LRU transposition table max size')
 parser.add_argument("--actor", type=str, default="best", help="Which weight are actors using?")
+parser.add_argument('--no_symmetry', action='store_true', help='Disable random symmetry augmentation during MCTS search')
 
 args, _ = parser.parse_known_args()
 
@@ -65,7 +66,8 @@ config = {"lr": args.lr,
           "win_rate_threshold": args.thres,
           "interval": args.interval,
           "device": args.device,
-          "cache_size": args.cache_size}
+          "cache_size": args.cache_size,
+          "use_symmetry": not args.no_symmetry}
 
 
 class ServerPipeline(TrainPipeline):

@@ -46,6 +46,7 @@ parser.add_argument('--retry', type=int, default=3, help='Retry times')
 parser.add_argument('-B', '--batch_size', type=int, default=100, help='Batch size for self-play')
 parser.add_argument('--cache_size', type=int, default=0,
                     help='Transposition table size (0 = disabled, >0 = LRU cache capacity)')
+parser.add_argument('--no_symmetry', action='store_true', help='Disable random symmetry augmentation during MCTS search')
 
 args = parser.parse_args()
 
@@ -77,7 +78,8 @@ class Actor:
                                                 alpha=args.alpha,
                                                 cache_size=args.cache_size,
                                                 noise_epsilon=args.noise_eps,
-                                                fpu_reduction=args.fpu_reduction)
+                                                fpu_reduction=args.fpu_reduction,
+                                                use_symmetry=not args.no_symmetry)
         self.mtime = 0
 
     def load_weights(self):

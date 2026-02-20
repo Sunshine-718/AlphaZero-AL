@@ -27,14 +27,17 @@ namespace AlphaZero
         // --- 编译期 Traits ---
         { G::Traits::ACTION_SIZE } -> std::convertible_to<int>;
         { G::Traits::BOARD_SIZE } -> std::convertible_to<int>;
+        { G::Traits::NUM_SYMMETRIES } -> std::convertible_to<int>;
 
         // --- 核心游戏逻辑 ---
         { g.reset() } -> std::same_as<void>;
         { g.step(action) } -> std::same_as<void>;
         { cg.check_winner() } -> std::same_as<int>;
         { cg.is_full() } -> std::same_as<bool>;
-        { g.flip() } -> std::same_as<void>;
         { cg.get_valid_moves() };
+
+        // --- 对称变换 ---
+        { g.apply_symmetry(action) } -> std::same_as<void>;
 
         // --- Python memcpy I/O ---
         { cg.board_data() } -> std::same_as<const int8_t *>;
@@ -44,6 +47,9 @@ namespace AlphaZero
 
         // 可拷贝
         requires std::is_copy_constructible_v<G>;
+    } && requires(std::array<float, G::Traits::ACTION_SIZE> &policy) {
+        // static: 对 policy 数组应用对称逆变换
+        { G::inverse_symmetry_policy(0, policy) } -> std::same_as<void>;
     };
 }
 

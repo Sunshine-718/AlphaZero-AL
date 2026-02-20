@@ -13,8 +13,12 @@ cimport cython
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
+cdef int _NUM_SYMMETRIES = 2  # 0=identity, 1=horizontal flip
+
 cdef class Env:
     """6*7 Connect-Four board. 玩家棋子: 1 / -1, 空: 0"""
+
+    NUM_SYMMETRIES = _NUM_SYMMETRIES
 
     # —— 私有成员 ——
     cdef np.ndarray _board          # 6×7 float32 ndarray
@@ -205,41 +209,23 @@ cdef class Env:
     cpdef int winPlayer(self):
         return self.check_winner()
 
-    # ===== 翻转相关 =====
-    cpdef Env flip(self, bint inplace=False):
-        """水平翻转棋盘。注意：必须同步更新 _last_c，否则增量检查会出错。"""
+    # ===== 对称变换 =====
+    cpdef Env apply_symmetry(self, int sym_id, bint inplace=False):
+        """sym_id=0: identity, sym_id=1: horizontal flip"""
         cdef Env target = self if inplace else self.copy()
+        if sym_id == 0:
+            return target
         target._board = target._board[:, ::-1].copy()
-        
-        # [关键] 如果最后一步存在，翻转后列号也会变化
         if target._last_c != -1:
             target._last_c = target._cols - 1 - target._last_c
-            
         return target
 
-    cpdef int flip_action(self, int col):
-        """给定原列号，返回水平翻转后的列号（保留原有的对称性检测逻辑）。"""
-        cdef float[:, :] board = self._board
-        cdef int rows = board.shape[0]
-        cdef int cols = board.shape[1]
-        cdef int r, c
-        cdef bint symmetric = True
+    @staticmethod
+    def inverse_symmetry_action(int sym_id, int col):
+        """对 action 应用对称逆变换"""
+        return col if sym_id == 0 else 6 - col
 
-        for r in range(rows):
-            for c in range(cols // 2):
-                if board[r, c] != board[r, cols - 1 - c]:
-                    symmetric = False
-                    break
-            if not symmetric:
-                break
-
-        return col if symmetric else cols - 1 - col
-
-    cpdef tuple random_flip(self, double p=0.5):
-        """以概率 *p* 随机水平翻转，返回 (env_copy, flipped_flag)。"""
-        cdef Env env_copy = self.copy()
-        cdef bint flipped = False
-        if np.random.rand() < p:
-            env_copy = env_copy.flip(inplace=True)
-            flipped = True
-        return env_copy, flipped
+    cpdef tuple random_symmetry(self):
+        """随机选一种对称变换，返回 (env_copy, sym_id)"""
+        cdef int sym_id = np.random.randint(0, _NUM_SYMMETRIES)
+        return self.apply_symmetry(sym_id), sym_id

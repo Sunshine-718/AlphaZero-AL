@@ -21,13 +21,13 @@ namespace AlphaZero
 
     public:
         BatchedMCTS(int num_envs, float c_init, float c_base, float discount, float alpha,
-                    float noise_epsilon = 0.25f, float fpu_reduction = 0.4f)
+                    float noise_epsilon = 0.25f, float fpu_reduction = 0.4f, bool use_symmetry = true)
             : n_envs(num_envs)
         {
             mcts_envs.reserve(n_envs);
             for (int i = 0; i < n_envs; ++i)
             {
-                mcts_envs.push_back(std::make_unique<MCTS<Game>>(c_init, c_base, discount, alpha, noise_epsilon, fpu_reduction));
+                mcts_envs.push_back(std::make_unique<MCTS<Game>>(c_init, c_base, discount, alpha, noise_epsilon, fpu_reduction, use_symmetry));
             }
         }
 

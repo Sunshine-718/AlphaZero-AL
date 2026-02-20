@@ -51,7 +51,8 @@ class TrainPipeline(ABC):
 
         self.az_player = AlphaZeroPlayer(self.net, c_init=self.c_puct, n_playout=self.n_playout,
                                          discount=self.discount, alpha=self.dirichlet_alpha, is_selfplay=1,
-                                         cache_size=self.cache_size, eps=self.eps)
+                                         cache_size=self.cache_size, eps=self.eps,
+                                         use_symmetry=getattr(self, 'use_symmetry', True))
         self.update_best_net()
         self.elo = Elo(self.init_elo, 1500)
         self.r_a = 0
@@ -173,14 +174,15 @@ class TrainPipeline(ABC):
         action_size = self.net.n_actions
 
         # 评估用低 Dirichlet 噪声：alpha 与训练一致，epsilon 降为 0.05
+        use_sym = getattr(self, 'use_symmetry', True)
         mcts_p1 = PyBatchedMCTS(
             n_envs, c_init=self.c_puct, c_base=500, discount=self.discount,
             alpha=self.dirichlet_alpha, n_playout=n_playout, game_name=self.env_name,
-            noise_epsilon=eval_noise_eps)
+            noise_epsilon=eval_noise_eps, use_symmetry=use_sym)
         mcts_p2 = PyBatchedMCTS(
             n_envs, c_init=self.c_puct, c_base=500, discount=self.discount,
             alpha=self.dirichlet_alpha, n_playout=n_playout, game_name=self.env_name,
-            noise_epsilon=eval_noise_eps)
+            noise_epsilon=eval_noise_eps, use_symmetry=use_sym)
 
         envs = [self.env.copy() for _ in range(n_envs)]
         for e in envs:

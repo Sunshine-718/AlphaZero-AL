@@ -20,6 +20,7 @@ ANIMATION_MS        = 30
 C_INIT              = 1
 DISCOUNT            = 1
 ALPHA               = 1.55
+USE_SYMMETRY        = True
 
 PARAMS_PATH_FMT     = './params/{model_name}_{env_name}_{network}_{model_type}.pt'
 
@@ -444,7 +445,8 @@ class Connect4GUI(QWidget):
         # 玩家对象
         self.human     = Human()
         self.az_player = AlphaZeroPlayer(None, c_init=None, n_playout=None,
-                                         discount=DISCOUNT, alpha=ALPHA,is_selfplay=0,cache_size=10000)
+                                         discount=DISCOUNT, alpha=ALPHA, is_selfplay=0, cache_size=10000,
+                                         use_symmetry=USE_SYMMETRY)
         self._reload_model()
 
         # 连接信号

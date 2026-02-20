@@ -35,6 +35,7 @@ namespace AlphaZero
             static constexpr int ACTION_SIZE = 7;
             static constexpr int BOARD_SIZE = ROWS * COLS; // 42
             static constexpr std::array<int, 2> BOARD_SHAPE = {ROWS, COLS};
+            static constexpr int NUM_SYMMETRIES = 2; // 0=identity, 1=horizontal flip
         };
 
         // 为了与 BatchedMCTS memcpy I/O 兼容，保留 board 数组
@@ -187,37 +188,48 @@ namespace AlphaZero
             return n_pieces == Traits::ROWS * Traits::COLS;
         }
 
-        void flip()
+        // 对称变换：sym_id=0 恒等, sym_id=1 水平翻转
+        void apply_symmetry(int sym_id)
         {
-            // 水平翻转 bitboard：交换列的位置
-            // col c 的 bits [c*7, c*7+6] 交换到 col (6-c) 的 bits [(6-c)*7, (6-c)*7+6]
-            uint64_t new_bb0 = 0, new_bb1 = 0;
-            int new_height[Traits::COLS];
+            if (sym_id == 0) return;
 
-            for (int c = 0; c < Traits::COLS; ++c)
+            // 列掩码批量交换：每列占 7 个连续 bit，col_mask(c) = 0x7F << (c*7)
+            // 交换 3 对列 (0↔6, 1↔5, 2↔4)，中心列 3 不动
+            for (int p = 0; p < 2; ++p)
             {
-                int src_base = c * 7;
-                int dst_col = Traits::COLS - 1 - c;
-                int dst_base = dst_col * 7;
+                uint64_t src = bb[p];
+                uint64_t dst = src & (0x7FULL << 21); // 保留 col 3
 
-                int col_height = height[c] - src_base; // 该列有多少棋子
-                new_height[dst_col] = dst_base + col_height;
+                dst |= (src & (0x7FULL <<  0)) << 42; // col 0 → col 6
+                dst |= (src & (0x7FULL << 42)) >> 42; // col 6 → col 0
+                dst |= (src & (0x7FULL <<  7)) << 28; // col 1 → col 5
+                dst |= (src & (0x7FULL << 35)) >> 28; // col 5 → col 1
+                dst |= (src & (0x7FULL << 14)) << 14; // col 2 → col 4
+                dst |= (src & (0x7FULL << 28)) >> 14; // col 4 → col 2
 
-                for (int bit = 0; bit < col_height; ++bit)
-                {
-                    if (bb[0] & (1ULL << (src_base + bit)))
-                        new_bb0 |= (1ULL << (dst_base + bit));
-                    if (bb[1] & (1ULL << (src_base + bit)))
-                        new_bb1 |= (1ULL << (dst_base + bit));
-                }
+                bb[p] = dst;
             }
 
-            bb[0] = new_bb0;
-            bb[1] = new_bb1;
-            std::memcpy(height, new_height, sizeof(height));
+            // 交换 height 数组
+            for (int c = 0; c < 3; ++c)
+            {
+                int mirror = Traits::COLS - 1 - c;
+                int h_c = height[c] - c * 7;
+                int h_m = height[mirror] - mirror * 7;
+                height[c] = c * 7 + h_m;
+                height[mirror] = mirror * 7 + h_c;
+            }
 
-            // 同步 board 数组
             sync_to_board();
+        }
+
+        // 对 policy 数组应用对称逆变换（水平翻转是自逆的）
+        static void inverse_symmetry_policy(int sym_id,
+                                            std::array<float, Traits::ACTION_SIZE> &policy)
+        {
+            if (sym_id == 0) return;
+            for (int i = 0; i < Traits::COLS / 2; ++i)
+                std::swap(policy[i], policy[Traits::COLS - 1 - i]);
         }
     };
 }

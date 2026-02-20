@@ -95,7 +95,7 @@ class TreeNode:
 
 
 class MCTS:
-    def __init__(self, policy_value_fn, c_init, n_playout, discount, alpha, eps=0.25, fpu_reduction=0.4):
+    def __init__(self, policy_value_fn, c_init, n_playout, discount, alpha, eps=0.25, fpu_reduction=0.4, use_symmetry=True):
         self.root = TreeNode(None, 1, discount, None, eps)
         self.policy = policy_value_fn
         self.c_init = c_init
@@ -105,6 +105,7 @@ class MCTS:
         self.eps = eps
         self.deterministic = False
         self.fpu_reduction = fpu_reduction
+        self.use_symmetry = use_symmetry
 
     def train(self):
         self.root.train()
@@ -123,10 +124,13 @@ class MCTS:
 
     def playout(self, env):
         node = self.select_leaf_node(env, True)
-        env_aug, flipped = env.random_flip()
+        if self.use_symmetry:
+            env_aug, sym_id = env.random_symmetry()
+        else:
+            env_aug, sym_id = env.copy(), 0
         action_probs, leaf_value = self.policy(env_aug)
-        if flipped:
-            action_probs = [(env.flip_action(action), prob) for action, prob in action_probs]
+        if sym_id != 0:
+            action_probs = [(env.inverse_symmetry_action(sym_id, action), prob) for action, prob in action_probs]
         if not env.done():
             node.expand(action_probs)
         node.update(leaf_value)
@@ -145,8 +149,8 @@ class MCTS:
 
 
 class MCTS_AZ(MCTS):
-    def __init__(self, policy_value_fn, c_init, n_playout, discount, alpha, cache_size, eps=0.25, fpu_reduction=0.4):
-        super().__init__(policy_value_fn, c_init, n_playout, discount, alpha, eps, fpu_reduction)
+    def __init__(self, policy_value_fn, c_init, n_playout, discount, alpha, cache_size, eps=0.25, fpu_reduction=0.4, use_symmetry=True):
+        super().__init__(policy_value_fn, c_init, n_playout, discount, alpha, eps, fpu_reduction, use_symmetry)
         self.cache = Cache(cache_size)
         self.use_cache = cache_size > 0
 
@@ -157,7 +161,10 @@ class MCTS_AZ(MCTS):
     def playout(self, env):
         noise = None
         node = self.select_leaf_node(env)
-        env_aug, flipped = env.random_flip()
+        if self.use_symmetry:
+            env_aug, sym_id = env.random_symmetry()
+        else:
+            env_aug, sym_id = env.copy(), 0
         #
         valid = env_aug.valid_move()
         state = env_aug.current_state()
@@ -172,8 +179,8 @@ class MCTS_AZ(MCTS):
         action_probs = tuple(zip(valid, probs))
         leaf_value = value.flatten()[0]
         #
-        if flipped:
-            action_probs = [(env.flip_action(action), prob) for action, prob in action_probs]
+        if sym_id != 0:
+            action_probs = [(env.inverse_symmetry_action(sym_id, action), prob) for action, prob in action_probs]
         if not env.done():
             if self.alpha is not None and not self.deterministic:
                 noise = np.random.dirichlet([self.alpha for _ in action_probs])

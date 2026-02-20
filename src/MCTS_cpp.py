@@ -21,9 +21,10 @@ def _default_convert_board(board, turns):
 
 class BatchedMCTS:
     def __init__(self, batch_size, c_init, c_base, discount, alpha, n_playout,
-                 game_name='Connect4', board_converter=None, cache_size=0, noise_epsilon=0.25, fpu_reduction=0.4):
+                 game_name='Connect4', board_converter=None, cache_size=0, noise_epsilon=0.25, fpu_reduction=0.4,
+                 use_symmetry=True):
         backend_cls = _BACKENDS[game_name]
-        self.mcts = backend_cls(batch_size, c_init, c_base, discount, alpha, noise_epsilon, fpu_reduction)
+        self.mcts = backend_cls(batch_size, c_init, c_base, discount, alpha, noise_epsilon, fpu_reduction, use_symmetry)
         self.n_playout = n_playout
         self.batch_size = batch_size
         self.action_size = backend_cls.action_size

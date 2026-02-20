@@ -28,15 +28,17 @@ namespace AlphaZero
         int32_t next_free_node = 0;
 
         Game sim_env;
+        Game leaf_state;
         int32_t current_leaf_idx = -1;
-        bool current_flipped = false;
+        int current_sym_id = 0;
 
         float c_init, c_base, discount, alpha;
         float noise_epsilon;
         float fpu_reduction;
+        bool use_symmetry;
 
-        MCTS(float c_i, float c_b, float disc, float a, float noise_eps = 0.25f, float fpu_red = 0.4f)
-            : c_init(c_i), c_base(c_b), discount(disc), alpha(a), noise_epsilon(noise_eps), fpu_reduction(fpu_red)
+        MCTS(float c_i, float c_b, float disc, float a, float noise_eps = 0.25f, float fpu_red = 0.4f, bool use_sym = true)
+            : c_init(c_i), c_base(c_b), discount(disc), alpha(a), noise_epsilon(noise_eps), fpu_reduction(fpu_red), use_symmetry(use_sym)
         {
             // 预分配内存，减少 search 过程中的扩容
             node_pool.resize(2000);
@@ -111,7 +113,7 @@ namespace AlphaZero
         {
             sim_env = start_state;
             int32_t curr_idx = root_idx;
-            current_flipped = false;
+            current_sym_id = 0;
 
             while (node_pool[curr_idx].is_expanded)
             {
@@ -172,18 +174,16 @@ namespace AlphaZero
             }
 
             out_is_terminal = false;
+            leaf_state = sim_env;
 
-            std::mt19937 &rng = get_rng();
-            std::uniform_real_distribution<float> dist(0.0f, 1.0f);
-
-            if (dist(rng) < 0.5f)
+            if (use_symmetry && Game::Traits::NUM_SYMMETRIES > 1)
             {
-                sim_env.flip();
-                current_flipped = true;
-            } else
-            {
-                current_flipped = false;
+                std::mt19937 &rng = get_rng();
+                std::uniform_int_distribution<int> sym_dist(0, Game::Traits::NUM_SYMMETRIES - 1);
+                current_sym_id = sym_dist(rng);
+                sim_env.apply_symmetry(current_sym_id);
             }
+
             out_nn_input_board = sim_env;
         }
 
@@ -196,13 +196,9 @@ namespace AlphaZero
             {
                 std::array<float, ACTION_SIZE> final_policy;
                 std::copy(policy_logits.begin(), policy_logits.end(), final_policy.begin());
-                if (current_flipped)
-                {
-                    std::reverse(final_policy.begin(), final_policy.end());
-                    sim_env.flip();
-                }
+                Game::inverse_symmetry_policy(current_sym_id, final_policy);
 
-                auto valids = sim_env.get_valid_moves();
+                auto valids = leaf_state.get_valid_moves();
 
                 // Dirichlet 噪声（栈上数组，避免堆分配）
                 float noise_arr[ACTION_SIZE];
