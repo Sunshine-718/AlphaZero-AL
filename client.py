@@ -116,7 +116,7 @@ class Actor:
         data = []
         try:
             start_time = time.time()
-            results = self.game.streaming_self_play(self.az_player, self.batch_size, args.temp, args.temp_thres)
+            results = self.game.batch_self_play(self.az_player, self.batch_size, args.temp, args.temp_thres)
             for _, play_data in results:
                 data.append(play_data)
             duration = time.time() - start_time
