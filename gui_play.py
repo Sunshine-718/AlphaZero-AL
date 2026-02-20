@@ -243,6 +243,45 @@ class WinRateBar(QWidget):
             x += pw
 
 
+class StepsBar(QWidget):
+    """横向进度条：显示预测剩余步数占最大步数的比例，右侧显示整数步数。"""
+    MAX_STEPS = 42
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(20)
+        self.steps = 0
+
+    def set_steps(self, steps):
+        self.steps = max(0, min(int(round(steps)), self.MAX_STEPS))
+        self.update()
+
+    def paintEvent(self, _):
+        qp = QPainter(self)
+        qp.setRenderHint(QPainter.Antialiasing)
+        text = str(self.steps)
+        fm = qp.fontMetrics()
+        text_w = fm.horizontalAdvance(text) + 8
+        bar_w = self.width() - text_w
+        h = self.height()
+
+        # 背景圆角
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(0, 0, bar_w, h), h // 2, h // 2)
+        qp.setClipPath(path)
+        qp.fillRect(0, 0, bar_w, h, QColor(40, 44, 55))
+
+        # 填充
+        ratio = self.steps / self.MAX_STEPS if self.MAX_STEPS else 0
+        fill_w = int(bar_w * ratio)
+        qp.fillRect(0, 0, fill_w, h, QColor(82, 139, 255))
+
+        # 右侧数字
+        qp.setClipping(False)
+        qp.setPen(QColor(TEXT_MAIN))
+        qp.drawText(bar_w + 4, 0, text_w, h, Qt.AlignVCenter | Qt.AlignLeft, text)
+
+
 class ControlPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -281,6 +320,14 @@ class ControlPanel(QWidget):
 
         self.bar = WinRateBar()
         sl.addWidget(self.bar)
+
+        steps_title = QLabel("<font color='#8090b0'><b>预测剩余步数</b></font>")
+        steps_title.setAlignment(Qt.AlignCenter)
+        steps_title.setTextFormat(Qt.RichText)
+        sl.addWidget(steps_title)
+        self.steps_bar = StepsBar()
+        sl.addWidget(self.steps_bar)
+
         root.addWidget(status_box)
 
         # ── 设置卡片 ─────────────────────────────────────────────────────────
@@ -345,6 +392,9 @@ class ControlPanel(QWidget):
     def set_result(self, text, color="#e0e4ef"):
         self.result_label.setText(f"<font color='{color}'>{text}</font>")
         self.result_label.setTextFormat(Qt.RichText)
+
+    def set_steps(self, steps):
+        self.steps_bar.set_steps(steps)
 
 
 class Connect4GUI(QWidget):
@@ -449,14 +499,17 @@ class Connect4GUI(QWidget):
             t = torch.from_numpy(state).float().to(self.net.device).unsqueeze(0)
             if t.dim() == 5:
                 t = t.squeeze(1)
-            _, vl, _ = self.net(t)
+            _, vl, sl = self.net(t)
             vp = F.softmax(vl, dim=-1)[0].cpu().tolist()
+            sp = F.softmax(sl, dim=-1)[0].cpu()
+            expected_steps = (sp * torch.arange(len(sp), dtype=torch.float32)).sum().item()
         draw = vp[0] * 100
         if self.player_color == 1:
             win, lose = vp[1] * 100, vp[2] * 100
         else:
             win, lose = vp[2] * 100, vp[1] * 100
         self.panel.set_rates(win, draw, lose)
+        self.panel.set_steps(expected_steps)
 
     def _ai_move(self):
         if self.animating or self.env.done():
