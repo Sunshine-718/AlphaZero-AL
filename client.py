@@ -32,7 +32,7 @@ parser.add_argument('--port', '-P', '-p', type=int, default=7718, help='Port num
 parser.add_argument('-c', '--c_init', type=float, default=1, help='C_puct init')
 parser.add_argument('--c_base_factor', type=float, default=1000, help='C_puct base factor')
 parser.add_argument('--fpu_reduction', type=float, default=0.2, help='FPU reduction factor')
-parser.add_argument('-a', '--alpha', type=float, default=1.55, help='Dirichlet alpha')
+parser.add_argument('-a', '--alpha', type=float, default=0.3, help='Dirichlet alpha')
 parser.add_argument('--noise_eps', type=float, default=0.25, help='Noise epsilon')
 parser.add_argument('--discount', type=float, default=1, help='Discount factor')
 parser.add_argument('-t', '--temp', type=float, default=1, help='Softmax temperature')
@@ -47,6 +47,7 @@ parser.add_argument('-B', '--batch_size', type=int, default=100, help='Batch siz
 parser.add_argument('--cache_size', type=int, default=0,
                     help='Transposition table size (0 = disabled, >0 = LRU cache capacity)')
 parser.add_argument('--no_symmetry', action='store_true', help='Disable random symmetry augmentation during MCTS search')
+parser.add_argument('--actor', type=str, default='best', help='Which weight to load (best/current)')
 
 args = parser.parse_args()
 
@@ -83,7 +84,7 @@ class Actor:
         self.mtime = 0
 
     def load_weights(self):
-        r = requests.get(f'http://{args.host}:{args.port}/weights?ts={self.mtime}')
+        r = requests.get(f'http://{args.host}:{args.port}/weights?ts={self.mtime}&actor={args.actor}')
         if r.status_code == 200:
             if self.mtime == 0:
                 print('Server Connected, start collecting.')
@@ -102,7 +103,7 @@ class Actor:
 
     # 将 @staticmethod 改为实例方法，以便访问 self
     def push_data(self, data):
-        payload = pickle.dumps(data, protocol=pickle.HIGHEST_PROTOCOL)
+        payload = pickle.dumps({'__az__': True, 'data': data}, protocol=pickle.HIGHEST_PROTOCOL)
         resp = requests.post(f'http://{args.host}:{args.port}/upload', headers=headers, data=payload)
 
         # --- 新增: 打印特殊日志供 GUI 统计上传流量 ---

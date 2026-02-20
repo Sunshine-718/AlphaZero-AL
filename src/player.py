@@ -174,6 +174,14 @@ class BatchedAlphaZeroPlayer:
             # 训练策略目标：使用原始 count 归一化分布，不受 temp 影响
             action_probs = np.zeros(self.n_actions, dtype=np.float32)
             valid_mask = visit > 0
+
+            # 已结束的游戏可能所有 visit 都为 0（终局状态被正确识别），
+            # 此时返回 action=0 和全零 probs，调用方不会使用这些值。
+            if not valid_mask.any():
+                batch_actions.append(0)
+                batch_probs.append(action_probs)
+                continue
+
             action_probs[valid_mask] = visit[valid_mask] / visit[valid_mask].sum()
 
             # 动作采样：根据 temp 缩放后的分布采样

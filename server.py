@@ -25,18 +25,18 @@ parser.add_argument('--host', '-H', type=str, default='0.0.0.0', help='Host IP')
 parser.add_argument('--port', '-P', '-p', type=int, default=7718, help='Port number')
 parser.add_argument('-n', type=int, default=100,
                     help='Number of simulations before AlphaZero make an action')
-parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
+parser.add_argument('--lr', type=float, default=3e-3, help='Learning rate')
 parser.add_argument('-c', '--c_init', type=float, default=1, help='C_puct init')
 parser.add_argument('--c_base_factor', type=float, default=1000, help='C_puct base factor')
 parser.add_argument('--fpu_reduction', type=float, default=0.2, help='FPU reduction factor')
 parser.add_argument('--eps', type=float, default=0.25, help='PUCT epsilon for noise mixing')
-parser.add_argument('-a', '--alpha', type=float, default=1.55, help='Dirichlet alpha')
+parser.add_argument('-a', '--alpha', type=float, default=0.3, help='Dirichlet alpha')
 parser.add_argument('-b', '--batch_size', type=int, default=512, help='Batch size')
 parser.add_argument('--q_size', type=int, default=100, help='Minimum buffer size before training starts')
 parser.add_argument('--buf', '--buffer_size', type=int, default=100000, help='Buffer size')
 parser.add_argument('--mcts_n', type=int, default=1000, help='MCTS n_playout')
 parser.add_argument('--discount', type=float, default=1, help='Discount factor')
-parser.add_argument('--thres', type=float, default=0.65, help='Win rate threshold')
+parser.add_argument('--thres', type=float, default=0.52, help='Win rate threshold')
 parser.add_argument('--num_eval', type=int, default=50, help='Number of evaluation.')
 parser.add_argument('-m', '--model', type=str, default='CNN', help='Model type (CNN)')
 parser.add_argument('-d', '--device', type=str, default='cuda' if torch.cuda.is_available()
@@ -115,8 +115,13 @@ def upload():
         data_len = len(request.data)
         TOTAL_RECEIVED_BYTES += data_len
         print(f"[[TRAFFIC_LOG::RECEIVED::+::{data_len}]]", file=sys.stdout)
-    data = pickle.loads(request.data)
-    for d in data:
+    try:
+        raw = pickle.loads(request.data)
+    except Exception:
+        return jsonify({'status': 'error', 'message': 'invalid payload'}), 400
+    if not isinstance(raw, dict) or not raw.get('__az__'):
+        return jsonify({'status': 'error', 'message': 'bad format'}), 400
+    for d in raw['data']:
         pipeline._inbox.put(d)
     return jsonify({'status': 'success'})
 
@@ -124,9 +129,11 @@ def upload():
 @app.route('/weights', methods=['GET'])
 def weights():
     global TOTAL_SENT_BYTES
-    path = pipeline.current if args.actor == "current" else pipeline.best
+    actor_param = request.args.get('actor', args.actor)
+    path = pipeline.current if actor_param == "current" else pipeline.best
     if pipeline.r_a < pipeline.r_b:
         path = pipeline.current
+    
     try:
         mtime = os.path.getmtime(path)
     except FileNotFoundError:
