@@ -31,7 +31,7 @@ parser.add_argument('--host', '-H', type=str, default='127.0.0.1', help='Host IP
 parser.add_argument('--port', '-P', '-p', type=int, default=7718, help='Port number')
 parser.add_argument('-c', '--c_init', type=float, default=1, help='C_puct init')
 parser.add_argument('--c_base_factor', type=float, default=1000, help='C_puct base factor')
-parser.add_argument('--fpu_reduction', type=float, default=0.2, help='FPU reduction factor')
+parser.add_argument('--fpu_reduction', type=float, default=0.4, help='FPU reduction factor')
 parser.add_argument('-a', '--alpha', type=float, default=0.3, help='Dirichlet alpha')
 parser.add_argument('--noise_eps', type=float, default=0.25, help='Noise epsilon')
 parser.add_argument('--discount', type=float, default=1, help='Discount factor')

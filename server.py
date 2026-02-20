@@ -28,7 +28,7 @@ parser.add_argument('-n', type=int, default=100,
 parser.add_argument('--lr', type=float, default=3e-3, help='Learning rate')
 parser.add_argument('-c', '--c_init', type=float, default=1, help='C_puct init')
 parser.add_argument('--c_base_factor', type=float, default=1000, help='C_puct base factor')
-parser.add_argument('--fpu_reduction', type=float, default=0.2, help='FPU reduction factor')
+parser.add_argument('--fpu_reduction', type=float, default=0.4, help='FPU reduction factor')
 parser.add_argument('--eps', type=float, default=0.25, help='PUCT epsilon for noise mixing')
 parser.add_argument('-a', '--alpha', type=float, default=0.3, help='Dirichlet alpha')
 parser.add_argument('-b', '--batch_size', type=int, default=512, help='Batch size')
