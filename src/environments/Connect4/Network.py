@@ -34,7 +34,7 @@ class ResidualBlock(nn.Module):
 
 
 class CNN(Base):
-    def __init__(self, lr, in_dim=3, h_dim=128, out_dim=7, dropout=0.1, device='cpu', num_res_blocks=2):
+    def __init__(self, lr, in_dim=3, h_dim=128, out_dim=7, dropout=0.2, device='cpu', num_res_blocks=3):
         super().__init__()
         self.in_dim = in_dim
         self.device = device
@@ -42,44 +42,51 @@ class CNN(Base):
 
         # Body: Stem + Residual Blocks
         self.hidden = nn.Sequential(
-            nn.Conv2d(in_dim, h_dim, kernel_size=3, padding=1, bias=False),
+            nn.Conv2d(in_dim, h_dim, kernel_size=3, padding=2, bias=False),
             nn.BatchNorm2d(h_dim),
             nn.SiLU(inplace=True),
             *[ResidualBlock(h_dim, h_dim, dropout_rate=dropout) for _ in range(num_res_blocks)]
         )
 
-        # Heads
-        self.policy_head = nn.Sequential(
-            nn.Conv2d(h_dim, 3, kernel_size=1, bias=False),
-            nn.BatchNorm2d(3),
+        # Dual Policy Heads (one per player)
+        self.policy_head_1 = nn.Sequential(
+            nn.Conv2d(h_dim, 2, kernel_size=1, bias=False),
+            nn.BatchNorm2d(2),
             nn.SiLU(inplace=True),
             nn.Flatten(),
-            nn.Linear(3 * 6 * 7, out_dim),
+            nn.Linear(2 * 8 * 9, out_dim),
+            nn.LogSoftmax(dim=-1)
+        )
+        self.policy_head_2 = nn.Sequential(
+            nn.Conv2d(h_dim, 2, kernel_size=1, bias=False),
+            nn.BatchNorm2d(2),
+            nn.SiLU(inplace=True),
+            nn.Flatten(),
+            nn.Linear(2 * 8 * 9, out_dim),
             nn.LogSoftmax(dim=-1)
         )
         self.value_head = nn.Sequential(
-            nn.Conv2d(h_dim, 3, kernel_size=1, bias=False),
-            nn.BatchNorm2d(3),
+            nn.Conv2d(h_dim, 2, kernel_size=1, bias=False),
+            nn.BatchNorm2d(2),
             nn.SiLU(inplace=True),
             nn.Flatten(),
-            nn.Linear(3 * 6 * 7, 32),
+            nn.Linear(2 * 8 * 9, 2 * 8 * 9),
             nn.SiLU(inplace=True),
-            nn.Linear(32, 3),
+            nn.Linear(2 * 8 * 9, 3),
             nn.LogSoftmax(dim=-1)
         )
         self.steps_head = nn.Sequential(
-            nn.Conv2d(h_dim, 3, kernel_size=1, bias=False),
-            nn.BatchNorm2d(3),
+            nn.Conv2d(h_dim, 2, kernel_size=1, bias=False),
+            nn.BatchNorm2d(2),
             nn.SiLU(inplace=True),
             nn.Flatten(),
-            nn.Linear(3 * 6 * 7, 32),
-            nn.SiLU(inplace=True),
-            nn.Linear(32, 43),
+            nn.Linear(2 * 8 * 9, 43),
             nn.LogSoftmax(dim=-1)
         )
         
         self.apply(self.init_weights)
-        nn.init.constant_(self.policy_head[-2].weight, 0)
+        nn.init.constant_(self.policy_head_1[-2].weight, 0)
+        nn.init.constant_(self.policy_head_2[-2].weight, 0)
         nn.init.constant_(self.value_head[-2].weight, 0)
         nn.init.constant_(self.steps_head[-2].weight, 0)
         
@@ -100,9 +107,20 @@ class CNN(Base):
     def name(self):
         return 'CNN'
 
+    def _route_policy(self, hidden, player):
+        """Route each sample to its player's policy head. No redundant computation."""
+        idx1 = (player > 0).nonzero(as_tuple=True)[0]
+        idx2 = (player < 0).nonzero(as_tuple=True)[0]
+        log_prob = hidden.new_zeros(hidden.size(0), self.n_actions)
+        if idx1.numel() > 0:
+            log_prob[idx1] = self.policy_head_1(hidden[idx1])
+        if idx2.numel() > 0:
+            log_prob[idx2] = self.policy_head_2(hidden[idx2])
+        return log_prob
+
     def forward(self, x):
         hidden = self.hidden(x)
-        log_prob = self.policy_head(hidden)
+        log_prob = self._route_policy(hidden, x[:, -1, 0, 0])
         value = self.value_head(hidden)
         steps_pred = self.steps_head(hidden)
         return log_prob, value, steps_pred
@@ -112,7 +130,7 @@ class CNN(Base):
         if isinstance(state, np.ndarray):
             state = torch.from_numpy(state).float().to(self.device)
         hidden = self.hidden(state)
-        return self.policy_head(hidden).exp().cpu().numpy()
+        return self._route_policy(hidden, state[:, -1, 0, 0]).exp().cpu().numpy()
 
     @torch.no_grad()
     def value(self, state):

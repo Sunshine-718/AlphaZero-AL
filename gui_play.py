@@ -17,9 +17,9 @@ MODEL_NAME          = 'AZ'
 MODEL_TYPE_DEFAULT  = 'current'
 N_PLAYOUT_DEFAULT   = 500
 ANIMATION_MS        = 30
-C_INIT              = 1
+C_INIT              = 0.8
 DISCOUNT            = 1
-ALPHA               = 1.55
+ALPHA               = 0.3
 USE_SYMMETRY        = True
 
 PARAMS_PATH_FMT     = './params/{model_name}_{env_name}_{network}_{model_type}.pt'
