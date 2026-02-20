@@ -5,112 +5,86 @@
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
+from torch.optim.lr_scheduler import LinearLR
 from ..NetworkBase import Base
 
 
-class RMSNorm2d(nn.Module):
-    def __init__(self, dim, eps=1e-5):
-        super().__init__()
-        self.norm = nn.RMSNorm(dim, eps=eps)
-
-    def forward(self, x):
-        if x.dtype != self.norm.weight.dtype:
-            self.norm.to(dtype=x.dtype)
-        x = x.permute(0, 2, 3, 1)
-        x = self.norm(x)
-        x = x.permute(0, 3, 1, 2)
-        return x
-
-
-class ConvGLU(nn.Module):
-    def __init__(self, in_channels, out_channels, **kwargs):
-        super().__init__()
-        self.gate = nn.Conv2d(in_channels, out_channels, **kwargs)
-        self.proj = nn.Conv2d(in_channels, out_channels, **kwargs)
-
-    def forward(self, x):
-        return nn.functional.silu(self.gate(x)) * self.proj(x)
-
-
-class LinearGLU(nn.Module):
-    def __init__(self, in_dim, out_dim):
-        super().__init__()
-        self.gate = nn.Linear(in_dim, out_dim)
-        self.proj = nn.Linear(in_dim, out_dim)
-
-    def forward(self, x):
-        return nn.functional.silu(self.gate(x)) * self.proj(x)
-
-
-class ResidualGLUConv2d(nn.Module):
-    def __init__(self, in_dim, out_dim, dropout):
-        super().__init__()
-        self.norm = RMSNorm2d(in_dim, 1e-5)
-        self.glu = ConvGLU(in_dim, out_dim, kernel_size=3, padding=1)
-        self.conv = nn.Conv2d(out_dim, out_dim, kernel_size=1)
-        self.dropout = nn.Dropout2d(p=dropout, inplace=True)
-        self.residual = in_dim == out_dim
-
-    def forward(self, x):
-        residual = 0
-        if self.residual:
-            residual = x
-        x = self.norm(x)
-        x = self.glu(x)
-        x = self.conv(x)
-        return self.dropout(x) + residual
-
-
 class ResidualBlock(nn.Module):
-    def __init__(self, in_dim, out_dim, dropout=0., zero_out=False):
+    """
+    Standard Residual Block with BatchNorm, SiLU activation, and Dropout.
+    Conv -> BN -> SiLU -> Dropout -> Conv -> BN -> Add -> SiLU
+    """
+    def __init__(self, in_channels, out_channels, dropout_rate=0.):
         super().__init__()
-        self.glu = LinearGLU(in_dim, out_dim)
-        self.linear = nn.Linear(out_dim, out_dim)
-        self.norm = nn.RMSNorm(in_dim, 1e-5)
-        self.dropout = nn.Dropout(dropout, inplace=True)
-        self.residual = in_dim == out_dim
-        if zero_out:
-            nn.init.constant_(self.linear.weight, 0)
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.silu = nn.SiLU(inplace=True)
+        self.dropout = nn.Dropout2d(p=dropout_rate)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+
+        self.shortcut = nn.Sequential()
 
     def forward(self, x):
-        residual = 0
-        if self.residual:
-            residual = x
-        x = self.norm(x)
-        x = self.glu(x)
-        x = self.linear(x)
-        return self.dropout(x + residual)
+        out = self.silu(self.bn1(self.conv1(x)))
+        out = self.dropout(out)
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+        return self.silu(out)
 
 
 class CNN(Base):
-    def __init__(self, lr, in_dim=3, h_dim=64, out_dim=7, dropout=0., device='cpu'):
+    def __init__(self, lr, in_dim=3, h_dim=128, out_dim=7, dropout=0.1, device='cpu', num_res_blocks=2):
         super().__init__()
         self.in_dim = in_dim
-        self.hidden = nn.Sequential(ResidualGLUConv2d(in_dim, h_dim, dropout),
-                                    ResidualGLUConv2d(h_dim, h_dim, dropout),
-                                    ResidualGLUConv2d(h_dim, h_dim, dropout))
-        self.policy_head = nn.Sequential(ResidualGLUConv2d(h_dim, 3, dropout),
-                                         nn.Flatten(),
-                                         nn.Linear(6 * 7 * 3, 7),
-                                         nn.LogSoftmax(dim=-1))
-        self.value_head = nn.Sequential(ResidualGLUConv2d(h_dim, 3, dropout),
-                                        nn.Flatten(),
-                                        ResidualBlock(6 * 7 * 3, 6 * 7 * 3, dropout=dropout),
-                                        nn.Linear(6 * 7 * 3, 3),
-                                        nn.LogSoftmax(dim=-1))
-        self.steps_head = nn.Sequential(ResidualGLUConv2d(h_dim, 3, dropout),
-                                        nn.Flatten(),
-                                        ResidualBlock(6 * 7 * 3, 6 * 7 * 3, dropout=dropout),
-                                        nn.Linear(6 * 7 * 3, 43),
-                                        nn.LogSoftmax(dim=-1))
         self.device = device
         self.n_actions = out_dim
+
+        # Body: Stem + Residual Blocks
+        self.hidden = nn.Sequential(
+            nn.Conv2d(in_dim, h_dim, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(h_dim),
+            nn.SiLU(inplace=True),
+            *[ResidualBlock(h_dim, h_dim, dropout_rate=dropout) for _ in range(num_res_blocks)]
+        )
+
+        # Heads
+        self.policy_head = nn.Sequential(
+            nn.Conv2d(h_dim, 3, kernel_size=1, bias=False),
+            nn.BatchNorm2d(3),
+            nn.SiLU(inplace=True),
+            nn.Flatten(),
+            nn.Linear(3 * 6 * 7, out_dim),
+            nn.LogSoftmax(dim=-1)
+        )
+        self.value_head = nn.Sequential(
+            nn.Conv2d(h_dim, 3, kernel_size=1, bias=False),
+            nn.BatchNorm2d(3),
+            nn.SiLU(inplace=True),
+            nn.Flatten(),
+            nn.Linear(3 * 6 * 7, 32),
+            nn.SiLU(inplace=True),
+            nn.Linear(32, 3),
+            nn.LogSoftmax(dim=-1)
+        )
+        self.steps_head = nn.Sequential(
+            nn.Conv2d(h_dim, 3, kernel_size=1, bias=False),
+            nn.BatchNorm2d(3),
+            nn.SiLU(inplace=True),
+            nn.Flatten(),
+            nn.Linear(3 * 6 * 7, 32),
+            nn.SiLU(inplace=True),
+            nn.Linear(32, 43),
+            nn.LogSoftmax(dim=-1)
+        )
+        
         self.apply(self.init_weights)
         nn.init.constant_(self.policy_head[-2].weight, 0)
         nn.init.constant_(self.value_head[-2].weight, 0)
         nn.init.constant_(self.steps_head[-2].weight, 0)
-        self.opt = torch.optim.AdamW(self.parameters(), lr, weight_decay=1e-3)
+        
+        self.opt = torch.optim.SGD(self.parameters(), lr=lr, momentum=0.9, weight_decay=1e-4)
+        
         scheduler_warmup = LinearLR(self.opt, start_factor=0.01, total_iters=100)
         # scheduler_train = LinearLR(self.opt, start_factor=1, end_factor=0.1, total_iters=1000)
         # self.scheduler = SequentialLR(self.opt, schedulers=[scheduler_warmup, scheduler_train], milestones=[100])

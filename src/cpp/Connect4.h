@@ -105,6 +105,12 @@ namespace AlphaZero
                     }
                 }
             }
+            // 根据棋子数推断上一步落子方，使 check_winner 在导入棋盘后正常工作
+            // 奇数个棋子 → P1(idx=0) 最后落子；偶数个(>0) → P2(idx=1) 最后落子
+            if (n_pieces > 0)
+            {
+                last_player_idx = (n_pieces % 2 == 1) ? 0 : 1;
+            }
         }
 
         // 将 bitboard 状态写回 board 数组（用于导出到 Python）

@@ -106,48 +106,58 @@ cdef class Env:
         return True
 
     cpdef int check_winner(self):
-        """增量检查：仅检查以 (_last_r, _last_c) 为中心的 4 条线"""
-        # 如果还没落过子，直接返回 0
-        if self._last_r == -1:
-            return 0
-
+        """增量检查：仅检查以 (_last_r, _last_c) 为中心的 4 条线。
+        若无最后落子记录（如从外部导入棋盘），回退到全盘扫描。"""
         cdef float[:, :] board = self._board
-        cdef int r = self._last_r
-        cdef int c = self._last_c
         cdef int rows = self._rows
         cdef int cols = self._cols
-        cdef float player = board[r, c]
+        cdef int r, c, count, i, nr, nc
+        cdef float player
 
-        if player == 0: return 0
-
-        cdef int count, i, nr, nc
-        
         # 4个方向向量: (dr, dc) -> 水平, 垂直, 对角\, 对角/
         cdef int dr[4]
         cdef int dc[4]
         dr[:] = [0, 1, 1, 1]
         dc[:] = [1, 0, 1, -1]
 
-        for i in range(4):
-            count = 1  # 包含当前子
-            
-            # 向正方向延伸
-            nr, nc = r + dr[i], c + dc[i]
-            while 0 <= nr < rows and 0 <= nc < cols and board[nr, nc] == player:
-                count += 1
-                nr += dr[i]
-                nc += dc[i]
+        if self._last_r != -1:
+            # 快速路径：增量检查
+            r = self._last_r
+            c = self._last_c
+            player = board[r, c]
+            if player == 0: return 0
 
-            # 向负方向延伸
-            nr, nc = r - dr[i], c - dc[i]
-            while 0 <= nr < rows and 0 <= nc < cols and board[nr, nc] == player:
-                count += 1
-                nr -= dr[i]
-                nc -= dc[i]
-            
-            if count >= 4:
-                return <int>player
+            for i in range(4):
+                count = 1
+                nr, nc = r + dr[i], c + dc[i]
+                while 0 <= nr < rows and 0 <= nc < cols and board[nr, nc] == player:
+                    count += 1
+                    nr += dr[i]
+                    nc += dc[i]
+                nr, nc = r - dr[i], c - dc[i]
+                while 0 <= nr < rows and 0 <= nc < cols and board[nr, nc] == player:
+                    count += 1
+                    nr -= dr[i]
+                    nc -= dc[i]
+                if count >= 4:
+                    return <int>player
+            return 0
 
+        # 慢速路径：全盘扫描（用于从外部导入的棋盘）
+        for r in range(rows):
+            for c in range(cols):
+                player = board[r, c]
+                if player == 0:
+                    continue
+                for i in range(4):
+                    count = 1
+                    nr, nc = r + dr[i], c + dc[i]
+                    while 0 <= nr < rows and 0 <= nc < cols and board[nr, nc] == player:
+                        count += 1
+                        nr += dr[i]
+                        nc += dc[i]
+                    if count >= 4:
+                        return <int>player
         return 0
 
     cpdef bint done(self):
