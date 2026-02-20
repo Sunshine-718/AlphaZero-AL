@@ -26,7 +26,7 @@ parser.add_argument('--port', '-P', '-p', type=int, default=7718, help='Port num
 parser.add_argument('-n', type=int, default=100,
                     help='Number of simulations before AlphaZero make an action')
 parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
-parser.add_argument('-c', '--c_init', type=float, default=4, help='C_puct init')
+parser.add_argument('-c', '--c_init', type=float, default=1, help='C_puct init')
 parser.add_argument('--c_base_factor', type=float, default=1000, help='C_puct base factor')
 parser.add_argument('--fpu_reduction', type=float, default=0.2, help='FPU reduction factor')
 parser.add_argument('--eps', type=float, default=0.25, help='PUCT epsilon for noise mixing')

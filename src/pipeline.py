@@ -62,9 +62,6 @@ class TrainPipeline(ABC):
     def init_buffer(self, buffer):
         self.buffer = buffer
 
-    def _on_weights_saved(self):
-        pass
-
     @abstractmethod
     def data_collector(self):
         ...
@@ -308,13 +305,12 @@ class TrainPipeline(ABC):
             p_loss, v_loss, s_loss, entropy, grad_norm, f1 = self.policy_update()
 
             if self.rank == 0:
-                self.net.save(self.current)
-                self._on_weights_saved()
                 print(f'batch i: {self.global_step}, episode_len: {self.episode_len}, '
                       f'loss: {p_loss + v_loss + s_loss: .8f}, entropy: {entropy: .8f}')
                 self._log_train_step(p_loss, v_loss, s_loss, entropy, grad_norm, f1)
 
                 if self.global_step % self.interval == 0:
+                    self.net.save(self.current)
                     print(f'current self-play batch: {self.global_step + 1}')
                     self.r_a, self.r_b = self.update_elo()
                     print(f'Elo score: AlphaZero: {self.r_a: .2f}, Benchmark: {self.r_b: .2f}')
