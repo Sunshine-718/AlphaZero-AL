@@ -22,6 +22,8 @@ parser.add_argument('--name', type=str, default='AZ', help='Model name')
 parser.add_argument('-c', '--c_init', type=float, default=4, help='C_puct init')
 parser.add_argument('-a', '--alpha', type=float, default=0.1, help='Dirichlet alpha')
 parser.add_argument('--no_symmetry', action='store_true', help='Disable random symmetry augmentation during MCTS search')
+parser.add_argument('--lambda_s', type=float, default=0.1,
+                    help='Steps-value mixing weight (default=0.1)')
 
 args = parser.parse_args()
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -33,9 +35,9 @@ if __name__ == '__main__':
         game = Game(env)
 
         if args.network == 'CNN':
-            net = module.CNN(0, device=device)
+            net = module.CNN(0, device=device, lambda_s=args.lambda_s)
         elif args.network == 'ViT':
-            net = module.ViT(0, device=device)
+            net = module.ViT(0, device=device, lambda_s=args.lambda_s)
         else:
             raise ValueError(f"Unknown network type: {args.network}")
 

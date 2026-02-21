@@ -35,9 +35,11 @@ class TrainPipeline(ABC):
             setattr(self, key, value)
         self.buffer = None
         if model == 'CNN':
-            self.net = self.module.CNN(lr=self.lr, device=self.device)
+            self.net = self.module.CNN(lr=self.lr, device=self.device,
+                                      lambda_s=getattr(self, 'lambda_s', 0.1))
         elif model == 'ViT':
-            self.net = self.module.ViT(lr=self.lr, device=self.device)
+            self.net = self.module.ViT(lr=self.lr, device=self.device,
+                                       lambda_s=getattr(self, 'lambda_s', 0.1))
         else:
             raise ValueError(f'Unknown model type: {model}')
         self.current = f'{self.params}/{self.name}_{self.net.name()}_current.pt'

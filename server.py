@@ -47,6 +47,8 @@ parser.add_argument('--name', type=str, default='AZ', help='Name of AlphaZero')
 parser.add_argument('--cache_size', type=int, default=10000, help='LRU transposition table max size')
 parser.add_argument("--actor", type=str, default="best", help="Which weight are actors using?")
 parser.add_argument('--no_symmetry', action='store_true', help='Disable random symmetry augmentation during MCTS search')
+parser.add_argument('--lambda_s', type=float, default=0.1,
+                    help='Steps-value mixing weight (KataGo staticScoreUtilityFactor analog, default=0.1)')
 
 args, _ = parser.parse_known_args()
 
@@ -67,7 +69,8 @@ config = {"lr": args.lr,
           "interval": args.interval,
           "device": args.device,
           "cache_size": args.cache_size,
-          "use_symmetry": not args.no_symmetry}
+          "use_symmetry": not args.no_symmetry,
+          "lambda_s": args.lambda_s}
 
 
 class ServerPipeline(TrainPipeline):

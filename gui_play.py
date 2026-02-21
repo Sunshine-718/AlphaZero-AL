@@ -21,6 +21,7 @@ C_INIT              = 0.8
 DISCOUNT            = 1
 ALPHA               = 0.3
 USE_SYMMETRY        = True
+LAMBDA_S            = 0.1   # steps-value mixing weight；KataGo staticScoreUtilityFactor 对标值
 
 PARAMS_PATH_FMT     = './params/{model_name}_{env_name}_{network}_{model_type}.pt'
 
@@ -465,7 +466,7 @@ class Connect4GUI(QWidget):
         model_type = self.panel.model_type_cb.currentText()
         n_playout  = self.panel.n_playout_spin.value()
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        net = getattr(self.env_module, network)(lr=0, device=device)
+        net = getattr(self.env_module, network)(lr=0, device=device, lambda_s=LAMBDA_S)
         net.eval()
         self.net = net
         path = PARAMS_PATH_FMT.format(model_name=MODEL_NAME, env_name=ENV_NAME,

@@ -34,11 +34,12 @@ class ResidualBlock(nn.Module):
 
 
 class CNN(Base):
-    def __init__(self, lr, in_dim=3, h_dim=128, out_dim=7, dropout=0.2, device='cpu', num_res_blocks=3):
+    def __init__(self, lr, in_dim=3, h_dim=128, out_dim=7, dropout=0.2, device='cpu', num_res_blocks=3, lambda_s=0.1):
         super().__init__()
         self.in_dim = in_dim
         self.device = device
         self.n_actions = out_dim
+        self.lambda_s = lambda_s
 
         # Body: Stem + Residual Blocks
         self.hidden = nn.Sequential(
@@ -144,7 +145,15 @@ class CNN(Base):
         else:
             t = t.float()
         player = t[:, -1, 0, 0].view(-1)
-        log_prob, value_log_prob, _ = self.forward(t)
+        log_prob, value_log_prob, log_steps = self.forward(t)
         value_prob = value_log_prob.exp()
-        value = player * (value_prob[:, 1] - value_prob[:, 2] - 0.5 * value_prob[:, 0])
+        value_base = player * (value_prob[:, 1] - value_prob[:, 2] - 0.5 * value_prob[:, 0])
+        if self.lambda_s > 0:
+            steps_prob = log_steps.exp()
+            idx = torch.arange(43, dtype=torch.float32, device=self.device)
+            expected_steps = (steps_prob * idx).sum(dim=1)
+            steps_adjusted = 2.0 * (expected_steps / 42.0) - 1.0
+            value = (1 - self.lambda_s) * value_base - self.lambda_s * player * steps_adjusted
+        else:
+            value = value_base
         return log_prob.exp().cpu().numpy(), value.cpu().view(-1, 1).numpy()

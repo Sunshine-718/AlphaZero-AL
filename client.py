@@ -48,6 +48,8 @@ parser.add_argument('--cache_size', type=int, default=0,
                     help='Transposition table size (0 = disabled, >0 = LRU cache capacity)')
 parser.add_argument('--no_symmetry', action='store_true', help='Disable random symmetry augmentation during MCTS search')
 parser.add_argument('--actor', type=str, default='best', help='Which weight to load (best/current)')
+parser.add_argument('--lambda_s', type=float, default=0.1,
+                    help='Steps-value mixing weight (default=0.1)')
 
 args = parser.parse_args()
 
@@ -65,9 +67,9 @@ class Actor:
         self.game = Game(self.env)
         self.batch_size = args.batch_size
         if args.model == 'CNN':
-            self.net = self.module.CNN(lr=0, device=args.device)
+            self.net = self.module.CNN(lr=0, device=args.device, lambda_s=args.lambda_s)
         elif args.model == 'ViT':
-            self.net = self.module.ViT(lr=0, device=args.device)
+            self.net = self.module.ViT(lr=0, device=args.device, lambda_s=args.lambda_s)
         else:
             raise ValueError(f'Unknown model type: {args.model}')
         self.az_player = BatchedAlphaZeroPlayer(self.net,
