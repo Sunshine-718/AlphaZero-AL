@@ -30,7 +30,7 @@ class Base(ABC, nn.Module):
     def load(self, path=None):
         if path is not None:
             try:
-                checkpoint = torch.load(path, map_location=self.device)
+                checkpoint = torch.load(path, map_location=self.device, weights_only=True)
                 self.load_state_dict(checkpoint['model_state_dict'])
                 self.opt.load_state_dict(checkpoint['opt_state_dict'])
                 self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])

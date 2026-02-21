@@ -32,7 +32,7 @@ class ReplayBuffer:
 
     def load(self, path):
         try:
-            state_dict = torch.load(path, map_location=self.device)
+            state_dict = torch.load(path, map_location=self.device, weights_only=True)
             capacity = min(self.state.shape[0], state_dict['state'].shape[0])
             self.state[:capacity].copy_(state_dict['state'][:capacity])
             self.prob[:capacity].copy_(state_dict['prob'][:capacity])

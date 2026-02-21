@@ -5,7 +5,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.optim.lr_scheduler import LinearLR
+from torch.optim.lr_scheduler import LinearLR, SequentialLR
 from ..NetworkBase import Base
 
 
@@ -93,9 +93,8 @@ class CNN(Base):
         self.opt = torch.optim.SGD(self.parameters(), lr=lr, momentum=0.9, weight_decay=1e-4)
         
         scheduler_warmup = LinearLR(self.opt, start_factor=0.01, total_iters=100)
-        # scheduler_train = LinearLR(self.opt, start_factor=1, end_factor=0.1, total_iters=1000)
-        # self.scheduler = SequentialLR(self.opt, schedulers=[scheduler_warmup, scheduler_train], milestones=[100])
-        self.scheduler = scheduler_warmup
+        scheduler_train = LinearLR(self.opt, start_factor=1, end_factor=0.1, total_iters=1000)
+        self.scheduler = SequentialLR(self.opt, schedulers=[scheduler_warmup, scheduler_train], milestones=[100])
         self.to(self.device)
 
     def init_weights(self, m):
@@ -147,5 +146,5 @@ class CNN(Base):
         player = t[:, -1, 0, 0].view(-1)
         log_prob, value_log_prob, _ = self.forward(t)
         value_prob = value_log_prob.exp()
-        value = player * (value_prob[:, 1] - value_prob[:, 2])
+        value = player * (value_prob[:, 1] - value_prob[:, 2] - 0.5 * value_prob[:, 0])
         return log_prob.exp().cpu().numpy(), value.cpu().view(-1, 1).numpy()
