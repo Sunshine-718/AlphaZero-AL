@@ -6,11 +6,13 @@
     python tools/inspect_buffer.py
     python tools/inspect_buffer.py --buffer dataset/dataset.pt
     python tools/inspect_buffer.py --model params/AZ_Connect4_CNN_best.pt
+    python tools/inspect_buffer.py --font "Microsoft YaHei"
+    python tools/inspect_buffer.py --font-path /path/to/NotoSansCJK-Regular.ttc
     python tools/inspect_buffer.py --no-buffer   # 只看 NN
     python tools/inspect_buffer.py --no-nn       # 只看 buffer
     python tools/inspect_buffer.py --output figs # 指定图片输出目录
 """
-import sys, os, argparse
+import sys, os, argparse, warnings
 import numpy as np
 import torch
 import matplotlib
@@ -18,14 +20,18 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 
-# 中文字体：优先 SimHei / Microsoft YaHei，找不到则 fallback
-_ZH_FONTS = ['SimHei', 'Microsoft YaHei', 'PingFang SC', 'WenQuanYi Micro Hei', 'Noto Sans CJK SC']
-_available = {f.name for f in fm.fontManager.ttflist}
-for _f in _ZH_FONTS:
-    if _f in _available:
-        plt.rcParams['font.sans-serif'] = [_f, 'DejaVu Sans']
-        break
-plt.rcParams['axes.unicode_minus'] = False
+_ZH_FONTS = [
+    'Microsoft YaHei',
+    'SimHei',
+    'PingFang SC',
+    'Heiti SC',
+    'WenQuanYi Micro Hei',
+    'Noto Sans CJK SC',
+    'Source Han Sans SC',
+    'Songti SC',
+    'Kaiti SC',
+]
+_ZH_FONT_HINTS = ['CJK', 'YaHei', 'SimHei', 'PingFang', 'Heiti', 'WenQuan', 'Song', 'Kai', 'Han Sans']
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -48,6 +54,56 @@ PATTERNS = [
     ('空棋盘',           make_empty,      1,  'empty_board_X'),
     ('X 下中间列后 (O)', make_first_move, -1, 'after_center_O'),
 ]
+
+
+def setup_matplotlib_font(font_name=None, font_path=None):
+    """配置 matplotlib 中文字体。"""
+    chosen = None
+
+    if font_path:
+        if not os.path.exists(font_path):
+            print(f'[!] 指定字体文件不存在: {font_path}')
+        else:
+            try:
+                fm.fontManager.addfont(font_path)
+                chosen = fm.FontProperties(fname=font_path).get_name()
+            except Exception as e:
+                print(f'[!] 加载字体文件失败: {font_path} ({e})')
+
+    available = {f.name for f in fm.fontManager.ttflist}
+    if chosen is None and font_name:
+        if font_name in available:
+            chosen = font_name
+        else:
+            print(f'[!] 指定字体名未找到: {font_name}')
+
+    if chosen is None:
+        for f in _ZH_FONTS:
+            if f in available:
+                chosen = f
+                break
+
+    if chosen is None:
+        lower_map = {name.lower(): name for name in available}
+        for name_l, name in lower_map.items():
+            if any(h.lower() in name_l for h in _ZH_FONT_HINTS):
+                chosen = name
+                break
+
+    plt.rcParams['axes.unicode_minus'] = False
+    if chosen is not None:
+        plt.rcParams['font.family'] = 'sans-serif'
+        plt.rcParams['font.sans-serif'] = [chosen, 'DejaVu Sans']
+        print(f'[font] 使用中文字体: {chosen}')
+        return
+
+    # 环境里没有中文字体时，避免保存图片时大量重复 glyph 警告刷屏
+    warnings.filterwarnings(
+        'ignore',
+        message=r'Glyph .* missing from font\(s\) DejaVu Sans',
+        category=UserWarning,
+    )
+    print('[font] 未检测到可用中文字体，中文标题可能显示为方框。可用 --font-path 指定 .ttf/.otf。')
 
 
 def board_matches(state_int8, board, turn):
@@ -138,8 +194,17 @@ def plot_pattern(desc, ep, ew, es, nn_prob, output_dir, fname):
     # ── (d) Policy 箱线图 ──
     ax = axes[1, 1]
     bp_data = [ep[:, i].numpy() for i in range(7)]
-    bp = ax.boxplot(bp_data, labels=COL_LABELS, patch_artist=True,
-                    showfliers=True, flierprops=dict(markersize=2, alpha=0.3))
+    boxplot_kwargs = dict(
+        patch_artist=True,
+        showfliers=True,
+        flierprops=dict(markersize=2, alpha=0.3),
+    )
+    try:
+        # Matplotlib >= 3.9
+        bp = ax.boxplot(bp_data, tick_labels=COL_LABELS, **boxplot_kwargs)
+    except TypeError:
+        # 兼容旧版本 Matplotlib
+        bp = ax.boxplot(bp_data, labels=COL_LABELS, **boxplot_kwargs)
     for patch in bp['boxes']:
         patch.set_facecolor('#A1C9F4')
     if nn_prob is not None:
@@ -275,12 +340,15 @@ def main():
     parser.add_argument('--device', default='cpu')
     parser.add_argument('--top', type=int, default=10)
     parser.add_argument('--output', default='tools/figures', help='Output directory for plots')
+    parser.add_argument('--font', default=None, help='Matplotlib font family name for Chinese')
+    parser.add_argument('--font-path', default=None, help='Path to .ttf/.otf/.ttc font file')
     parser.add_argument('--no-buffer', action='store_true')
     parser.add_argument('--no-nn', action='store_true')
     args = parser.parse_args()
     if args.best:
         args.model = 'params/AZ_Connect4_CNN_best.pt'
     os.chdir(ROOT)
+    setup_matplotlib_font(args.font, args.font_path)
 
     # 先跑 NN，拿到 raw policy 供 buffer 绘图叠加
     nn_policies = {}

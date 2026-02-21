@@ -13,8 +13,18 @@ extra_link_args = []
 if platform.system() == "Windows":
     # Windows / MSVC
     extra_compile_args = ["/std:c++20", "/openmp", "/O2", "/utf-8"]
+elif platform.system() == "Darwin":
+    # macOS - Apple Clang 不支持 -fopenmp，需要 brew install libomp
+    homebrew_prefix = os.popen("brew --prefix").read().strip() or "/opt/homebrew"
+    libomp_prefix = os.popen("brew --prefix libomp").read().strip() or f"{homebrew_prefix}/opt/libomp"
+    extra_compile_args = [
+        "-std=c++20", "-O3",
+        "-Xpreprocessor", "-fopenmp",
+        f"-I{libomp_prefix}/include",
+    ]
+    extra_link_args = [f"-L{libomp_prefix}/lib", "-lomp"]
 else:
-    # Linux / GCC / Clang
+    # Linux / GCC
     extra_compile_args = ["-std=c++20", "-fopenmp", "-O3", "-march=native"]
     extra_link_args = ["-fopenmp"]
 
