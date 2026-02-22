@@ -84,6 +84,7 @@ class TreeNode:
         else:
             seen_policy = sum(c.prior for c in self.children.values() if c.n_visits > 0)
             fpu_value = self.Q - fpu_reduction * math.sqrt(seen_policy)
+            fpu_value = max(-1.0, fpu_value)
         return max(self.children.items(), key=lambda action_node: action_node[1].UCB(c_init, c_base, UCT, fpu_value))
 
     def update(self, leaf_value):

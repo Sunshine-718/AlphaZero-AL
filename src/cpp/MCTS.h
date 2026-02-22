@@ -135,6 +135,7 @@ namespace AlphaZero
                     }
                 }
                 float fpu_value = parent_value - fpu_reduction * std::sqrt(seen_policy);
+                fpu_value = std::max(-1.0f, fpu_value);
 
                 for (int action : valids)
                 {
