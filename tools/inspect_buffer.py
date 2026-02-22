@@ -20,6 +20,14 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 
+from rich.console import Console
+from rich.table import Table
+from rich.panel import Panel
+from rich.text import Text
+from rich.progress import track
+
+console = Console()
+
 _ZH_FONTS = [
     'Microsoft YaHei',
     'SimHei',
@@ -36,10 +44,14 @@ _ZH_FONT_HINTS = ['CJK', 'YaHei', 'SimHei', 'PingFang', 'Heiti', 'WenQuan', 'Son
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-BAR = '─' * 72
 COL_LABELS = [f'col{i}' for i in range(7)]
 WINNER_LABELS = {1: 'P1 wins', -1: 'P2 wins', 0: 'Draw'}
 WINNER_COLORS = {1: '#4C72B0', -1: '#DD8452', 0: '#55A868'}
+WINNER_RICH_STYLES = {
+    1:  'bold blue',
+    -1: 'bold dark_orange',
+    0:  'bold green',
+}
 
 # 棋盘模式: (描述, 构造函数, turn, 文件名前缀)
 def make_empty():
@@ -62,20 +74,20 @@ def setup_matplotlib_font(font_name=None, font_path=None):
 
     if font_path:
         if not os.path.exists(font_path):
-            print(f'[!] 指定字体文件不存在: {font_path}')
+            console.print(f'[bold red][!] 指定字体文件不存在: {font_path}[/bold red]')
         else:
             try:
                 fm.fontManager.addfont(font_path)
                 chosen = fm.FontProperties(fname=font_path).get_name()
             except Exception as e:
-                print(f'[!] 加载字体文件失败: {font_path} ({e})')
+                console.print(f'[bold red][!] 加载字体文件失败: {font_path} ({e})[/bold red]')
 
     available = {f.name for f in fm.fontManager.ttflist}
     if chosen is None and font_name:
         if font_name in available:
             chosen = font_name
         else:
-            print(f'[!] 指定字体名未找到: {font_name}')
+            console.print(f'[bold red][!] 指定字体名未找到: {font_name}[/bold red]')
 
     if chosen is None:
         for f in _ZH_FONTS:
@@ -94,7 +106,7 @@ def setup_matplotlib_font(font_name=None, font_path=None):
     if chosen is not None:
         plt.rcParams['font.family'] = 'sans-serif'
         plt.rcParams['font.sans-serif'] = [chosen, 'DejaVu Sans']
-        print(f'[font] 使用中文字体: {chosen}')
+        console.print(f'[dim][font] 使用中文字体: {chosen}[/dim]')
         return
 
     # 环境里没有中文字体时，避免保存图片时大量重复 glyph 警告刷屏
@@ -103,7 +115,7 @@ def setup_matplotlib_font(font_name=None, font_path=None):
         message=r'Glyph .* missing from font\(s\) DejaVu Sans',
         category=UserWarning,
     )
-    print('[font] 未检测到可用中文字体，中文标题可能显示为方框。可用 --font-path 指定 .ttf/.otf。')
+    console.print('[yellow][font] 未检测到可用中文字体，中文标题可能显示为方框。可用 --font-path 指定 .ttf/.otf。[/yellow]')
 
 
 def board_matches(state_int8, board, turn):
@@ -124,6 +136,60 @@ def fmt_prob(prob):
         marker = '*' if i == best else ' '
         parts.append(f'{marker}col{i}:{p*100:5.1f}%')
     return '  '.join(parts)
+
+
+# ────────────────────────── Rich helpers ──────────────────────────
+
+def compute_entropy(probs: torch.Tensor) -> torch.Tensor:
+    """Compute Shannon entropy for each row: -sum(p * log(p))."""
+    p = probs.clamp(min=1e-8)
+    return -torch.sum(p * p.log(), dim=-1)
+
+
+def fmt_prob_rich(prob) -> Text:
+    """Format a 7-column policy vector as rich Text, highlighting the max column."""
+    best = int(prob.argmax())
+    parts = Text()
+    for i, p in enumerate(prob):
+        segment = f'col{i}:{p*100:5.1f}%'
+        if i == best:
+            parts.append(segment, style='bold cyan')
+        else:
+            parts.append(segment)
+        if i < len(prob) - 1:
+            parts.append('  ')
+    return parts
+
+
+def make_winner_table(ew: torch.Tensor, title: str = 'Winner Distribution') -> Table:
+    total = len(ew)
+    table = Table(title=title, show_header=True, header_style='bold')
+    table.add_column('Winner', style='bold')
+    table.add_column('Count', justify='right')
+    table.add_column('%', justify='right')
+    for label, val in [('P1 wins', 1), ('P2 wins', -1), ('Draw', 0)]:
+        cnt = int((ew == val).sum())
+        pct = f'{cnt / total * 100:5.1f}' if total > 0 else '  0.0'
+        style = WINNER_RICH_STYLES.get(val, '')
+        table.add_row(Text(label, style=style), str(cnt), pct)
+    return table
+
+
+def make_top_n_table(idx, ep, ew, es, top_n) -> Table:
+    show = min(top_n, len(idx))
+    table = Table(title=f'前 {show} 条样本', show_header=True, header_style='bold')
+    table.add_column('idx', justify='right')
+    table.add_column('winner', justify='right')
+    table.add_column('steps', justify='right')
+    table.add_column('policy')
+    for k in range(show):
+        i = idx[k]
+        w_val = int(ew[k])
+        w_text = Text(WINNER_LABELS[w_val], style=WINNER_RICH_STYLES.get(w_val, ''))
+        s = str(int(es[k])) if es is not None else '?'
+        policy_text = fmt_prob_rich(ep[k].numpy())
+        table.add_row(str(i), w_text, s, policy_text)
+    return table
 
 
 # ────────────────────────── 绘图 ──────────────────────────
@@ -219,36 +285,110 @@ def plot_pattern(desc, ep, ew, es, nn_prob, output_dir, fname):
     path = os.path.join(output_dir, f'{fname}.png')
     fig.savefig(path, dpi=150, bbox_inches='tight')
     plt.close(fig)
-    print(f'    [saved] {path}')
+    console.print(f'    [dim]\\[saved] {path}[/dim]')
 
 
 # ────────────────────────── Buffer ──────────────────────────
 
 def analyze_buffer(path, top_n, output_dir, nn_policies):
     if not os.path.exists(path):
-        print(f'[!] Buffer 不存在: {path}')
+        console.print(f'[bold red][!] Buffer 不存在: {path}[/bold red]')
         return
 
-    print(f'\n{BAR}\n  Buffer: {path}\n{BAR}')
     data = torch.load(path, map_location='cpu', weights_only=True)
     states  = data['state']
     probs   = data['prob']
     winners = data['winner']
     steps   = data.get('steps_to_end')
     ptr     = data['_ptr']
-    n = min(ptr, states.shape[0])
-    print(f'  容量={states.shape[0]}, ptr={ptr}, 有效={n}\n')
+    capacity = states.shape[0]
+    n = min(ptr, capacity)
 
+    # ── Global Diagnostics ──
+    file_size = os.path.getsize(path)
+    is_full = ptr >= capacity
+    has_wrapped = ptr > capacity
+
+    all_tensors = [states, probs, winners]
+    if steps is not None:
+        all_tensors.append(steps)
+    total_bytes = sum(t.nelement() * t.element_size() for t in all_tensors)
+
+    info_table = Table(show_header=False, box=None, padding=(0, 2))
+    info_table.add_column('Key', style='bold')
+    info_table.add_column('Value')
+    info_table.add_row('File', path)
+    info_table.add_row('File size', f'{file_size / 1024 / 1024:.2f} MB')
+    info_table.add_row('Memory footprint', f'{total_bytes / 1024 / 1024:.2f} MB')
+    info_table.add_row('Capacity', str(capacity))
+    info_table.add_row('ptr', str(ptr))
+    info_table.add_row('Valid samples', f'{n}  ({n / capacity * 100:.1f}%)')
+    info_table.add_row('Buffer full', '[green]Yes[/green]' if is_full else '[yellow]No[/yellow]')
+    info_table.add_row('ptr wrapped', '[green]Yes[/green]' if has_wrapped else '[dim]No[/dim]')
+    info_table.add_row('')  # spacer
+    tensor_info = [
+        ('state',        states),
+        ('prob',         probs),
+        ('winner',       winners),
+    ]
+    if steps is not None:
+        tensor_info.append(('steps_to_end', steps))
+    for name, t in tensor_info:
+        info_table.add_row(f'  {name}', f'{list(t.shape)}  dtype={t.dtype}')
+
+    console.print()
+    console.print(Panel(info_table, title='[bold]Buffer Metadata[/bold]', border_style='blue'))
+
+    # Global winner distribution
+    valid_winners = winners[:n].view(-1)
+    console.print(make_winner_table(valid_winners, title='Global Winner Distribution'))
+
+    # Global steps-to-end stats
+    if steps is not None:
+        valid_steps = steps[:n].view(-1).float()
+        steps_table = Table(title='Global Steps-to-End', show_header=True, header_style='bold')
+        steps_table.add_column('Stat', style='bold')
+        steps_table.add_column('Value', justify='right')
+        steps_table.add_row('Mean', f'{valid_steps.mean():.1f}')
+        steps_table.add_row('Std', f'{valid_steps.std():.1f}')
+        steps_table.add_row('Min', f'{int(valid_steps.min())}')
+        steps_table.add_row('Max', f'{int(valid_steps.max())}')
+        console.print(steps_table)
+
+    # Global policy entropy
+    valid_probs = probs[:n]
+    ent = compute_entropy(valid_probs)
+    max_probs = valid_probs.max(dim=1).values
+    concentration_pct = float((max_probs > 0.8).float().mean() * 100)
+
+    ent_table = Table(title='Global Policy Entropy', show_header=True, header_style='bold')
+    ent_table.add_column('Stat', style='bold')
+    ent_table.add_column('Value', justify='right')
+    ent_table.add_row('Mean', f'{ent.mean():.4f}')
+    ent_table.add_row('Std', f'{ent.std():.4f}')
+    ent_table.add_row('Min', f'{ent.min():.4f}')
+    ent_table.add_row('Max', f'{ent.max():.4f}')
+    ent_table.add_row('Concentration (max>80%)', f'{concentration_pct:.1f}%')
+    console.print(ent_table)
+
+    # ── Per-pattern analysis ──
     for desc, make_board, turn, fname in PATTERNS:
         board = make_board()
         board_np = board.astype(np.int8)
-        idx = [i for i in range(n) if board_matches(states[i], board_np, turn)]
+
+        idx = []
+        for i in track(range(n), description=f'  Scanning "{desc}"...', console=console, transient=True):
+            if board_matches(states[i], board_np, turn):
+                idx.append(i)
 
         player = 'X' if turn == 1 else 'O'
-        print(f'  ══ {desc} (turn={player}) ══')
 
         if not idx:
-            print(f'    未找到匹配样本。\n')
+            console.print(Panel(
+                '[yellow]未找到匹配样本。[/yellow]',
+                title=f'[bold]{desc} (turn={player})[/bold]',
+                border_style='yellow',
+            ))
             continue
 
         idx_t = torch.tensor(idx)
@@ -256,43 +396,64 @@ def analyze_buffer(path, top_n, output_dir, nn_policies):
         ew = winners[idx_t].view(-1)
         es = steps[idx_t].view(-1) if steps is not None else None
 
-        print(f'    样本数: {len(idx)}')
+        match_ratio = len(idx) / n * 100
+        pat_ent = compute_entropy(ep)
 
-        # winner 分布
-        print(f'    Winner 分布:')
-        for label, val in [('P1 wins', 1), ('P2 wins', -1), ('Draw', 0)]:
-            cnt = int((ew == val).sum())
-            print(f'      {label:8s}: {cnt:5d}  ({cnt/len(idx)*100:5.1f}%)')
-
+        # Summary panel
+        pat_table = Table(show_header=False, box=None, padding=(0, 2))
+        pat_table.add_column('Key', style='bold')
+        pat_table.add_column('Value')
+        pat_table.add_row('样本数', str(len(idx)))
+        pat_table.add_row('Match ratio', f'{match_ratio:.2f}% of buffer')
         if es is not None:
-            print(f'    Steps-to-end: mean={es.float().mean():.1f}, min={es.min()}, max={es.max()}')
+            pat_table.add_row('Steps-to-end',
+                f'mean={es.float().mean():.1f}, std={es.float().std():.1f}, min={es.min()}, max={es.max()}')
+        pat_table.add_row('Policy entropy',
+            f'mean={pat_ent.mean():.4f}, std={pat_ent.std():.4f}')
 
+        console.print(Panel(pat_table, title=f'[bold]{desc} (turn={player})[/bold]', border_style='cyan'))
+
+        # Winner distribution
+        console.print(make_winner_table(ew))
+
+        # Policy mean ± std table
         mp = ep.mean(dim=0).numpy()
-        print(f'    Policy 均值: {fmt_prob(mp)}')
+        sp = ep.std(dim=0).numpy()
+        best_col = int(mp.argmax())
 
-        # 前 top_n 条
-        show = min(top_n, len(idx))
-        print(f'    前 {show} 条:')
-        print(f'    {"idx":>6s} {"winner":>8s} {"steps":>5s}  policy')
-        for k in range(show):
-            i = idx[k]
-            w = WINNER_LABELS[int(ew[k])]
-            s = int(es[k]) if es is not None else '?'
-            print(f'    {i:6d} {w:>8s} {s:>5}  {fmt_prob(ep[k].numpy())}')
+        policy_table = Table(title='Policy 均值 ± std', show_header=True, header_style='bold')
+        for i in range(7):
+            policy_table.add_column(f'col{i}', justify='center')
+        mean_cells = []
+        for i in range(7):
+            val = f'{mp[i]*100:.1f}%'
+            if i == best_col:
+                mean_cells.append(f'[bold cyan]{val}[/bold cyan]')
+            else:
+                mean_cells.append(val)
+        policy_table.add_row(*mean_cells)
+        std_cells = [f'[dim]±{sp[i]*100:.1f}%[/dim]' for i in range(7)]
+        policy_table.add_row(*std_cells)
+        console.print(policy_table)
+
+        # Top-N samples
+        console.print(make_top_n_table(idx, ep, ew, es, top_n))
 
         # 绘图
         nn_prob = nn_policies.get(fname) if nn_policies else None
         plot_pattern(desc, ep, ew, es, nn_prob, output_dir, fname)
-        print()
+        console.print()
 
 
 # ────────────────────────── NN ──────────────────────────
 
 def analyze_nn(model_path, device='cpu'):
     """加载 NN 并返回每个 pattern 的 raw policy，同时打印摘要。"""
-    print(f'\n{BAR}\n  NN Model: {model_path}\n{BAR}')
+    console.print()
+    console.print(Panel(f'[bold]{model_path}[/bold]', title='[bold]NN Model[/bold]', border_style='magenta'))
+
     if not os.path.exists(model_path):
-        print(f'  [!] 模型不存在: {model_path}')
+        console.print(f'[bold red]  [!] 模型不存在: {model_path}[/bold red]')
         return {}
 
     from src.environments.Connect4.Network import CNN
@@ -320,13 +481,22 @@ def analyze_nn(model_path, device='cpu'):
         entropy = -np.sum(prob * np.log(prob + 1e-8))
         top5s = np.argsort(sdist)[::-1][:5]
 
-        print(f'\n  ── {desc} (turn={player}) ──')
-        print(f'    Policy:       {fmt_prob(prob)}')
-        print(f'    Value (3way): Draw:{vdist[0]*100:5.1f}%  P1win:{vdist[1]*100:5.1f}%  P2win:{vdist[2]*100:5.1f}%')
-        print(f'    Scalar value: {scalar_v: .4f}')
-        print(f'    Entropy:      {entropy:.4f}')
-        print(f'    Steps top-5:  {", ".join(f"s={s}:{sdist[s]*100:.1f}%" for s in top5s)}')
-    print()
+        nn_table = Table(show_header=False, box=None, padding=(0, 2))
+        nn_table.add_column('Key', style='bold')
+        nn_table.add_column('Value')
+        nn_table.add_row('Policy', fmt_prob_rich(prob))
+        nn_table.add_row('Value (3-way)', Text.assemble(
+            ('Draw:', 'green'),     (f'{vdist[0]*100:5.1f}%  ', ''),
+            ('P1win:', 'blue'),     (f'{vdist[1]*100:5.1f}%  ', ''),
+            ('P2win:', 'dark_orange'), (f'{vdist[2]*100:5.1f}%', ''),
+        ))
+        nn_table.add_row('Scalar value', f'{scalar_v: .4f}')
+        nn_table.add_row('Entropy', f'{entropy:.4f}')
+        nn_table.add_row('Steps top-5',
+            ', '.join(f's={s}:{sdist[s]*100:.1f}%' for s in top5s))
+
+        console.print(Panel(nn_table, title=f'[bold]{desc} (turn={player})[/bold]', border_style='magenta'))
+
     return nn_policies
 
 

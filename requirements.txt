@@ -13,3 +13,4 @@ python-socketio
 eventlet
 requests
 pybind11
+rich
