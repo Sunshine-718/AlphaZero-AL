@@ -30,10 +30,14 @@ parser.add_argument('-c', '--c_init', type=float, default=1.4, help='C_puct init
 parser.add_argument('--c_base_factor', type=float, default=1000, help='C_puct base factor')
 parser.add_argument('--fpu_reduction', type=float, default=0.2, help='FPU reduction factor')
 parser.add_argument('--eps', type=float, default=0.25, help='PUCT epsilon for noise mixing')
+parser.add_argument('--noise_steps', type=int, default=0, help='Steps over which noise_eps decays to noise_eps_min (0=no decay)')
+parser.add_argument('--noise_eps_min', type=float, default=0.1, help='Minimum noise_eps after decay')
 parser.add_argument('-a', '--alpha', type=float, default=0.03, help='Dirichlet alpha')
 parser.add_argument('-b', '--batch_size', type=int, default=512, help='Batch size')
 parser.add_argument('--q_size', type=int, default=100, help='Minimum buffer size before training starts')
-parser.add_argument('--buf', '--buffer_size', type=int, default=100000, help='Buffer size')
+parser.add_argument('--buf', '--buffer_size', type=int, default=500000, help='Buffer size')
+parser.add_argument('--replay_ratio', type=float, default=0.1, help='Fraction of buffer sampled per training step')
+parser.add_argument('--n_epochs', type=int, default=5, help='Training epochs per policy update step')
 parser.add_argument('--mcts_n', type=int, default=1000, help='MCTS n_playout')
 parser.add_argument('--discount', type=float, default=1, help='Discount factor')
 parser.add_argument('--thres', type=float, default=0.52, help='Win rate threshold')
@@ -49,9 +53,11 @@ parser.add_argument("--actor", type=str, default="best", help="Which weight are 
 parser.add_argument('--no_symmetry', action='store_true', help='Disable random symmetry augmentation during MCTS search')
 parser.add_argument('--lambda_s', type=float, default=0.1,
                     help='Steps-value mixing weight (KataGo staticScoreUtilityFactor analog, default=0.1)')
-parser.add_argument('--policy_lr_scale', type=float, default=0.3,
+parser.add_argument('--policy_lr_scale', type=float, default=0.1,
                     help='Policy head LR multiplier (e.g. 0.3 = policy LR is 30% of base)')
 parser.add_argument('--dropout', type=float, default=0.2, help='Dropout rate')
+parser.add_argument('--balance_sampling', action='store_true',
+                    help='Enable stratified sampling by winner category and class-weighted value loss (default: off)')
 
 args, _ = parser.parse_known_args()
 
@@ -73,7 +79,12 @@ config = {"lr": args.lr,
           "device": args.device,
           "cache_size": args.cache_size,
           "use_symmetry": not args.no_symmetry,
-          "lambda_s": args.lambda_s}
+          "lambda_s": args.lambda_s,
+          "replay_ratio": args.replay_ratio,
+          "n_epochs": args.n_epochs,
+          "noise_steps": args.noise_steps,
+          "noise_eps_min": args.noise_eps_min,
+          "balance_sampling": args.balance_sampling}
 
 
 class ServerPipeline(TrainPipeline):
@@ -139,7 +150,7 @@ def weights():
     global TOTAL_SENT_BYTES
     actor_param = request.args.get('actor', args.actor)
     path = pipeline.current if actor_param == "current" else pipeline.best
-    if pipeline.r_a < pipeline.r_b:
+    if pipeline.r_a <= pipeline.r_b:
         path = pipeline.current
     
     try:
@@ -227,7 +238,9 @@ if __name__ == '__main__':
         rows, cols = pipeline.env.board.shape
         buffer = ReplayBuffer(pipeline.net.in_dim, pipeline.buffer_size,
                               pipeline.net.n_actions, rows, cols,
-                              device=pipeline.device)
+                              replay_ratio=pipeline.replay_ratio,
+                              device=pipeline.device,
+                              balance_done_value=getattr(pipeline, 'balance_sampling', False))
         pipeline.init_buffer(buffer)
 
         # 启动后台数据搬运线程：inbox → buffer（持续运行）

@@ -59,6 +59,14 @@ namespace AlphaZero
             }
         }
 
+        void set_noise_epsilon(float eps)
+        {
+            for (auto &m : mcts_envs)
+            {
+                m->noise_epsilon = eps;
+            }
+        }
+
         void prune_roots(std::span<const int> actions)
         {
 #pragma omp parallel for schedule(static)

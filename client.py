@@ -34,6 +34,8 @@ parser.add_argument('--c_base_factor', type=float, default=1000, help='C_puct ba
 parser.add_argument('--fpu_reduction', type=float, default=0.2, help='FPU reduction factor')
 parser.add_argument('-a', '--alpha', type=float, default=0.03, help='Dirichlet alpha')
 parser.add_argument('--noise_eps', type=float, default=0.25, help='Noise epsilon')
+parser.add_argument('--noise_steps', type=int, default=0, help='Steps over which noise_eps decays to noise_eps_min (0=no decay)')
+parser.add_argument('--noise_eps_min', type=float, default=0.1, help='Minimum noise_eps after decay')
 parser.add_argument('--discount', type=float, default=1, help='Discount factor')
 parser.add_argument('-t', '--temp', type=float, default=1, help='Softmax temperature')
 parser.add_argument('--temp_thres', type=float, default=12, help='Step threshold to change temperature to -> 0')
@@ -82,7 +84,9 @@ class Actor:
                                                 cache_size=args.cache_size,
                                                 noise_epsilon=args.noise_eps,
                                                 fpu_reduction=args.fpu_reduction,
-                                                use_symmetry=not args.no_symmetry)
+                                                use_symmetry=not args.no_symmetry,
+                                                noise_steps=args.noise_steps,
+                                                noise_eps_min=args.noise_eps_min)
         self.mtime = 0
 
     def load_weights(self):

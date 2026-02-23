@@ -26,6 +26,10 @@ void register_batched_mcts(py::module_ &m, const char *name)
 
         .def("set_seed", &BM::set_seed, "Set random seed for all OpenMP threads")
 
+        .def("set_noise_epsilon", &BM::set_noise_epsilon,
+             py::arg("eps"),
+             "Set noise epsilon for all MCTS environments")
+
         .def("reset_env", &BM::reset_env)
 
         .def("get_all_counts", &BM::get_all_counts)

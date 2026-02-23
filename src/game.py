@@ -44,6 +44,12 @@ class Game:
             current_boards = np.array([envs[i].board for i in range(n_games)])
             turns = np.array([envs[i].turn for i in range(n_games)], dtype=np.int32)
             temps = [temperature if trajectories[i]['steps'] <= temp_thres else 1e-3 for i in range(n_games)]
+            # noise epsilon 衰减：开局高探索，随棋局线性衰减到 noise_eps_min
+            if getattr(player, 'noise_steps', 0) > 0:
+                step = trajectories[active_indices[0]]['steps']
+                decay = max(0.0, 1.0 - step / player.noise_steps)
+                eps = player.noise_eps_min + (player.noise_eps_init - player.noise_eps_min) * decay
+                player.mcts.set_noise_epsilon(eps)
             actions, probs = player.get_action(current_boards, turns, temps)
             next_active_indices = []
             for i in active_indices:

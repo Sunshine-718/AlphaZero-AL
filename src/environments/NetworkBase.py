@@ -38,10 +38,10 @@ class Base(ABC, nn.Module):
                 print(f'Failed to load parameters.\n{e}')
         return self
 
-    def train_step(self, dataloader, augment, ddp_model=None):
+    def train_step(self, dataloader, augment, ddp_model=None, n_epochs=10, balance_class_weight=False):
         model = ddp_model if ddp_model is not None else self
         p_l, v_l, s_l = [], [], []
-        for _ in range(10):
+        for _ in range(n_epochs):
             self.train()
             for batch in dataloader:
                 state, prob, winner, steps_to_end = augment(batch)
@@ -52,7 +52,13 @@ class Base(ABC, nn.Module):
                 mask = (steps_target != 0).float()
                 self.opt.zero_grad()
                 log_p_pred, value_pred, steps_pred = model(state)
-                v_loss = F.nll_loss(value_pred, value)
+                if balance_class_weight:
+                    counts = torch.bincount(value, minlength=3).float().clamp(min=1)
+                    weights = 1.0 / counts
+                    weights = weights / weights.sum() * 3.0
+                    v_loss = F.nll_loss(value_pred, value, weight=weights.to(value_pred.device))
+                else:
+                    v_loss = F.nll_loss(value_pred, value)
                 per_sample_p = -torch.sum(prob * log_p_pred, dim=1)
                 p_loss = torch.mean(per_sample_p * mask)
                 s_loss = F.nll_loss(steps_pred, steps_target)

@@ -109,6 +109,9 @@ class BatchedMCTS:
             od[k]['value'] = (new_probs[j].copy(), new_vals[j].item())
         return self
 
+    def set_noise_epsilon(self, eps):
+        self.mcts.set_noise_epsilon(eps)
+
     def reset_env(self, index):
         self.mcts.reset_env(index)
         return self
