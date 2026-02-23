@@ -109,6 +109,103 @@ Dirichlet noise 实际上**帮助了** col3（从 24.1% 提升到 25.9%），因
 - n=10,000 时 col4 反而排第一
 - 与 X 的 col3 信号（33.8%，遥遥领先）形成鲜明对比
 
+### 6. 纯 MCTS c_init 扫描（UCT + random rollout）
+
+探索常数 c_init 对纯 MCTS 能否识别 col3 的影响。c_init 越小 = 越偏重 exploitation。
+
+#### X 空棋盘 — col3 visit%
+
+| c_init | n=1,000 | n=10,000 | n=50,000 |
+|---|---|---|---|
+| **1** | **52.4%** | **42.6%** | **55.6%** |
+| 2 | 22.0% | 39.1% | 45.3% |
+| 4 | 16.5% | 29.6% | 34.0% |
+| 8 | 15.4% | 21.4% | 26.2% |
+| 16 | 15.7% | 17.9% | 20.9% |
+
+X 的 col3 信号强，所有 c_init 都能识别，但低 c_init 收敛更快。
+
+#### O 局面 — col3 visit%
+
+| c_init | n=1,000 | n=10,000 | n=50,000 |
+|---|---|---|---|
+| **1** | 17.1% | **29.8%** | **42.9%** |
+| 2 | 15.3% | 20.3% | 25.5% |
+| 4 | 14.6% | 16.2% | 22.2% |
+| 8 | 14.8% | 16.1% | 17.8% |
+| 16 | 14.2% | 15.7% | 16.9% |
+
+**关键发现**：
+- **c_init=1, n=50,000 时 O-col3 达到 42.9%**，遥遥领先 col2=13.7%
+- 低 c_init（少探索、重 exploitation）反而更快收敛到正确答案——弱信号需要深度搜索来放大
+- 高 c_init（c=16）使信号几乎消失（16.9%，接近均匀 14.3%）
+- 纯 MCTS 在 c=1 + n=50,000 可以明确识别 O-col3，完全独立于 NN
+
+### 7. AZ MCTS 超参扫描（带 NN，n=100）
+
+固定其他参数为生产值，单独扫描 c_init / alpha / fpu_reduction，观察对 O 局面 col3 visit% 的影响。
+
+#### c_init sweep（alpha=0.3, fpu=0.2）
+
+| c_init | col3 visit% | -Q |
+|---|---|---|
+| 0.1 | **40.4%** | -0.794 |
+| 0.3 | 30.1% | -0.716 |
+| 0.5 | 28.8% | -0.699 |
+| 1.0 (生产) | 26.1% | -0.678 |
+| 2.0 | 26.7% | -0.681 |
+
+c_init=0.1 时 col3 达到 40.4%，但完全是靠 prior（26.2%）被放大，**Q 值方向仍然是错的**（-Q 为负）。
+
+#### alpha sweep（c_init=1.0, fpu=0.2）
+
+| alpha | col3 visit% |
+|---|---|
+| 0.03 | 28.0% |
+| 0.1 | 26.5% |
+| 0.3 (生产) | 27.1% |
+| 0.7 | 27.8% |
+| 1.55 | 26.7% |
+
+**alpha 几乎没有影响**，col3 在 26-28% 之间浮动。Dirichlet noise 的强度不是瓶颈。
+
+#### fpu_reduction sweep（c_init=1.0, alpha=0.3）
+
+| fpu | col3 visit% |
+|---|---|
+| 0.0 | 26.6% |
+| 0.1 | 26.1% |
+| 0.2 (生产) | 27.3% |
+| 0.4 | 29.3% |
+| 0.8 | 27.6% |
+
+**FPU 也几乎没有影响**，col3 在 26-29% 之间浮动。
+
+#### 超参扫描小结
+
+- **c_init 是唯一有显著影响的参数**，但它只是改变 prior 与 Q 的相对权重，不修正 Q 本身
+- **alpha 和 FPU 无显著影响**
+- **所有配置下 Q 值方向始终是错的**（O-col3 的 -Q 始终为负）
+
+### 8. 纯 MCTS 超参扫描（PUCT + uniform prior + random rollout）
+
+使用 MCTS_AZ 框架但用 random rollout 代替 NN，测试 PUCT 选择 + Dirichlet noise + FPU 在无 NN 偏差时的表现。
+
+（部分结果，n=5000, 20 runs）
+
+#### X 空棋盘
+
+| 参数 | 值 | col3 visit% |
+|---|---|---|
+| c_init=0.1 | (alpha=None, fpu=0) | 35.4% |
+| c_init=0.5 | | 57.7% |
+| c_init=1.0 | | **79.4%** |
+| c_init=2.0 | | 75.8% |
+| alpha=0.03 | (c_init=4, fpu=0) | 73.0% |
+| alpha=1.55 | | 74.8% |
+
+X 的 col3 在所有配置下都非常强势，alpha 对 X 几乎没有影响。
+
 ## 根因分析
 
 ### 自强化 Bootstrap 陷阱
@@ -132,6 +229,15 @@ NN 进一步强化 "O-col3 差" 的评估
 1. **X 的 col3 信号强**：纯 MCTS n=5000 就能看出 col3 遥遥领先（23.2%），AlphaZero 在 n=100 足够学到
 2. **O 的 col3 信号极弱**：纯 MCTS n=50,000 才勉强分出（19.5% vs 19.0%），n=100 根本看不到
 3. **NN 放大了错误方向**：本来只是"分不出"，但 NN 学到了相反方向，然后 MCTS 越搜索越偏
+
+### 为什么调超参解决不了？
+
+**完整的超参扫描**（Section 6-8）证明：
+
+- **纯 MCTS 的 c_init**：低 c_init（更多 exploitation）让纯 MCTS 更快收敛到 col3，但 O 的信号仍需 n=50,000 才清晰。AZ MCTS 中 c_init 只改变 prior 与 Q 的权重，不修正 Q 方向
+- **Dirichlet alpha**：从 0.03 到 1.55，col3 visit% 在 26-28% 之间浮动，几乎无影响
+- **FPU reduction**：从 0.0 到 0.8，col3 visit% 在 26-29% 之间浮动，几乎无影响
+- **核心矛盾**：这些参数都只影响**搜索过程中的访问分布**，但无法修正 NN value head 学到的**错误 Q 值方向**。即使 col3 被访问更多次，NN 仍然给出负面评价，Q 值仍然指向错误方向
 
 ### 为什么 lambda_s 解决不了？
 
@@ -175,6 +281,9 @@ lambda_s 公式：`value = (1-λ) × value_base - λ × sign(value_base) × step
 | `noise_ablation.png` | Dirichlet noise 消融对比 |
 | `multi_ply.png` | 多步深入分析（ply 1-4） |
 | `pure_mcts_comparison.png` | AlphaZero MCTS vs 纯 MCTS 对比 |
+| `pure_mcts_c_sweep.png` | 纯 MCTS c_init × n_playout 热力图 |
+| `az_hp_sweep.png` | AZ MCTS 超参扫描（c_init / alpha / fpu） |
+| `pure_mcts_hp_sweep.png` | 纯 MCTS 超参扫描（PUCT + rollout） |
 
 ## 复现
 
@@ -185,9 +294,13 @@ python tools/diagnose_mcts.py
 # 快速模式（约 2 分钟）
 python tools/diagnose_mcts.py --quick
 
-# 仅纯 MCTS 对比
+# 仅纯 MCTS c_init 扫描
 python tools/diagnose_mcts.py --pure-only
 
-# 纯 MCTS 快速模式
+# 仅纯 MCTS 超参扫描（PUCT + rollout，c_init / alpha / fpu）
+python tools/diagnose_mcts.py --hp-only
+
+# 快速模式
 python tools/diagnose_mcts.py --pure-only --quick
+python tools/diagnose_mcts.py --hp-only --quick
 ```
