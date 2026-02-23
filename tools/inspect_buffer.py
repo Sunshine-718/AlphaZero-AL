@@ -416,6 +416,34 @@ def analyze_buffer(path, top_n, output_dir, nn_policies):
         # Winner distribution
         console.print(make_winner_table(ew))
 
+        # Steps-to-end distribution (binned, by winner)
+        if es is not None:
+            bins = [(0, 10), (11, 15), (16, 20), (21, 25), (26, 30), (31, 35), (36, 40), (41, 42)]
+            es_int = es.int()
+            rows = []
+            max_total = 0
+            for lo, hi in bins:
+                mask = (es_int >= lo) & (es_int <= hi)
+                p1   = int(((ew == 1) & mask).sum())
+                draw = int(((ew == 0) & mask).sum())
+                p2   = int(((ew == -1) & mask).sum())
+                total = p1 + draw + p2
+                max_total = max(max_total, total)
+                rows.append((lo, hi, p1, draw, p2, total))
+
+            dist_table = Table(title='Steps-to-End Distribution', show_header=True, header_style='bold')
+            dist_table.add_column('Range', style='bold', justify='right')
+            dist_table.add_column('P1 wins', justify='right', style='blue')
+            dist_table.add_column('Draw', justify='right', style='green')
+            dist_table.add_column('P2 wins', justify='right', style='dark_orange')
+            dist_table.add_column('Total', justify='right')
+            dist_table.add_column('', min_width=25)
+            for lo, hi, p1, draw, p2, total in rows:
+                bar_len = int(total / max_total * 25) if max_total > 0 else 0
+                bar = '█' * bar_len
+                dist_table.add_row(f'{lo:2d}-{hi:2d}', str(p1), str(draw), str(p2), str(total), bar)
+            console.print(dist_table)
+
         # Policy mean ± std table
         mp = ep.mean(dim=0).numpy()
         sp = ep.std(dim=0).numpy()

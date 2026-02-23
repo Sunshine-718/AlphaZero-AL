@@ -9,6 +9,7 @@ MCTS 根节点诊断脚本
     python tools/diagnose_mcts.py --quick       # 快速模式，减少运行次数
 """
 import sys, os, argparse
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import numpy as np
 import torch
 import matplotlib
@@ -18,7 +19,7 @@ import matplotlib.pyplot as plt
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
-from rich.progress import track
+from rich.progress import Progress, track
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -47,9 +48,9 @@ N_RUNS_SWEEP = 20
 PURE_MCTS_BUDGETS = [1000, 10000, 50000]
 PURE_MCTS_C_INITS = [0.1, 0.3, 0.5, 1, 2, 4, 8, 16]
 # Section 8: AZ MCTS 超参扫描
-AZ_C_INITS   = [0.1, 0.3, 0.5, 1.0, 2.0]
-AZ_ALPHAS    = [0.03, 0.1, 0.3, 0.7, 1.55]
-AZ_FPUS      = [0.0, 0.1, 0.2, 0.4, 0.8]
+AZ_C_INITS   = [0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4]
+AZ_ALPHAS    = [0.03, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7]
+AZ_FPUS      = [0.0, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9]
 N_RUNS_HP    = 20
 OUTPUT_DIR   = 'tools/figures'
 
@@ -385,38 +386,50 @@ _ROLLOUT_ADAPTER = RolloutAdapter()
 
 
 def _run_pure_hp_sweep(env, param_name, param_values, n_runs, n_playout, **defaults):
-    """对纯 MCTS 的某个超参进行扫描 (PUCT + uniform prior + random rollout)"""
-    results = {}
+    """对纯 MCTS 的某个超参进行扫描 (PUCT + uniform prior + random rollout) — 多进程"""
+    _tools_dir = os.path.dirname(os.path.abspath(__file__))
+    if _tools_dir not in sys.path:
+        sys.path.insert(0, _tools_dir)
+    from mcts_worker import run_single
+    board = env.board.copy()
+    turn = env.turn
+    n_workers = min(os.cpu_count() or 4, 8, len(param_values) * n_runs)
+
+    # 构建所有任务: (param_val, run_idx) -> future
+    tasks = []
     for val in param_values:
-        kwargs = dict(c_init=4, alpha=None, fpu_reduction=0.0)
+        kwargs = dict(c_init=4, alpha=None, fpu_reduction=0.0, discount=1.0)
         kwargs.update(defaults)
         kwargs[param_name] = val
+        for _ in range(n_runs):
+            tasks.append((val, kwargs['c_init'], kwargs['alpha'],
+                          kwargs['fpu_reduction'], n_playout, kwargs['discount']))
 
+    # 收集结果
+    raw = {val: [] for val in param_values}
+    total_tasks = len(tasks)
+    with Progress(console=console) as progress:
+        bar = progress.add_task(f'  {param_name} sweep', total=total_tasks)
+        with ProcessPoolExecutor(max_workers=n_workers) as pool:
+            futures = {}
+            for val, c_init, alpha, fpu, npl, disc in tasks:
+                f = pool.submit(run_single, board, turn, c_init, alpha, fpu, npl, disc)
+                futures[f] = val
+            for f in as_completed(futures):
+                val = futures[f]
+                raw[val].append(f.result())
+                progress.update(bar, advance=1,
+                                description=f'  {param_name} sweep ({val})')
+
+    # 聚合
+    results = {}
+    for val in param_values:
         pcts = {i: [] for i in range(7)}
         qs   = {i: [] for i in range(7)}
-
-        for _ in range(n_runs):
-            alpha = kwargs['alpha']
-            mcts = MCTS_AZ(
-                policy_value_fn=_ROLLOUT_ADAPTER,
-                c_init=kwargs['c_init'],
-                n_playout=n_playout,
-                discount=1.0,
-                alpha=alpha,
-                cache_size=0,
-                eps=0.25,
-                fpu_reduction=kwargs['fpu_reduction'],
-                use_symmetry=False,
-            )
-            mcts.c_base = 100000
-            if alpha is None:
-                mcts.eval()
-            list(mcts.get_action_visits(env.copy()))
-            total = sum(c.n_visits for c in mcts.root.children.values())
-            for a, nd in mcts.root.children.items():
-                pcts[a].append(nd.n_visits / total * 100)
-                qs[a].append(nd.Q)
-
+        for col_pcts, col_qs in raw[val]:
+            for a in col_pcts:
+                pcts[a].append(col_pcts[a])
+                qs[a].append(col_qs[a])
         results[val] = {}
         for col in sorted(pcts):
             if pcts[col]:
@@ -435,44 +448,35 @@ def section8(env, desc, c_inits, alphas, fpus, n_runs, n_playout):
 
     all_results = {}
 
-    # ── c_init sweep (no noise, no FPU) ──
-    console.print(f'  [bold]Sweep c_init[/bold]  (alpha=None, fpu=0)')
-    res_c = _run_pure_hp_sweep(env, 'c_init', c_inits, n_runs, n_playout)
-    all_results['c_init'] = (c_inits, res_c)
-    for val in c_inits:
-        d3 = res_c[val].get(3, {})
-        console.print(f'    c_init={val:<5}  col3={d3.get("pct_mean",0):.1f}%  '
-                      f'-Q={-d3.get("Q_mean",0):+.3f}')
-
-    # ── alpha sweep (c_init=4, no FPU) ──
-    console.print(f'  [bold]Sweep alpha[/bold]  (c_init=4, fpu=0)')
-    res_a = _run_pure_hp_sweep(env, 'alpha', alphas, n_runs, n_playout)
-    all_results['alpha'] = (alphas, res_a)
-    for val in alphas:
-        d3 = res_a[val].get(3, {})
-        console.print(f'    alpha={val:<5}  col3={d3.get("pct_mean",0):.1f}%  '
-                      f'-Q={-d3.get("Q_mean",0):+.3f}')
-
-    # ── fpu_reduction sweep (c_init=4, no noise) ──
-    console.print(f'  [bold]Sweep fpu_reduction[/bold]  (c_init=4, alpha=None)')
-    res_f = _run_pure_hp_sweep(env, 'fpu_reduction', fpus, n_runs, n_playout)
-    all_results['fpu_reduction'] = (fpus, res_f)
-    for val in fpus:
-        d3 = res_f[val].get(3, {})
-        console.print(f'    fpu={val:<5}  col3={d3.get("pct_mean",0):.1f}%  '
-                      f'-Q={-d3.get("Q_mean",0):+.3f}')
+    # ── c_init sweep at each discount (alpha=0.3, fpu=0.2) ──
+    for disc in [1.0, 0.99, 0.975]:
+        label = f'c_init (discount={disc})'
+        console.print(f'  [bold]Sweep c_init[/bold]  (alpha=0.3, fpu=0.2, discount={disc})')
+        res_c = _run_pure_hp_sweep(env, 'c_init', c_inits, n_runs, n_playout,
+                                   alpha=0.3, fpu_reduction=0.2, discount=disc)
+        all_results[label] = (c_inits, res_c)
+        for val in c_inits:
+            d3 = res_c[val].get(3, {})
+            console.print(f'    c_init={val:<5}  col3={d3.get("pct_mean",0):.1f}%  '
+                          f'-Q={-d3.get("Q_mean",0):+.3f}')
 
     return all_results
 
 
 def plot_hp_sweep(hp_results_list, descs, out):
-    """画纯 MCTS 超参扫描图: 每个 position 一行, 3 列 (c_init / alpha / fpu)"""
+    """画纯 MCTS 超参扫描图: 每个 position 一行, 动态列"""
     n_pos = len(hp_results_list)
-    param_names = ['c_init', 'alpha', 'fpu_reduction']
-    fig, axes = plt.subplots(n_pos, 3, figsize=(18, 5*n_pos), squeeze=False)
+    # 收集所有出现过的 param key，保持顺序
+    all_keys = []
+    for hp_res in hp_results_list:
+        for k in hp_res:
+            if k not in all_keys:
+                all_keys.append(k)
+    n_cols = max(len(all_keys), 1)
+    fig, axes = plt.subplots(n_pos, n_cols, figsize=(6*n_cols, 5*n_pos), squeeze=False)
 
     for row, (hp_res, desc) in enumerate(zip(hp_results_list, descs)):
-        for col_idx, pname in enumerate(param_names):
+        for col_idx, pname in enumerate(all_keys):
             ax = axes[row][col_idx]
             if pname not in hp_res:
                 ax.set_visible(False)
@@ -706,7 +710,7 @@ def main():
     sim_budgets = SIM_BUDGETS
     n_runs_sweep = N_RUNS_SWEEP
     n_runs_hp = N_RUNS_HP
-    pure_hp_n = 5000
+    pure_hp_n = 50000
     if args.quick:
         n_runs = min(n_runs, 10)
         sim_budgets = [100, 400, 1600]
@@ -734,9 +738,9 @@ def main():
     if args.quick:
         pure_mcts_budgets = [1000, 5000]
         pure_mcts_c_inits = [0.3, 1, 4, 16]
-        az_c_inits = [0.1, 0.5, 1.0, 2.0]
-        az_alphas  = [0.03, 0.3, 1.55]
-        az_fpus    = [0.0, 0.2, 0.8]
+        az_c_inits = [0.3, 0.7, 1.5, 3.0, 5.0]
+        az_alphas  = [0.03, 0.1, 0.3, 0.7]
+        az_fpus    = [0.0, 0.2, 0.5, 0.9]
 
     all_child, all_agg, all_sweep, all_noise = [], [], [], []
     all_pure, all_hp = [], []

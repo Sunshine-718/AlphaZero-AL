@@ -26,11 +26,11 @@ parser.add_argument('--port', '-P', '-p', type=int, default=7718, help='Port num
 parser.add_argument('-n', type=int, default=100,
                     help='Number of simulations before AlphaZero make an action')
 parser.add_argument('--lr', type=float, default=3e-3, help='Learning rate')
-parser.add_argument('-c', '--c_init', type=float, default=1, help='C_puct init')
+parser.add_argument('-c', '--c_init', type=float, default=1.4, help='C_puct init')
 parser.add_argument('--c_base_factor', type=float, default=1000, help='C_puct base factor')
-parser.add_argument('--fpu_reduction', type=float, default=0.4, help='FPU reduction factor')
+parser.add_argument('--fpu_reduction', type=float, default=0.2, help='FPU reduction factor')
 parser.add_argument('--eps', type=float, default=0.25, help='PUCT epsilon for noise mixing')
-parser.add_argument('-a', '--alpha', type=float, default=0.3, help='Dirichlet alpha')
+parser.add_argument('-a', '--alpha', type=float, default=0.03, help='Dirichlet alpha')
 parser.add_argument('-b', '--batch_size', type=int, default=512, help='Batch size')
 parser.add_argument('--q_size', type=int, default=100, help='Minimum buffer size before training starts')
 parser.add_argument('--buf', '--buffer_size', type=int, default=100000, help='Buffer size')
@@ -49,6 +49,9 @@ parser.add_argument("--actor", type=str, default="best", help="Which weight are 
 parser.add_argument('--no_symmetry', action='store_true', help='Disable random symmetry augmentation during MCTS search')
 parser.add_argument('--lambda_s', type=float, default=0.1,
                     help='Steps-value mixing weight (KataGo staticScoreUtilityFactor analog, default=0.1)')
+parser.add_argument('--policy_lr_scale', type=float, default=0.3,
+                    help='Policy head LR multiplier (e.g. 0.3 = policy LR is 30% of base)')
+parser.add_argument('--dropout', type=float, default=0.2, help='Dropout rate')
 
 args, _ = parser.parse_known_args()
 

@@ -82,8 +82,12 @@ class TreeNode:
         if UCT:
             fpu_value = 0.0
         else:
+            # 劣势时动态降低 fpu_reduction，鼓励探索新走法
+            # Q ∈ [-1,1] → scale ∈ [0,1]; Q=+1→1(保守) Q=-1→0(全面探索)
+            scale = (1.0 + self.Q) / 2.0
+            effective_fpu = fpu_reduction * scale
             seen_policy = sum(c.prior for c in self.children.values() if c.n_visits > 0)
-            fpu_value = self.Q - fpu_reduction * math.sqrt(seen_policy)
+            fpu_value = self.Q - effective_fpu * math.sqrt(seen_policy)
             fpu_value = max(-1.0, fpu_value)
         return max(self.children.items(), key=lambda action_node: action_node[1].UCB(c_init, c_base, UCT, fpu_value))
 

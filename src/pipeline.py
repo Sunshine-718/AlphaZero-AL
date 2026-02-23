@@ -36,7 +36,9 @@ class TrainPipeline(ABC):
         self.buffer = None
         if model == 'CNN':
             self.net = self.module.CNN(lr=self.lr, device=self.device,
-                                      lambda_s=getattr(self, 'lambda_s', 0.1))
+                                      lambda_s=getattr(self, 'lambda_s', 0.1),
+                                      policy_lr_scale=getattr(self, 'policy_lr_scale', 0.3),
+                                      dropout=getattr(self, 'dropout', 0.2))
         elif model == 'ViT':
             self.net = self.module.ViT(lr=self.lr, device=self.device,
                                        lambda_s=getattr(self, 'lambda_s', 0.1))
@@ -47,7 +49,7 @@ class TrainPipeline(ABC):
         self.net.load(self.current)
 
         if self.is_ddp:
-            self.ddp_net = DDP(self.net, device_ids=[self.local_rank])
+            self.ddp_net = DDP(self.net, device_ids=[self.local_rank], find_unused_parameters=True)
         else:
             self.ddp_net = None
 

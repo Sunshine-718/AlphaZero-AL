@@ -34,7 +34,7 @@ class ResidualBlock(nn.Module):
 
 
 class CNN(Base):
-    def __init__(self, lr, in_dim=3, h_dim=128, out_dim=7, dropout=0.2, device='cpu', num_res_blocks=3, lambda_s=0.1):
+    def __init__(self, lr, in_dim=3, h_dim=128, out_dim=7, dropout=0.2, device='cpu', num_res_blocks=3, lambda_s=0.1, policy_lr_scale=0.3):
         super().__init__()
         self.in_dim = in_dim
         self.device = device
@@ -91,7 +91,13 @@ class CNN(Base):
         nn.init.constant_(self.value_head[-2].weight, 0)
         nn.init.constant_(self.steps_head[-2].weight, 0)
         
-        self.opt = torch.optim.SGD(self.parameters(), lr=lr, momentum=0.9, weight_decay=1e-4)
+        self.opt = torch.optim.SGD([
+            {'params': self.hidden.parameters()},
+            {'params': self.value_head.parameters()},
+            {'params': self.steps_head.parameters()},
+            {'params': self.policy_head_1.parameters(), 'lr': lr * policy_lr_scale},
+            {'params': self.policy_head_2.parameters(), 'lr': lr * policy_lr_scale},
+        ], lr=lr, momentum=0.9, weight_decay=1e-4)
         
         scheduler_warmup = LinearLR(self.opt, start_factor=0.01, total_iters=100)
         scheduler_train = LinearLR(self.opt, start_factor=1, end_factor=0.1, total_iters=1000)
@@ -156,7 +162,7 @@ class CNN(Base):
             steps_adjusted = 2.0 * (expected_steps / 42.0) - 1.0
             # 如果 value_base > 0 (优势)：惩罚长步数 (- lambda * steps_adjusted)，促使速胜
             # 如果 value_base < 0 (劣势)：奖励长步数 (+ lambda * steps_adjusted)，促使拖延
-            advantage_sign = torch.sign(value_base)
+            advantage_sign = torch.tanh(5.0 * value_base)
             value = (1 - self.lambda_s) * value_base - self.lambda_s * advantage_sign * steps_adjusted
         else:
             value = value_base

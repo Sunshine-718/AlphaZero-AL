@@ -134,7 +134,11 @@ namespace AlphaZero
                         seen_policy += node_pool[child_idx].prior;
                     }
                 }
-                float fpu_value = parent_value - fpu_reduction * std::sqrt(seen_policy);
+                // 劣势时动态降低 fpu_reduction，鼓励探索新走法
+                // Q ∈ [-1,1] → scale ∈ [0,1]; Q=+1→1(保守) Q=-1→0(全面探索)
+                float scale = (1.0f + parent_value) / 2.0f;
+                float effective_fpu = fpu_reduction * scale;
+                float fpu_value = parent_value - effective_fpu * std::sqrt(seen_policy);
                 fpu_value = std::max(-1.0f, fpu_value);
 
                 for (int action : valids)
