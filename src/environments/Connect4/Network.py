@@ -34,12 +34,11 @@ class ResidualBlock(nn.Module):
 
 
 class CNN(Base):
-    def __init__(self, lr, in_dim=3, h_dim=128, out_dim=7, dropout=0.2, device='cpu', num_res_blocks=3, lambda_s=0.1, policy_lr_scale=0.3):
+    def __init__(self, lr, in_dim=3, h_dim=128, out_dim=7, dropout=0.2, device='cpu', num_res_blocks=3, policy_lr_scale=0.3):
         super().__init__()
         self.in_dim = in_dim
         self.device = device
         self.n_actions = out_dim
-        self.lambda_s = lambda_s
 
         # Body: Stem + Residual Blocks
         self.hidden = nn.Sequential(
@@ -161,13 +160,6 @@ class CNN(Base):
         # moves_left 归一化到 [0, 1]，供 C++ MLH 使用
         moves_left_norm = expected_steps / 42.0
 
-        if self.lambda_s > 0:
-            # Python 侧 steps-value 混合（使用 C++ MLH 时建议 lambda_s=0）
-            steps_adjusted = 2.0 * moves_left_norm - 1.0
-            advantage_sign = torch.tanh(5.0 * value_base)
-            value = (1 - self.lambda_s) * value_base - self.lambda_s * advantage_sign * steps_adjusted
-        else:
-            value = value_base
         return (log_prob.exp().cpu().numpy(),
-                value.cpu().view(-1, 1).numpy(),
+                value_base.cpu().view(-1, 1).numpy(),
                 moves_left_norm.cpu().view(-1, 1).numpy())

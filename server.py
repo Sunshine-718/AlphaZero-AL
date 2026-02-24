@@ -21,45 +21,81 @@ TOTAL_SENT_BYTES = 0
 
 
 parser = argparse.ArgumentParser(description='AlphaZero Training Server')
-parser.add_argument('--host', '-H', type=str, default='0.0.0.0', help='Host IP')
-parser.add_argument('--port', '-P', '-p', type=int, default=7718, help='Port number')
-parser.add_argument('-n', type=int, default=100,
-                    help='Number of simulations before AlphaZero make an action')
-parser.add_argument('--lr', type=float, default=3e-3, help='Learning rate')
-parser.add_argument('-c', '--c_init', type=float, default=1.4, help='C_puct init')
-parser.add_argument('--c_base_factor', type=float, default=1000, help='C_puct base factor')
-parser.add_argument('--fpu_reduction', type=float, default=0.2, help='FPU reduction factor')
-parser.add_argument('--eps', type=float, default=0.25, help='PUCT epsilon for noise mixing')
-parser.add_argument('--noise_steps', type=int, default=0, help='Steps over which noise_eps decays to noise_eps_min (0=no decay)')
-parser.add_argument('--noise_eps_min', type=float, default=0.1, help='Minimum noise_eps after decay')
-parser.add_argument('-a', '--alpha', type=float, default=0.03, help='Dirichlet alpha')
-parser.add_argument('-b', '--batch_size', type=int, default=512, help='Batch size')
-parser.add_argument('--q_size', type=int, default=100, help='Minimum buffer size before training starts')
-parser.add_argument('--buf', '--buffer_size', type=int, default=500000, help='Buffer size')
-parser.add_argument('--replay_ratio', type=float, default=0.1, help='Fraction of buffer sampled per training step')
-parser.add_argument('--n_epochs', type=int, default=5, help='Training epochs per policy update step')
-parser.add_argument('--mcts_n', type=int, default=1000, help='MCTS n_playout')
-parser.add_argument('--discount', type=float, default=1, help='Discount factor')
-parser.add_argument('--thres', type=float, default=0.52, help='Win rate threshold')
-parser.add_argument('--num_eval', type=int, default=50, help='Number of evaluation.')
-parser.add_argument('-m', '--model', type=str, default='CNN', help='Model type (CNN)')
-parser.add_argument('-d', '--device', type=str, default='cuda' if torch.cuda.is_available()
-                    else 'cpu', help='Device type')
-parser.add_argument('-e', '--env', '--environment', type=str, default='Connect4', help='Environment name')
-parser.add_argument('--interval', type=int, default=10, help='Eval interval')
-parser.add_argument('--name', type=str, default='AZ', help='Name of AlphaZero')
-parser.add_argument('--cache_size', type=int, default=10000, help='LRU transposition table max size')
-parser.add_argument("--actor", type=str, default="best", help="Which weight are actors using?")
-parser.add_argument('--no_symmetry', action='store_true', help='Disable random symmetry augmentation during MCTS search')
-parser.add_argument('--lambda_s', type=float, default=0.,
-                    help='Steps-value mixing weight (KataGo staticScoreUtilityFactor analog, default=0.1)')
-parser.add_argument('--policy_lr_scale', type=float, default=0.1,
-                    help='Policy head LR multiplier (e.g. 0.3 = policy LR is 30% of base)')
-parser.add_argument('--dropout', type=float, default=0.2, help='Dropout rate')
-parser.add_argument('--mlh_factor', type=float, default=0.0,
-                    help='Moves Left Head factor for MCTS (0=disabled, recommended 0.2-0.3 for Connect4)')
-parser.add_argument('--mlh_threshold', type=float, default=0.85,
-                    help='MLH activation threshold: only adjusts when |Q| exceeds this value')
+
+# ── Server ────────────────────────────────────────────────────────────────────
+g_server = parser.add_argument_group('Server')
+g_server.add_argument('--host', '-H', type=str, default='0.0.0.0', help='Host IP')
+g_server.add_argument('--port', '-P', '-p', type=int, default=7718, help='Port number')
+
+# ── Environment & Model ───────────────────────────────────────────────────────
+g_env = parser.add_argument_group('Environment & Model')
+g_env.add_argument('-e', '--env', '--environment', type=str, default='Connect4', help='Environment name')
+g_env.add_argument('-m', '--model', type=str, default='CNN', help='Network type (CNN/ViT)')
+g_env.add_argument('--name', type=str, default='AZ', help='Experiment name')
+g_env.add_argument('-d', '--device', type=str,
+                   default='cuda' if torch.cuda.is_available() else 'cpu', help='Device')
+
+# ── MCTS Search ───────────────────────────────────────────────────────────────
+g_mcts = parser.add_argument_group('MCTS Search')
+g_mcts.add_argument('-n', type=int, default=100, help='Number of MCTS simulations per move')
+g_mcts.add_argument('-c', '--c_init', type=float, default=1.4, help='PUCT exploration constant')
+g_mcts.add_argument('--c_base_factor', type=float, default=1000,
+                     help='PUCT base factor (c_base = n * c_base_factor)')
+g_mcts.add_argument('--fpu_reduction', type=float, default=0.2, help='First-play urgency reduction')
+g_mcts.add_argument('--discount', type=float, default=1, help='Value discount factor')
+g_mcts.add_argument('--cache_size', type=int, default=10000, help='LRU transposition table max size')
+g_mcts.add_argument('--no_symmetry', action='store_true',
+                     help='Disable random symmetry augmentation during MCTS')
+
+# ── Exploration Noise ─────────────────────────────────────────────────────────
+g_noise = parser.add_argument_group('Exploration Noise')
+g_noise.add_argument('-a', '--alpha', type=float, default=0.03, help='Dirichlet noise alpha')
+g_noise.add_argument('--eps', type=float, default=0.25, help='Noise mixing epsilon')
+g_noise.add_argument('--noise_steps', type=int, default=0,
+                      help='Steps to decay noise_eps to noise_eps_min (0=no decay)')
+g_noise.add_argument('--noise_eps_min', type=float, default=0.1, help='Minimum noise epsilon')
+
+# ── Moves Left Head (MLH) ────────────────────────────────────────────────────
+g_mlh = parser.add_argument_group('Moves Left Head (MLH)')
+g_mlh.add_argument('--mlh_factor', type=float, default=0.0,
+                    help='MLH factor for MCTS (0=disabled, recommended 0.2-0.3)')
+g_mlh.add_argument('--mlh_threshold', type=float, default=0.85,
+                    help='MLH activation threshold: only adjusts when |Q| exceeds this')
+g_mlh.add_argument('--mlh_warmup', type=int, default=20,
+                    help='MLH ramp-up steps after activation (linear 0 -> target)')
+g_mlh.add_argument('--mlh_warmup_loss', type=float, default=0.,
+                    help='Activate MLH when steps_loss < threshold '
+                         '(0=immediate, -1=auto log(max_steps+1), or manual e.g. 3.0)')
+
+# ── Self-play ─────────────────────────────────────────────────────────────────
+g_sp = parser.add_argument_group('Self-play')
+g_sp.add_argument('-t', '--temp', type=float, default=1, help='Self-play temperature')
+g_sp.add_argument('--temp_thres', type=float, default=12,
+                   help='Step threshold to switch temperature to ~0')
+g_sp.add_argument('--actor', type=str, default='best',
+                   help='Which weight actors load (best/current)')
+
+# ── Training ──────────────────────────────────────────────────────────────────
+g_train = parser.add_argument_group('Training')
+g_train.add_argument('--lr', type=float, default=3e-3, help='Learning rate')
+g_train.add_argument('-b', '--batch_size', type=int, default=512, help='Training batch size')
+g_train.add_argument('--buf', '--buffer_size', type=int, default=500000, help='Replay buffer size')
+g_train.add_argument('--q_size', type=int, default=100,
+                      help='Minimum buffer size before training starts')
+g_train.add_argument('--replay_ratio', type=float, default=0.1,
+                      help='Fraction of buffer sampled per training step')
+g_train.add_argument('--n_epochs', type=int, default=5, help='Training epochs per update')
+g_train.add_argument('--policy_lr_scale', type=float, default=0.1,
+                      help='Policy head LR multiplier')
+g_train.add_argument('--dropout', type=float, default=0.2, help='Dropout rate')
+
+# ── Evaluation ────────────────────────────────────────────────────────────────
+g_eval = parser.add_argument_group('Evaluation')
+g_eval.add_argument('--interval', type=int, default=10, help='Eval interval (training steps)')
+g_eval.add_argument('--num_eval', type=int, default=50, help='Number of evaluation games')
+g_eval.add_argument('--thres', type=float, default=0.52, help='Win rate threshold for new best')
+g_eval.add_argument('--mcts_n', type=int, default=1000, help='Benchmark pure MCTS simulations')
+
 args, _ = parser.parse_known_args()
 
 config = {"lr": args.lr,
@@ -80,13 +116,14 @@ config = {"lr": args.lr,
           "device": args.device,
           "cache_size": args.cache_size,
           "use_symmetry": not args.no_symmetry,
-          "lambda_s": args.lambda_s,
           "replay_ratio": args.replay_ratio,
           "n_epochs": args.n_epochs,
           "noise_steps": args.noise_steps,
           "noise_eps_min": args.noise_eps_min,
           "mlh_factor": args.mlh_factor,
-          "mlh_threshold": args.mlh_threshold}
+          "mlh_threshold": args.mlh_threshold,
+          "mlh_warmup": args.mlh_warmup,
+          "mlh_warmup_loss": args.mlh_warmup_loss}
 
 
 class ServerPipeline(TrainPipeline):
@@ -154,7 +191,7 @@ def weights():
     path = pipeline.current if actor_param == "current" else pipeline.best
     if pipeline.r_a <= pipeline.r_b:
         path = pipeline.current
-    
+
     try:
         mtime = os.path.getmtime(path)
     except FileNotFoundError:
@@ -174,10 +211,36 @@ def weights():
         print(f"[[TRAFFIC_LOG::SENT::+::{len(payload)}]]", file=sys.stdout)
         return payload, 200, {
             'Content-Type': 'application/octet-stream',
-            'X-Timestamp': str(mtime)
+            'X-Timestamp': str(mtime),
+            'X-MLH-Factor': str(getattr(pipeline, 'mlh_factor', 0.0)),
         }
     else:
-        return '', 304
+        return '', 304, {
+            'X-MLH-Factor': str(getattr(pipeline, 'mlh_factor', 0.0)),
+        }
+
+
+@app.route('/config', methods=['GET'])
+def get_config():
+    """返回 actor 需要的 MCTS / self-play 参数，client 启动时拉取。"""
+    return jsonify({
+        'env': args.env,
+        'model': args.model,
+        'c_init': pipeline.c_puct,
+        'c_base': pipeline.c_base,
+        'n_playout': pipeline.n_playout,
+        'discount': pipeline.discount,
+        'dirichlet_alpha': pipeline.dirichlet_alpha,
+        'noise_eps': pipeline.eps,
+        'noise_steps': getattr(pipeline, 'noise_steps', 0),
+        'noise_eps_min': getattr(pipeline, 'noise_eps_min', 0.1),
+        'fpu_reduction': pipeline.fpu_reduction,
+        'use_symmetry': getattr(pipeline, 'use_symmetry', True),
+        'mlh_factor': getattr(pipeline, 'mlh_factor', 0.0),
+        'mlh_threshold': getattr(pipeline, 'mlh_threshold', 0.85),
+        'temp': args.temp,
+        'temp_thres': args.temp_thres,
+    })
 
 
 @app.route('/status', methods=['GET'])

@@ -39,7 +39,6 @@ DISCOUNT     = 1.0
 ALPHA        = 0.3
 NOISE_EPS    = 0.25
 FPU_REDUCTION = 0.2
-LAMBDA_S     = 0.1
 
 # ──────── 诊断参数 ────────
 N_RUNS       = 30
@@ -80,7 +79,7 @@ def make_positions():
 
 def load_model(path, device='cpu'):
     net = CNN(lr=3e-3, in_dim=3, h_dim=128, out_dim=7,
-              dropout=0.2, device=device, num_res_blocks=3, lambda_s=LAMBDA_S)
+              dropout=0.2, device=device, num_res_blocks=3)
     net.load(path)
     net.eval()
     return net
@@ -726,7 +725,7 @@ def main():
     net = load_model(args.model, args.device)
     console.print(f'  Model: {args.model}')
     console.print(f'  Params: c_init={C_INIT} c_base={C_BASE} fpu={FPU_REDUCTION} '
-                  f'alpha={ALPHA} eps={NOISE_EPS} lambda_s={LAMBDA_S}')
+                  f'alpha={ALPHA} eps={NOISE_EPS}')
 
     positions = make_positions()
 

@@ -21,7 +21,6 @@ C_INIT              = 0.8
 DISCOUNT            = 1
 ALPHA               = 0.3
 USE_SYMMETRY        = True
-LAMBDA_S            = 0.1   # steps-value mixing weight；KataGo staticScoreUtilityFactor 对标值
 MLH_FACTOR          = 0.0   # Moves Left Head factor (0=disabled, 推荐 0.2-0.3)
 MLH_THRESHOLD       = 0.85  # MLH 激活阈值：仅当 |Q| 超过此值时调整
 
@@ -469,7 +468,7 @@ class Connect4GUI(QWidget):
         model_type = self.panel.model_type_cb.currentText()
         n_playout  = self.panel.n_playout_spin.value()
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        net = getattr(self.env_module, network)(lr=0, device=device, lambda_s=LAMBDA_S)
+        net = getattr(self.env_module, network)(lr=0, device=device)
         net.eval()
         self.net = net
         path = PARAMS_PATH_FMT.format(model_name=MODEL_NAME, env_name=ENV_NAME,

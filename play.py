@@ -22,8 +22,6 @@ parser.add_argument('--name', type=str, default='AZ', help='Model name')
 parser.add_argument('-c', '--c_init', type=float, default=4, help='C_puct init')
 parser.add_argument('-a', '--alpha', type=float, default=0.1, help='Dirichlet alpha')
 parser.add_argument('--no_symmetry', action='store_true', help='Disable random symmetry augmentation during MCTS search')
-parser.add_argument('--lambda_s', type=float, default=0.1,
-                    help='Steps-value mixing weight (default=0.1)')
 parser.add_argument('--mlh_factor', type=float, default=0.0,
                     help='Moves Left Head factor (0=disabled, recommended 0.2-0.3)')
 parser.add_argument('--mlh_threshold', type=float, default=0.85,
@@ -39,9 +37,9 @@ if __name__ == '__main__':
         game = Game(env)
 
         if args.network == 'CNN':
-            net = module.CNN(0, device=device, lambda_s=args.lambda_s)
+            net = module.CNN(0, device=device)
         elif args.network == 'ViT':
-            net = module.ViT(0, device=device, lambda_s=args.lambda_s)
+            net = module.ViT(0, device=device)
         else:
             raise ValueError(f"Unknown network type: {args.network}")
 

@@ -36,12 +36,10 @@ class TrainPipeline(ABC):
         self.buffer = None
         if model == 'CNN':
             self.net = self.module.CNN(lr=self.lr, device=self.device,
-                                      lambda_s=getattr(self, 'lambda_s', 0.1),
                                       policy_lr_scale=getattr(self, 'policy_lr_scale', 0.3),
                                       dropout=getattr(self, 'dropout', 0.2))
         elif model == 'ViT':
-            self.net = self.module.ViT(lr=self.lr, device=self.device,
-                                       lambda_s=getattr(self, 'lambda_s', 0.1))
+            self.net = self.module.ViT(lr=self.lr, device=self.device)
         else:
             raise ValueError(f'Unknown model type: {model}')
         self.current = f'{self.params}/{self.name}_{self.net.name()}_current.pt'
@@ -53,17 +51,59 @@ class TrainPipeline(ABC):
         else:
             self.ddp_net = None
 
+        # MLH warmup: loss 触发 + 线性 ramp
+        self._mlh_factor_target = getattr(self, 'mlh_factor', 0.0)
+        self._mlh_warmup = getattr(self, 'mlh_warmup', 20)
+        self._mlh_warmup_loss = getattr(self, 'mlh_warmup_loss', 0.0)
+        # mlh_warmup_loss < 0 → 自动计算为 log(max_steps + 1)（随机基线 NLL）
+        if self._mlh_warmup_loss < 0:
+            max_steps = self.env.max_steps
+            self._mlh_warmup_loss = float(np.log(max_steps + 1))
+            if self.rank == 0:
+                print(f'[MLH] Auto warmup_loss = log({max_steps}+1) = {self._mlh_warmup_loss:.3f}')
+        self._mlh_activated = (self._mlh_warmup_loss <= 0)  # 无 loss 阈值则立即激活
+        self._mlh_activate_step = 0
+        init_mlh = self._mlh_factor_target if self._mlh_activated else 0.0
+
         self.az_player = AlphaZeroPlayer(self.net, c_init=self.c_puct, n_playout=self.n_playout,
                                          discount=self.discount, alpha=self.dirichlet_alpha, is_selfplay=1,
                                          cache_size=self.cache_size, eps=self.eps,
                                          use_symmetry=getattr(self, 'use_symmetry', True),
-                                         mlh_factor=getattr(self, 'mlh_factor', 0.0),
+                                         mlh_factor=init_mlh,
                                          mlh_threshold=getattr(self, 'mlh_threshold', 0.85))
         self.update_best_net()
         self.elo = Elo(self.init_elo, 1500)
         self.r_a = 0
         self.r_b = 0
         os.makedirs('params', exist_ok=True)
+
+    def _update_mlh_factor(self, s_loss=None):
+        """MLH warmup: s_loss 降到阈值以下后触发，线性 ramp 到目标值。"""
+        if self._mlh_factor_target <= 0:
+            return
+
+        if not self._mlh_activated:
+            # 等待 steps loss 降到阈值以下
+            if s_loss is not None and s_loss < self._mlh_warmup_loss:
+                self._mlh_activated = True
+                self._mlh_activate_step = self.global_step
+                print(f'[MLH] Activated at step {self.global_step} '
+                      f'(s_loss={s_loss:.3f} < {self._mlh_warmup_loss})')
+            else:
+                self.mlh_factor = 0.0
+                self.az_player.mcts.mlh_factor = 0.0
+                return
+
+        # 激活后线性 ramp
+        if self._mlh_warmup > 0:
+            steps_since = self.global_step - self._mlh_activate_step
+            progress = min(1.0, steps_since / self._mlh_warmup)
+        else:
+            progress = 1.0
+
+        effective = self._mlh_factor_target * progress
+        self.mlh_factor = effective
+        self.az_player.mcts.mlh_factor = effective
 
     def init_buffer(self, buffer):
         self.buffer = buffer
@@ -255,7 +295,7 @@ class TrainPipeline(ABC):
     def _log_train_step(self, p_loss, v_loss, s_loss, entropy, grad_norm, f1):
         if self.episode_len is not None:
             swanlab.log({'Metric/Episode length': self.episode_len}, step=self.global_step)
-        swanlab.log({
+        log_dict = {
             'Metric/lr': self.net.opt.param_groups[0]['lr'],
             'Metric/Gradient Norm': grad_norm,
             'Metric/F1 score': f1,
@@ -263,7 +303,10 @@ class TrainPipeline(ABC):
             'Metric/Loss/Value loss': v_loss,
             'Metric/Loss/Steps loss': s_loss,
             'Metric/Entropy': entropy,
-        }, step=self.global_step)
+        }
+        if self._mlh_factor_target > 0:
+            log_dict['Metric/MLH factor'] = getattr(self, 'mlh_factor', 0.0)
+        swanlab.log(log_dict, step=self.global_step)
 
     def _log_eval(self, r_a, r_b, win_rate, best_counter):
         swanlab.log({
@@ -316,6 +359,7 @@ class TrainPipeline(ABC):
             p_loss, v_loss, s_loss, entropy, grad_norm, f1 = self.policy_update()
 
             if self.rank == 0:
+                self._update_mlh_factor(s_loss)
                 self.net.save(self.current)
                 print(f'batch i: {self.global_step}, episode_len: {self.episode_len}, '
                       f'loss: {p_loss + v_loss + s_loss: .8f}, entropy: {entropy: .8f}')
