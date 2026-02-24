@@ -58,7 +58,7 @@ class Base(ABC, nn.Module):
                 s_loss = F.nll_loss(steps_pred, steps_target)
                 loss = p_loss + v_loss + s_loss
                 loss.backward()
-                # nn.utils.clip_grad_norm_(self.parameters(), 0.5)
+                nn.utils.clip_grad_norm_(self.parameters(), 5)
                 self.opt.step()
                 p_l.append(p_loss.item())
                 v_l.append(v_loss.item())
@@ -73,7 +73,8 @@ class Base(ABC, nn.Module):
             entropy = -torch.mean(torch.sum(log_p_pred.exp() * log_p_pred, dim=-1))
             total_norm = 0
             for param in self.parameters():
-                param_norm = param.grad.data.norm(2)
-                total_norm += param_norm.item() ** 2
+                if param.grad is not None:
+                    param_norm = param.grad.data.norm(2)
+                    total_norm += param_norm.item() ** 2
             total_norm = total_norm ** 0.5
         return np.mean(p_l), np.mean(v_l), np.mean(s_l), float(entropy), total_norm, f1

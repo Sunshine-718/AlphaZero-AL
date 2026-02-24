@@ -83,6 +83,11 @@ class Environment(ABC):
         """
         raise NotImplementedError
 
+    @property
+    def max_steps(self):
+        """Maximum number of steps in a game (default: board area)."""
+        return self.board.shape[0] * self.board.shape[1]
+
     @abstractmethod
     def show(self):
         """
