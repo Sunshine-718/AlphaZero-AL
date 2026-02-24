@@ -100,7 +100,8 @@ class TreeNode:
 
 
 class MCTS:
-    def __init__(self, policy_value_fn, c_init, n_playout, discount, alpha, eps=0.25, fpu_reduction=0.4, use_symmetry=True):
+    def __init__(self, policy_value_fn, c_init, n_playout, discount, alpha, eps=0.25, fpu_reduction=0.4, use_symmetry=True,
+                 mlh_factor=0.0, mlh_threshold=0.85):
         self.root = TreeNode(None, 1, discount, None, eps)
         self.policy = policy_value_fn
         self.c_init = c_init
@@ -111,6 +112,8 @@ class MCTS:
         self.deterministic = False
         self.fpu_reduction = fpu_reduction
         self.use_symmetry = use_symmetry
+        self.mlh_factor = mlh_factor
+        self.mlh_threshold = mlh_threshold
 
     def train(self):
         self.root.train()
@@ -154,8 +157,10 @@ class MCTS:
 
 
 class MCTS_AZ(MCTS):
-    def __init__(self, policy_value_fn, c_init, n_playout, discount, alpha, cache_size, eps=0.25, fpu_reduction=0.4, use_symmetry=True):
-        super().__init__(policy_value_fn, c_init, n_playout, discount, alpha, eps, fpu_reduction, use_symmetry)
+    def __init__(self, policy_value_fn, c_init, n_playout, discount, alpha, cache_size, eps=0.25, fpu_reduction=0.4, use_symmetry=True,
+                 mlh_factor=0.0, mlh_threshold=0.85):
+        super().__init__(policy_value_fn, c_init, n_playout, discount, alpha, eps, fpu_reduction, use_symmetry,
+                         mlh_factor, mlh_threshold)
         self.cache = Cache(cache_size)
         self.use_cache = cache_size > 0
 
@@ -174,11 +179,11 @@ class MCTS_AZ(MCTS):
         valid = env_aug.valid_move()
         state = env_aug.current_state()
         if self.use_cache and (state in self.cache):
-            probs, value = self.cache.get(state)
+            probs, value, moves_left = self.cache.get(state)
         else:
-            probs, value = self.policy.predict(state)
+            probs, value, moves_left = self.policy.predict(state)
             if self.use_cache:
-                self.cache.put(state, (probs, value))
+                self.cache.put(state, (probs, value, moves_left))
         probs = probs.flatten()[valid]
         probs /= sum(probs)
         action_probs = tuple(zip(valid, probs))
@@ -187,6 +192,14 @@ class MCTS_AZ(MCTS):
         if sym_id != 0:
             action_probs = [(env.inverse_symmetry_action(sym_id, action), prob) for action, prob in action_probs]
         if not env.done():
+            # Moves Left Head: 仅当 |value| 极端时激活
+            if self.mlh_factor > 0:
+                ml = moves_left.flatten()[0]
+                abs_v = abs(leaf_value)
+                if abs_v > self.mlh_threshold:
+                    activation = (abs_v - self.mlh_threshold) / (1.0 - self.mlh_threshold)
+                    bonus = self.mlh_factor * ml * activation
+                    leaf_value += bonus if leaf_value < 0 else -bonus
             if self.alpha is not None and not self.deterministic:
                 noise = np.random.dirichlet([self.alpha for _ in action_probs])
             node.expand(action_probs, noise)

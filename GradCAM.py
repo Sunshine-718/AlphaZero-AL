@@ -139,7 +139,7 @@ if __name__ == "__main__":
     
     board = env.current_state()
     
-    pred, value = model.predict(board)
+    pred, value, _ = model.predict(board)
     pred_class = pred.argmax().item()
     print(f"Predicted class: {pred_class}")
 

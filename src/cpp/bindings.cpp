@@ -19,16 +19,21 @@ void register_batched_mcts(py::module_ &m, const char *name)
     constexpr int BOARD_SIZE = Game::Traits::BOARD_SIZE;
 
     py::class_<BM>(m, name)
-        .def(py::init<int, float, float, float, float, float, float, bool>(),
+        .def(py::init<int, float, float, float, float, float, float, bool, float, float>(),
              py::arg("n_envs"), py::arg("c_init"), py::arg("c_base"),
              py::arg("discount"), py::arg("alpha"), py::arg("noise_epsilon") = 0.25f,
-             py::arg("fpu_reduction") = 0.4f, py::arg("use_symmetry") = true)
+             py::arg("fpu_reduction") = 0.4f, py::arg("use_symmetry") = true,
+             py::arg("mlh_factor") = 0.0f, py::arg("mlh_threshold") = 0.85f)
 
         .def("set_seed", &BM::set_seed, "Set random seed for all OpenMP threads")
 
         .def("set_noise_epsilon", &BM::set_noise_epsilon,
              py::arg("eps"),
              "Set noise epsilon for all MCTS environments")
+
+        .def("set_mlh_params", &BM::set_mlh_params,
+             py::arg("factor"), py::arg("threshold"),
+             "Set Moves Left Head parameters for all MCTS environments")
 
         .def("reset_env", &BM::reset_env)
 
@@ -100,10 +105,12 @@ void register_batched_mcts(py::module_ &m, const char *name)
         .def("backprop_batch", [](BM &self,
                                   py::array_t<float, py::array::c_style | py::array::forcecast> policy_logits,
                                   py::array_t<float, py::array::c_style | py::array::forcecast> values,
+                                  py::array_t<float, py::array::c_style | py::array::forcecast> moves_left,
                                   py::array_t<uint8_t, py::array::c_style | py::array::forcecast> is_term)
              {
             auto buf_pol = policy_logits.request();
             auto buf_val = values.request();
+            auto buf_ml = moves_left.request();
             auto buf_term = is_term.request();
 
             int n = self.get_num_envs();
@@ -113,17 +120,21 @@ void register_batched_mcts(py::module_ &m, const char *name)
             if (buf_val.size != n)
                 throw std::runtime_error("backprop_batch: values size (" + std::to_string(buf_val.size) +
                                          ") must match n_envs (" + std::to_string(n) + ")");
+            if (buf_ml.size != n)
+                throw std::runtime_error("backprop_batch: moves_left size (" + std::to_string(buf_ml.size) +
+                                         ") must match n_envs (" + std::to_string(n) + ")");
             if (buf_term.size != n)
                 throw std::runtime_error("backprop_batch: is_term size (" + std::to_string(buf_term.size) +
                                          ") must match n_envs (" + std::to_string(n) + ")");
 
             float* ptr_pol = static_cast<float*>(buf_pol.ptr);
             float* ptr_val = static_cast<float*>(buf_val.ptr);
+            float* ptr_ml = static_cast<float*>(buf_ml.ptr);
             uint8_t* ptr_term = static_cast<uint8_t*>(buf_term.ptr);
 
             {
                 py::gil_scoped_release release;
-                self.backprop_batch(ptr_pol, ptr_val, ptr_term);
+                self.backprop_batch(ptr_pol, ptr_val, ptr_ml, ptr_term);
             } });
 }
 

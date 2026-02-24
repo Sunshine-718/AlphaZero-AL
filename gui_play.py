@@ -22,6 +22,8 @@ DISCOUNT            = 1
 ALPHA               = 0.3
 USE_SYMMETRY        = True
 LAMBDA_S            = 0.1   # steps-value mixing weight；KataGo staticScoreUtilityFactor 对标值
+MLH_FACTOR          = 0.0   # Moves Left Head factor (0=disabled, 推荐 0.2-0.3)
+MLH_THRESHOLD       = 0.85  # MLH 激活阈值：仅当 |Q| 超过此值时调整
 
 PARAMS_PATH_FMT     = './params/{model_name}_{env_name}_{network}_{model_type}.pt'
 
@@ -447,7 +449,8 @@ class Connect4GUI(QWidget):
         self.human     = Human()
         self.az_player = AlphaZeroPlayer(None, c_init=None, n_playout=None,
                                          discount=DISCOUNT, alpha=ALPHA, is_selfplay=0, cache_size=10000,
-                                         use_symmetry=USE_SYMMETRY)
+                                         use_symmetry=USE_SYMMETRY,
+                                         mlh_factor=MLH_FACTOR, mlh_threshold=MLH_THRESHOLD)
         self._reload_model()
 
         # 连接信号

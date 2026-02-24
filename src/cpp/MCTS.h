@@ -36,9 +36,13 @@ namespace AlphaZero
         float noise_epsilon;
         float fpu_reduction;
         bool use_symmetry;
+        float mlh_factor;
+        float mlh_threshold;
 
-        MCTS(float c_i, float c_b, float disc, float a, float noise_eps = 0.25f, float fpu_red = 0.4f, bool use_sym = true)
-            : c_init(c_i), c_base(c_b), discount(disc), alpha(a), noise_epsilon(noise_eps), fpu_reduction(fpu_red), use_symmetry(use_sym)
+        MCTS(float c_i, float c_b, float disc, float a, float noise_eps = 0.25f, float fpu_red = 0.4f, bool use_sym = true,
+             float mlh_fac = 0.0f, float mlh_thres = 0.85f)
+            : c_init(c_i), c_base(c_b), discount(disc), alpha(a), noise_epsilon(noise_eps), fpu_reduction(fpu_red), use_symmetry(use_sym),
+              mlh_factor(mlh_fac), mlh_threshold(mlh_thres)
         {
             // 预分配内存，减少 search 过程中的扩容
             node_pool.resize(2000);
@@ -192,9 +196,22 @@ namespace AlphaZero
             out_nn_input_board = sim_env;
         }
 
-        void backprop(std::span<const float> policy_logits, float value, bool is_terminal)
+        void backprop(std::span<const float> policy_logits, float value, float moves_left_norm, bool is_terminal)
         {
             if (current_leaf_idx == -1) return;
+
+            // Moves Left Head: 仅当 |value| 极端时激活，区分"同样输/赢"的走法
+            if (mlh_factor > 0.0f && !is_terminal)
+            {
+                float abs_val = std::abs(value);
+                if (abs_val > mlh_threshold)
+                {
+                    float activation = (abs_val - mlh_threshold) / (1.0f - mlh_threshold);
+                    float bonus = mlh_factor * moves_left_norm * activation;
+                    // 输得慢 → less negative；赢得快 → more positive
+                    value += (value < 0.0f ? bonus : -bonus);
+                }
+            }
 
             // 终局状态不展开，保持为叶子节点（与 Python MCTS_AZ 行为一致）
             if (!is_terminal)

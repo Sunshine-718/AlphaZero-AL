@@ -29,9 +29,9 @@ class LRUCache:
         keys = [key for key in self._od.keys()]
         states = [self._od[key]['state'] for key in keys]
         states = np.concatenate(states, axis=0)
-        probs, values = pv_func(states)
+        probs, values, moves_left = pv_func(states)
         for idx, key in enumerate(keys):
-            value = (probs[idx].reshape(1, -1), values[idx].reshape(1, -1))
+            value = (probs[idx].reshape(1, -1), values[idx].reshape(1, -1), moves_left[idx].reshape(1, -1))
             self.put(key, value)
 
     def __contains__(self, key):
@@ -147,7 +147,8 @@ class LFUCache:
         keys = list(self._data.keys())
         states = [self._data[h]['state'] for h in keys]
         states = np.concatenate(states, axis=0)
-        probs, values = pv_func(states)
+        probs, values, moves_left = pv_func(states)
         for idx, h in enumerate(keys):
             self._data[h]['value'] = (probs[idx].reshape(1, -1),
-                                      values[idx].reshape(1, -1))
+                                      values[idx].reshape(1, -1),
+                                      moves_left[idx].reshape(1, -1))

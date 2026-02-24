@@ -22,9 +22,10 @@ def _default_convert_board(board, turns):
 class BatchedMCTS:
     def __init__(self, batch_size, c_init, c_base, discount, alpha, n_playout,
                  game_name='Connect4', board_converter=None, cache_size=0, noise_epsilon=0.25, fpu_reduction=0.4,
-                 use_symmetry=True):
+                 use_symmetry=True, mlh_factor=0.0, mlh_threshold=0.85):
         backend_cls = _BACKENDS[game_name]
-        self.mcts = backend_cls(batch_size, c_init, c_base, discount, alpha, noise_epsilon, fpu_reduction, use_symmetry)
+        self.mcts = backend_cls(batch_size, c_init, c_base, discount, alpha, noise_epsilon, fpu_reduction, use_symmetry,
+                                mlh_factor, mlh_threshold)
         self.n_playout = n_playout
         self.batch_size = batch_size
         self.action_size = backend_cls.action_size
@@ -46,6 +47,7 @@ class BatchedMCTS:
 
             term_mask = is_term.astype(bool)
             values = term_vals.copy()
+            moves_left = np.zeros(self.batch_size, dtype=np.float32)
 
             # 只对非终局 leaf 调用 NN（或查置换表）
             non_term_mask = ~term_mask
@@ -57,9 +59,10 @@ class BatchedMCTS:
                     # 置换表未启用：全部送 NN，写入预分配 buffer
                     conv = self._convert_board(leaf_boards[non_term_mask], leaf_turns[non_term_mask])
                     self._conv_buf[:n_non_term] = conv
-                    non_term_probs, non_term_vals = pv_func.predict(self._conv_buf[:n_non_term])
+                    non_term_probs, non_term_vals, non_term_ml = pv_func.predict(self._conv_buf[:n_non_term])
                     probs[non_term_mask] = non_term_probs
                     values[non_term_mask] = non_term_vals.flatten()
+                    moves_left[non_term_mask] = non_term_ml.flatten()
                 else:
                     # 置换表启用：先查缓存，cache miss 的再批量送 NN
                     miss_indices = []
@@ -67,9 +70,10 @@ class BatchedMCTS:
                         # key = 棋盘原始字节 + turn 字节（43 bytes，含 turn 信息）
                         key = leaf_boards[i].tobytes() + leaf_turns[i].item().to_bytes(1, 'little', signed=True)
                         if key in self.cache:
-                            p, v = self.cache.get(key)
+                            p, v, ml = self.cache.get(key)
                             probs[i] = p
                             values[i] = v
+                            moves_left[i] = ml
                         else:
                             miss_indices.append(i)
 
@@ -79,34 +83,38 @@ class BatchedMCTS:
                         miss_turns  = leaf_turns[miss_indices]
                         conv = self._convert_board(miss_boards, miss_turns)
                         self._conv_buf[:n_miss] = conv
-                        miss_probs, miss_vals = pv_func.predict(self._conv_buf[:n_miss])
+                        miss_probs, miss_vals, miss_ml = pv_func.predict(self._conv_buf[:n_miss])
                         miss_vals = miss_vals.flatten()
+                        miss_ml = miss_ml.flatten()
                         for j, i in enumerate(miss_indices):
                             probs[i]  = miss_probs[j]
                             values[i] = miss_vals[j]
+                            moves_left[i] = miss_ml[j]
                             key = leaf_boards[i].tobytes() + leaf_turns[i].item().to_bytes(1, 'little', signed=True)
-                            self.cache.put(key, (miss_probs[j].copy(), miss_vals[j].item()))
+                            self.cache.put(key, (miss_probs[j].copy(), miss_vals[j].item(), miss_ml[j].item()))
                             # 覆盖 state 字段为 converted board，供 refresh_cache 批量重算
                             self.cache._od[key]['state'] = conv[j:j+1]
 
             self.mcts.backprop_batch(
                 np.ascontiguousarray(probs, dtype=np.float32),
                 np.ascontiguousarray(values, dtype=np.float32),
+                np.ascontiguousarray(moves_left, dtype=np.float32),
                 is_term
             )
         return self
 
     def refresh_cache(self, pv_func):
-        """网络权重更新后调用，用新 NN 重新计算缓存中所有条目的 prob 和 value"""
+        """网络权重更新后调用，用新 NN 重新计算缓存中所有条目的 prob, value, moves_left"""
         if self.cache is None or len(self.cache) == 0:
             return self
         od = self.cache._od
         keys = list(od.keys())
         states = np.concatenate([od[k]['state'] for k in keys], axis=0)
-        new_probs, new_vals = pv_func.predict(states)
+        new_probs, new_vals, new_ml = pv_func.predict(states)
         new_vals = new_vals.flatten()
+        new_ml = new_ml.flatten()
         for j, k in enumerate(keys):
-            od[k]['value'] = (new_probs[j].copy(), new_vals[j].item())
+            od[k]['value'] = (new_probs[j].copy(), new_vals[j].item(), new_ml[j].item())
         return self
 
     def set_noise_epsilon(self, eps):

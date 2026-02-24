@@ -50,8 +50,12 @@ parser.add_argument('--cache_size', type=int, default=0,
                     help='Transposition table size (0 = disabled, >0 = LRU cache capacity)')
 parser.add_argument('--no_symmetry', action='store_true', help='Disable random symmetry augmentation during MCTS search')
 parser.add_argument('--actor', type=str, default='best', help='Which weight to load (best/current)')
-parser.add_argument('--lambda_s', type=float, default=0.1,
+parser.add_argument('--lambda_s', type=float, default=0.,
                     help='Steps-value mixing weight (default=0.1)')
+parser.add_argument('--mlh_factor', type=float, default=0.0,
+                    help='Moves Left Head factor for MCTS (0=disabled, recommended 0.2-0.3)')
+parser.add_argument('--mlh_threshold', type=float, default=0.85,
+                    help='MLH activation threshold')
 
 args = parser.parse_args()
 
@@ -86,7 +90,9 @@ class Actor:
                                                 fpu_reduction=args.fpu_reduction,
                                                 use_symmetry=not args.no_symmetry,
                                                 noise_steps=args.noise_steps,
-                                                noise_eps_min=args.noise_eps_min)
+                                                noise_eps_min=args.noise_eps_min,
+                                                mlh_factor=args.mlh_factor,
+                                                mlh_threshold=args.mlh_threshold)
         self.mtime = 0
 
     def load_weights(self):

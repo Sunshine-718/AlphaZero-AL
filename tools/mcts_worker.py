@@ -21,7 +21,7 @@ class RolloutAdapter:
         env.turn = 1 if state[0, 2, 0, 0] > 0 else -1
         probs = np.ones((1, self.n_actions), dtype=np.float32) / self.n_actions
         val = evaluate_rollout(env.copy())
-        return probs, np.array([[val]], dtype=np.float32)
+        return probs, np.array([[val]], dtype=np.float32), np.array([[0.5]], dtype=np.float32)
 
 
 def run_single(board, turn, c_init, alpha, fpu_reduction, n_playout, discount=1.0):

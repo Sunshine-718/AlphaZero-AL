@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AlphaZero 在已解决博弈(Connect4)中的收敛优化报告</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/js/all.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700&display=swap');
+        
+        body {
+            font-family: 'Noto Sans SC', sans-serif;
+            background-color: #FDFCF8; /* Warm neutral background */
+            color: #2D2A26;
+        }
+
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #F1F0EB; 
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #D4D1C9; 
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #B0ADA5; 
+        }
+
+        .chart-container {
+            position: relative;
+            width: 100%;
+            max-width: 600px;
+            margin-left: auto;
+            margin-right: auto;
+            height: 300px;
+            max-height: 400px;
+        }
+        
+        @media (min-width: 768px) {
+            .chart-container {
+                height: 350px;
+            }
+        }
+
+        .nav-item.active {
+            border-bottom: 2px solid #C05621; /* Muted Orange accent */
+            color: #C05621;
+            font-weight: 500;
+        }
+
+        .card-hover:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        }
+
+        .tab-content {
+            display: none;
+            animation: fadeIn 0.3s ease-in-out;
+        }
+        .tab-content.active {
+            display: block;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+    </style>
+    <!-- Chosen Palette: Warm Neutrals with Clay/Earth Accents -->
+    <!-- Application Structure Plan:
+         The app is designed as an interactive technical report to address the user's specific problem: "Policy Chasing" in AlphaZero for solved games like Connect4.
+         1. **Dashboard Header**: Sets the context (AlphaZero + Connect4).
+         2. **Problem Diagnosis Section**: Visually explains WHY the policy chases (Uniform Negative Rewards). Uses interactive comparison between "Solved" and "Unsolved" game states.
+         3. **Theoretical Analysis**: Deep dive into MCTS failure modes in flat landscapes.
+         4. **Solution Simulation (The Core)**: An interactive "lab" where the user can apply a "Discount Factor" (Gamma) to see how it differentiates losing paths, solving the convergence issue.
+         5. **Implementation Guide**: Concrete steps to modify the code (referencing the user's likely codebase structure).
+         This structure moves from Understanding -> Analyzing -> Solving -> Implementing.
+    -->
+    <!-- Visualization & Content Choices:
+         1. **Problem Viz**: A dynamic bar chart showing Q-values. In the "Problem" state, all are -1 (flat). In the "Solution" state, they vary. Goal: Visual proof of the "indistinguishable actions" issue.
+         2. **Training Curve Sim**: A line chart comparing "Standard" (noisy/oscillating) vs "Discounted" (converging) loss over time. Goal: Demonstrate the impact of the fix.
+         3. **Game Tree Concept**: CSS/HTML based tree visualization (NO SVG) to show how discounting propagates up the tree.
+         4. **Interaction**: Sliders for 'Gamma' (Discount factor) allow the user to 'feel' the gradient being created.
+         CONFIRMATION: NO SVG graphics used. NO Mermaid JS used.
+    -->
+</head>
+<body class="antialiased min-h-screen flex flex-col">
+
+    <!-- Navigation / Header -->
+    <header class="bg-white border-b border-stone-200 sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16">
+                <div class="flex">
+                    <div class="flex-shrink-0 flex items-center">
+                        <span class="text-xl font-bold text-stone-700 tracking-tight">AlphaZero<span class="text-orange-700">Lab</span></span>
+                    </div>
+                    <div class="hidden sm:ml-6 sm:flex sm:space-x-8">
+                        <a href="#" onclick="switchTab('diagnosis')" id="nav-diagnosis" class="nav-item active inline-flex items-center px-1 pt-1 text-sm font-medium text-stone-900">
+                            问题诊断
+                        </a>
+                        <a href="#" onclick="switchTab('analysis')" id="nav-analysis" class="nav-item inline-flex items-center px-1 pt-1 text-sm font-medium text-stone-500 hover:text-stone-700">
+                            原理解析
+                        </a>
+                        <a href="#" onclick="switchTab('solution')" id="nav-solution" class="nav-item inline-flex items-center px-1 pt-1 text-sm font-medium text-stone-500 hover:text-stone-700">
+                            解决方案
+                        </a>
+                        <a href="#" onclick="switchTab('implementation')" id="nav-implementation" class="nav-item inline-flex items-center px-1 pt-1 text-sm font-medium text-stone-500 hover:text-stone-700">
+                            代码实现
+                        </a>
+                    </div>
+                </div>
+                <div class="flex items-center">
+                    <span class="text-xs font-mono bg-stone-100 text-stone-600 px-2 py-1 rounded">Connect4 Solver Report</span>
+                </div>
+            </div>
+        </div>
+        <!-- Mobile Nav -->
+        <div class="sm:hidden bg-stone-50 border-t border-stone-200 flex justify-around py-2">
+            <button onclick="switchTab('diagnosis')" class="text-xs font-medium text-stone-600">诊断</button>
+            <button onclick="switchTab('analysis')" class="text-xs font-medium text-stone-600">原理</button>
+            <button onclick="switchTab('solution')" class="text-xs font-medium text-stone-600">方案</button>
+            <button onclick="switchTab('implementation')" class="text-xs font-medium text-stone-600">实现</button>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="flex-grow bg-[#FDFCF8]">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+
+            <!-- SECTION 1: PROBLEM DIAGNOSIS -->
+            <div id="diagnosis" class="tab-content active">
+                <div class="bg-white shadow-sm rounded-lg p-6 mb-8 border border-stone-100">
+                    <h1 class="text-2xl font-bold text-stone-800 mb-4">AlphaZero 在 Connect4 中的收敛难题</h1>
+                    <p class="text-stone-600 leading-relaxed mb-6">
+                        在 Connect4 这种已解决的博弈中，完美策略下先手（X）必胜，后手（O）必败。当 AlphaZero 达到一定水平后，作为后手（O）时，无论怎么走最终结果都是 -1（输）。
+                        这就导致了一个严重的问题：<strong>Policy Chasing（策略追逐）</strong>。
+                    </p>
+                    
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                        <!-- Interactive Problem Viz -->
+                        <div class="bg-stone-50 rounded-lg p-4 border border-stone-200">
+                            <h3 class="text-lg font-semibold text-stone-700 mb-2">现象模拟：MCTS 价值评估</h3>
+                            <p class="text-sm text-stone-500 mb-4">当所有路径都通向失败时，Q值失去区分度。</p>
+                            
+                            <div class="flex justify-center space-x-4 mb-4">
+                                <button onclick="updateProblemChart('standard')" class="px-3 py-1 bg-stone-200 hover:bg-stone-300 rounded text-sm text-stone-700 transition">一般博弈 (未解决)</button>
+                                <button onclick="updateProblemChart('solved')" class="px-3 py-1 bg-orange-100 hover:bg-orange-200 text-orange-800 rounded text-sm font-medium transition shadow-sm ring-1 ring-orange-200">已解决博弈 (Connect4 O方)</button>
+                            </div>
+
+                            <div class="chart-container">
+                                <canvas id="problemChart"></canvas>
+                            </div>
+                            <div class="mt-4 p-3 bg-white rounded border border-stone-100">
+                                <p id="problemDesc" class="text-sm text-stone-600 italic">
+                                    点击上方按钮观察 Q 值分布的变化。
+                                </p>
+                            </div>
+                        </div>
+
+                        <!-- Key Observations -->
+                        <div class="space-y-4">
+                            <div class="flex items-start">
+                                <div class="flex-shrink-0 h-8 w-8 flex items-center justify-center rounded-full bg-red-100 text-red-600 font-bold">1</div>
+                                <div class="ml-4">
+                                    <h4 class="text-base font-medium text-stone-900">价值平原 (Value Plateau)</h4>
+                                    <p class="text-sm text-stone-500 mt-1">
+                                        对于必败方 O，所有理性的后续动作 Q(s, a) 最终都趋向于 -1。MCTS 无法区分“立即输”和“顽强抵抗后输”。
+                                    </p>
+                                </div>
+                            </div>
+                            <div class="flex items-start">
+                                <div class="flex-shrink-0 h-8 w-8 flex items-center justify-center rounded-full bg-orange-100 text-orange-600 font-bold">2</div>
+                                <div class="ml-4">
+                                    <h4 class="text-base font-medium text-stone-900">随机探索主导</h4>
+                                    <p class="text-sm text-stone-500 mt-1">
+                                        由于 Q 值几乎相同，PUCT 公式中的 U 项（探索项）占主导。MCTS 的访问次数分布主要由随机噪声或先验概率决定，而非真实的棋力优劣。
+                                    </p>
+                                </div>
+                            </div>
+                            <div class="flex items-start">
+                                <div class="flex-shrink-0 h-8 w-8 flex items-center justify-center rounded-full bg-yellow-100 text-yellow-600 font-bold">3</div>
+                                <div class="ml-4">
+                                    <h4 class="text-base font-medium text-stone-900">策略追逐 (Policy Chasing)</h4>
+                                    <p class="text-sm text-stone-500 mt-1">
+                                        训练时，策略网络 (Policy Head) 试图拟合 MCTS 的访问分布 $\pi$。但由于 $\pi$ 充满了随机性（因为 Q 值无区分度），网络实际上是在拟合噪声。下一轮迭代产生新的噪声，导致网络参数无法收敛。
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- SECTION 2: THEORETICAL ANALYSIS -->
+            <div id="analysis" class="tab-content">
+                <div class="bg-white shadow-sm rounded-lg p-6 mb-8 border border-stone-100">
+                    <h2 class="text-2xl font-bold text-stone-800 mb-6">原理解析：为何标准 AlphaZero 会失效？</h2>
+                    
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                        <!-- Card 1 -->
+                        <div class="bg-stone-50 p-5 rounded-lg border border-stone-200 card-hover transition duration-200">
+                            <h3 class="text-lg font-semibold text-stone-700 mb-2">标准奖励机制</h3>
+                            <div class="text-4xl font-mono text-stone-400 mb-2">±1</div>
+                            <p class="text-sm text-stone-600">
+                                AlphaZero 默认只关心最终输赢。赢是 +1，输是 -1。它不关心是第 10 步赢还是第 100 步赢。
+                            </p>
+                        </div>
+                        <!-- Card 2 -->
+                        <div class="bg-stone-50 p-5 rounded-lg border border-stone-200 card-hover transition duration-200">
+                            <h3 class="text-lg font-semibold text-stone-700 mb-2">Connect4 特性</h3>
+                            <div class="text-4xl font-mono text-stone-400 mb-2">Solved</div>
+                            <p class="text-sm text-stone-600">
+                                Connect4 搜索空间相对较小。AlphaZero 很快就能看穿终局。对于必败方，这导致整个搜索树的子节点价值全是 -1。
+                            </p>
+                        </div>
+                        <!-- Card 3 -->
+                        <div class="bg-stone-50 p-5 rounded-lg border border-stone-200 card-hover transition duration-200">
+                            <h3 class="text-lg font-semibold text-stone-700 mb-2">梯度消失</h3>
+                            <div class="text-4xl font-mono text-stone-400 mb-2">∇ ≈ 0</div>
+                            <p class="text-sm text-stone-600">
+                                当 Value Head 的目标总是 -1 时，它无法提供有效的梯度来指导 Policy Head 选择“延缓失败”的动作。
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="border-t border-stone-200 pt-6">
+                        <h3 class="text-xl font-bold text-stone-800 mb-4">关键洞察：我们需要梯度</h3>
+                        <p class="text-stone-600 mb-4">
+                            为了解决 Policy Chasing，我们必须人为地创造一个“价值梯度”。我们需要告诉 AI：<strong>“虽然你必输，但在第 20 步输比在第 5 步输要好（稍微没那么糟糕）。”</strong>
+                        </p>
+                        <p class="text-stone-600">
+                            这通常通过引入<strong>折扣因子 (Discount Factor)</strong> 来实现。
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- SECTION 3: SOLUTION SIMULATION -->
+            <div id="solution" class="tab-content">
+                <div class="bg-white shadow-sm rounded-lg p-6 mb-8 border border-stone-100">
+                    <h2 class="text-2xl font-bold text-stone-800 mb-2">解决方案模拟实验室</h2>
+                    <p class="text-stone-500 mb-6">引入折扣因子 $\gamma$ (Gamma) 重塑价值地形。</p>
+
+                    <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
+                        <!-- Controls -->
+                        <div class="lg:col-span-4 space-y-6">
+                            <div class="bg-orange-50 p-6 rounded-lg border border-orange-100">
+                                <label for="gammaSlider" class="block text-sm font-bold text-stone-700 mb-2">
+                                    折扣因子 ($\gamma$): <span id="gammaValue" class="text-orange-600">0.99</span>
+                                </label>
+                                <input type="range" id="gammaSlider" min="0.90" max="1.00" step="0.01" value="0.99" 
+                                       class="w-full h-2 bg-stone-300 rounded-lg appearance-none cursor-pointer accent-orange-600"
+                                       oninput="updateSimulation()">
+                                <div class="flex justify-between text-xs text-stone-400 mt-2">
+                                    <span>0.90 (强梯度)</span>
+                                    <span>1.00 (无梯度/标准)</span>
+                                </div>
+                                
+                                <div class="mt-6">
+                                    <p class="text-sm text-stone-600 mb-2"><strong>公式变换：</strong></p>
+                                    <div class="bg-white p-3 rounded border border-stone-200 font-mono text-xs text-stone-700">
+                                        V(s) = Reward × γ<sup>steps</sup>
+                                    </div>
+                                    <p class="text-xs text-stone-500 mt-2">
+                                        其中 steps 是距离终局的步数。
+                                    </p>
+                                </div>
+                            </div>
+
+                            <div class="bg-stone-50 p-4 rounded-lg border border-stone-200">
+                                <h4 class="text-sm font-bold text-stone-700 mb-2">效果预测</h4>
+                                <ul class="space-y-2 text-sm text-stone-600">
+                                    <li id="effect-1" class="flex items-center"><i class="fas fa-check text-green-500 mr-2 opacity-0"></i> 区分即死与缓死</li>
+                                    <li id="effect-2" class="flex items-center"><i class="fas fa-check text-green-500 mr-2 opacity-0"></i> MCTS 选择最优抵抗</li>
+                                    <li id="effect-3" class="flex items-center"><i class="fas fa-check text-green-500 mr-2 opacity-0"></i> 策略趋于稳定</li>
+                                </ul>
+                            </div>
+                        </div>
+
+                        <!-- Visualization -->
+                        <div class="lg:col-span-8">
+                            <div class="bg-white rounded-lg border border-stone-200 p-4">
+                                <h3 class="text-center text-stone-700 font-semibold mb-4">不同路径的 Q 值对比 (O方视角)</h3>
+                                <div class="chart-container">
+                                    <canvas id="solutionChart"></canvas>
+                                </div>
+                                <div class="mt-4 text-sm text-stone-500 text-center">
+                                    <span class="inline-block w-3 h-3 bg-red-400 rounded-full mr-1"></span> 5步内输掉
+                                    <span class="inline-block w-3 h-3 bg-blue-400 rounded-full ml-4 mr-1"></span> 20步后输掉
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- SECTION 4: IMPLEMENTATION GUIDE -->
+            <div id="implementation" class="tab-content">
+                <div class="bg-white shadow-sm rounded-lg p-6 mb-8 border border-stone-100">
+                    <h2 class="text-2xl font-bold text-stone-800 mb-6">代码实现指南</h2>
+                    
+                    <div class="prose max-w-none text-stone-700">
+                        <p class="mb-4">
+                            要在现有的 <code>AlphaZero-AL</code> 或 <code>alphazero-general</code> 代码库中解决此问题，你需要修改 <strong>MCTS 的反向传播逻辑</strong> 或 <strong>Self-Play 的样本生成逻辑</strong>。
+                        </p>
+
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mt-6">
+                            
+                            <!-- Method A -->
+                            <div class="bg-stone-50 p-5 rounded-xl border border-stone-200">
+                                <div class="flex items-center mb-4">
+                                    <div class="w-8 h-8 bg-stone-800 text-white rounded-full flex items-center justify-center font-bold mr-3">A</div>
+                                    <h3 class="text-lg font-bold">修改 Game 类 (推荐)</h3>
+                                </div>
+                                <p class="text-sm text-stone-600 mb-4">
+                                    最简单的改法是在游戏结束判定时，不再只返回 +1/-1，而是返回一个极小值作为惩罚或奖励的折扣。
+                                </p>
+                                <div class="bg-stone-800 text-stone-100 p-3 rounded-md font-mono text-xs overflow-x-auto">
+<pre>// 伪代码示例
+def getGameEnded(self, board, player):
+    if game_over:
+        if winner == player:
+            return 1
+        elif winner == -player:
+            # 关键修改：不要直接返回 -1
+            # 引入一个微小的 epsilon 或基于步数的折扣
+            return -1 + (current_step * 0.001) 
+    return 0</pre>
+                                </div>
+                                <p class="text-xs text-stone-500 mt-2">
+                                    注意：这种方法需要你能访问到 current_step。在标准的 alphazero-general 接口中，<code>getGameEnded</code> 通常只接受 board。你可能需要将步数编码进 board 或者修改接口。
+                                </p>
+                            </div>
+
+                            <!-- Method B -->
+                            <div class="bg-stone-50 p-5 rounded-xl border border-stone-200">
+                                <div class="flex items-center mb-4">
+                                    <div class="w-8 h-8 bg-orange-600 text-white rounded-full flex items-center justify-center font-bold mr-3">B</div>
+                                    <h3 class="text-lg font-bold">修改 MCTS 反向传播</h3>
+                                </div>
+                                <p class="text-sm text-stone-600 mb-4">
+                                    更正统的做法是在 MCTS 回溯时应用折扣因子 $\gamma$。
+                                </p>
+                                <div class="bg-stone-800 text-stone-100 p-3 rounded-md font-mono text-xs overflow-x-auto">
+<pre># 在 MCTS.py 的 search 或 _backprop 方法中
+
+# 原始:
+# v = self.game.getGameEnded(next_s, next_player)
+
+# 修改后 (引入 gamma = 0.99):
+gamma = 0.99
+if v != 0:
+    # 终局节点的价值回传时打折
+    return -v * gamma 
+
+# 在递归回传部分：
+v = self.search(next_s)
+# 每一层递归都乘一次 gamma
+return -v * gamma</pre>
+                                </div>
+                            </div>
+
+                        </div>
+
+                        <div class="mt-8 bg-blue-50 border border-blue-100 rounded-lg p-5">
+                            <h4 class="text-blue-800 font-bold mb-2">其他有效的技巧</h4>
+                            <ul class="list-disc list-inside text-sm text-blue-700 space-y-2">
+                                <li><strong>Forced Playouts (FPU) 调整:</strong> 对于未访问节点的初始 Q 值，设为 -1 (必败) 而不是 0，迫使 MCTS 去探索那些可能不是必败的分支（如果有的话）。</li>
+                                <li><strong>温度系数 (Temperature) 管理:</strong> 在训练初期更快地降低 Temperature，减少随机探索带来的噪声数据。</li>
+                                <li><strong>Auxiliary Tasks (KataGo方法):</strong> 增加一个预测“游戏剩余步数”的输出头，这能给网络提供很强的梯度信号，即便输赢已定。</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </main>
+
+    <!-- Scripts -->
+    <script>
+        // Global State
+        let currentTab = 'diagnosis';
+        let charts = {};
+        
+        // Data for charts
+        const problemData = {
+            standard: {
+                labels: ['动作 A', '动作 B', '动作 C', '动作 D', '动作 E'],
+                data: [0.2, -0.1, 0.05, -0.3, 0.1], // Random variance
+                desc: "在普通未解决的博弈中，不同动作的 Q 值有显著差异，MCTS 容易区分优劣。"
+            },
+            solved: {
+                labels: ['动作 A', '动作 B', '动作 C', '动作 D', '动作 E'],
+                data: [-0.99, -0.98, -0.99, -0.99, -0.98], // Almost flat -1
+                desc: "在 Connect4 必败局面下，所有动作最终都导向 -1。Q 值几乎相同，微小的差异仅来自随机噪声，导致 Policy Chasing。"
+            }
+        };
+
+        function init() {
+            initProblemChart();
+            initSolutionChart();
+            switchTab('diagnosis');
+        }
+
+        function switchTab(tabId) {
+            // Update UI tabs
+            document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+            const navEl = document.getElementById(`nav-${tabId}`);
+            if(navEl) navEl.classList.add('active');
+
+            // Update content visibility
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+            document.getElementById(tabId).classList.add('active');
+            
+            currentTab = tabId;
+        }
+
+        // --- Chart 1: Problem Diagnosis ---
+        function initProblemChart() {
+            const ctx = document.getElementById('problemChart').getContext('2d');
+            charts.problem = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: problemData.standard.labels,
+                    datasets: [{
+                        label: 'Q(s, a) 值',
+                        data: problemData.standard.data,
+                        backgroundColor: '#A8A29E', // Stone-400
+                        borderRadius: 4,
+                        borderSkipped: false
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            min: -1.1,
+                            max: 1.1,
+                            grid: { color: '#E7E5E4' }
+                        },
+                        x: {
+                            grid: { display: false }
+                        }
+                    },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return `Q值: ${context.parsed.y}`;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function updateProblemChart(mode) {
+            const data = problemData[mode];
+            const chart = charts.problem;
+            
+            chart.data.datasets[0].data = data.data;
+            
+            // Change color based on mode
+            if (mode === 'solved') {
+                chart.data.datasets[0].backgroundColor = '#F97316'; // Orange-500 for alarm
+                chart.options.scales.y.min = -1.05;
+                chart.options.scales.y.max = -0.90; // Zoom in to show noise
+            } else {
+                chart.data.datasets[0].backgroundColor = '#A8A29E';
+                chart.options.scales.y.min = -1.1;
+                chart.options.scales.y.max = 1.1;
+            }
+            
+            chart.update();
+            document.getElementById('problemDesc').textContent = data.desc;
+        }
+
+        // --- Chart 2: Solution Simulation ---
+        function initSolutionChart() {
+            const ctx = document.getElementById('solutionChart').getContext('2d');
+            charts.solution = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: ['快速失败 (5步)', '中等抵抗 (10步)', '顽强抵抗 (20步)', '最强抵抗 (30步)'],
+                    datasets: [{
+                        label: 'Q(s, a) 值 (带折扣)',
+                        data: [-1, -1, -1, -1], // Initial state gamma=1
+                        backgroundColor: [
+                            '#EF4444', // Red (Bad)
+                            '#F59E0B',
+                            '#3B82F6',
+                            '#10B981'  // Green (Better)
+                        ],
+                        borderRadius: 6
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    indexAxis: 'y', // Horizontal bar
+                    scales: {
+                        x: {
+                            min: -1.0,
+                            max: -0.5,
+                            title: { display: true, text: 'Q 值 (越接近0越好)' }
+                        }
+                    },
+                    plugins: {
+                        legend: { display: false }
+                    }
+                }
+            });
+            updateSimulation(); // Run once to set initial values
+        }
+
+        function updateSimulation() {
+            const gamma = parseFloat(document.getElementById('gammaSlider').value);
+            document.getElementById('gammaValue').textContent = gamma.toFixed(2);
+
+            // Steps until loss for different paths
+            const steps = [5, 10, 20, 30];
+            
+            // Calculate Q = -1 * gamma^steps (Since loss is -1, but usually represented as -1 from perspective)
+            // Actually, losing is -1. If we delay loss, the value should be closer to 0 (e.g., -0.9).
+            // Formula: Value = -1 * (gamma ^ steps)
+            const newValues = steps.map(s => -1 * Math.pow(gamma, s));
+
+            const chart = charts.solution;
+            chart.data.datasets[0].data = newValues;
+            
+            // Adjust X axis to make differences visible
+            if (gamma === 1) {
+                chart.options.scales.x.min = -1.1;
+                chart.options.scales.x.max = -0.9;
+                
+                document.getElementById('effect-1').querySelector('i').classList.add('opacity-0');
+                document.getElementById('effect-2').querySelector('i').classList.add('opacity-0');
+                document.getElementById('effect-3').querySelector('i').classList.add('opacity-0');
+            } else {
+                const minVal = Math.min(...newValues);
+                const maxVal = Math.max(...newValues);
+                chart.options.scales.x.min = minVal - 0.05;
+                chart.options.scales.x.max = maxVal + 0.05;
+
+                document.getElementById('effect-1').querySelector('i').classList.remove('opacity-0');
+                document.getElementById('effect-2').querySelector('i').classList.remove('opacity-0');
+                document.getElementById('effect-3').querySelector('i').classList.remove('opacity-0');
+            }
+
+            chart.update();
+        }
+
+        // Initialize on load
+        window.addEventListener('load', init);
+
+    </script>
+</body>
+</html>

@@ -51,11 +51,15 @@ parser.add_argument('--name', type=str, default='AZ', help='Name of AlphaZero')
 parser.add_argument('--cache_size', type=int, default=10000, help='LRU transposition table max size')
 parser.add_argument("--actor", type=str, default="best", help="Which weight are actors using?")
 parser.add_argument('--no_symmetry', action='store_true', help='Disable random symmetry augmentation during MCTS search')
-parser.add_argument('--lambda_s', type=float, default=0.1,
+parser.add_argument('--lambda_s', type=float, default=0.,
                     help='Steps-value mixing weight (KataGo staticScoreUtilityFactor analog, default=0.1)')
 parser.add_argument('--policy_lr_scale', type=float, default=0.1,
                     help='Policy head LR multiplier (e.g. 0.3 = policy LR is 30% of base)')
 parser.add_argument('--dropout', type=float, default=0.2, help='Dropout rate')
+parser.add_argument('--mlh_factor', type=float, default=0.0,
+                    help='Moves Left Head factor for MCTS (0=disabled, recommended 0.2-0.3 for Connect4)')
+parser.add_argument('--mlh_threshold', type=float, default=0.85,
+                    help='MLH activation threshold: only adjusts when |Q| exceeds this value')
 args, _ = parser.parse_known_args()
 
 config = {"lr": args.lr,
@@ -80,7 +84,9 @@ config = {"lr": args.lr,
           "replay_ratio": args.replay_ratio,
           "n_epochs": args.n_epochs,
           "noise_steps": args.noise_steps,
-          "noise_eps_min": args.noise_eps_min}
+          "noise_eps_min": args.noise_eps_min,
+          "mlh_factor": args.mlh_factor,
+          "mlh_threshold": args.mlh_threshold}
 
 
 class ServerPipeline(TrainPipeline):

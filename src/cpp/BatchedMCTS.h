@@ -21,13 +21,15 @@ namespace AlphaZero
 
     public:
         BatchedMCTS(int num_envs, float c_init, float c_base, float discount, float alpha,
-                    float noise_epsilon = 0.25f, float fpu_reduction = 0.4f, bool use_symmetry = true)
+                    float noise_epsilon = 0.25f, float fpu_reduction = 0.4f, bool use_symmetry = true,
+                    float mlh_factor = 0.0f, float mlh_threshold = 0.85f)
             : n_envs(num_envs)
         {
             mcts_envs.reserve(n_envs);
             for (int i = 0; i < n_envs; ++i)
             {
-                mcts_envs.push_back(std::make_unique<MCTS<Game>>(c_init, c_base, discount, alpha, noise_epsilon, fpu_reduction, use_symmetry));
+                mcts_envs.push_back(std::make_unique<MCTS<Game>>(c_init, c_base, discount, alpha, noise_epsilon, fpu_reduction, use_symmetry,
+                                                                  mlh_factor, mlh_threshold));
             }
         }
 
@@ -64,6 +66,15 @@ namespace AlphaZero
             for (auto &m : mcts_envs)
             {
                 m->noise_epsilon = eps;
+            }
+        }
+
+        void set_mlh_params(float factor, float threshold)
+        {
+            for (auto &m : mcts_envs)
+            {
+                m->mlh_factor = factor;
+                m->mlh_threshold = threshold;
             }
         }
 
@@ -110,12 +121,14 @@ namespace AlphaZero
         void backprop_batch(
             const float *policy_logits,
             const float *values,
+            const float *moves_left,
             const uint8_t *is_term)
         {
 #pragma omp parallel for schedule(static)
             for (int i = 0; i < n_envs; ++i)
             {
                 float val = values[i];
+                float ml = moves_left[i];
 
                 std::array<float, ACTION_SIZE> policy;
                 int offset = i * ACTION_SIZE;
@@ -123,7 +136,7 @@ namespace AlphaZero
                 {
                     policy[a] = policy_logits[offset + a];
                 }
-                mcts_envs[i]->backprop(policy, val, is_term[i] != 0);
+                mcts_envs[i]->backprop(policy, val, ml, is_term[i] != 0);
             }
         }
 

@@ -115,7 +115,7 @@ def run_mcts_once(net, env, n_playout=N_PLAYOUT, deterministic=False):
 def nn_eval(net, env):
     """用 NN 评估局面，返回 (probs, scalar_value, vdist_3way, expected_steps)"""
     state = env.current_state()
-    probs, value = net.predict(state)
+    probs, value, _ = net.predict(state)
     probs = probs.flatten()
     value = value.flatten()[0]
     t = torch.from_numpy(state).float()
@@ -379,7 +379,7 @@ class RolloutAdapter:
         env.turn = 1 if state[0, 2, 0, 0] > 0 else -1
         probs = np.ones((1, self.n_actions), dtype=np.float32) / self.n_actions
         val = evaluate_rollout(env.copy())
-        return probs, np.array([[val]], dtype=np.float32)
+        return probs, np.array([[val]], dtype=np.float32), np.array([[0.5]], dtype=np.float32)
 
 
 _ROLLOUT_ADAPTER = RolloutAdapter()

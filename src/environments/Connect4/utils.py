@@ -96,11 +96,11 @@ def inspect(net, board=None):
                           [0, 0, 0, 0, 0, 0, 0]])
     with torch.no_grad():
         state0 = board_to_state(board, 1)
-        probs0, value0 = net.predict(state0)
+        probs0, value0, _ = net.predict(state0)
         probs0, value0 = probs0.flatten(), float(value0[0, 0])
         board[5, 3] = 1
         state1 = board_to_state(board, -1)
-        probs1, value1 = net.predict(state1)
+        probs1, value1, _ = net.predict(state1)
         probs1, value1 = probs1.flatten(), float(value1[0, 0])
     for (idx, pX), (_, pO) in zip(enumerate(probs0), enumerate(probs1)):
         print_row(idx, pX, pO, np.max(probs0), np.max(probs1))

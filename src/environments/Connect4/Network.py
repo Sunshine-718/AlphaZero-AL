@@ -154,16 +154,20 @@ class CNN(Base):
         log_prob, value_log_prob, log_steps = self.forward(t)
         value_prob = value_log_prob.exp()
         value_base = player * (value_prob[:, 1] - value_prob[:, 2])
+
+        steps_prob = log_steps.exp()
+        idx = torch.arange(43, dtype=torch.float32, device=self.device)
+        expected_steps = (steps_prob * idx).sum(dim=1)
+        # moves_left 归一化到 [0, 1]，供 C++ MLH 使用
+        moves_left_norm = expected_steps / 42.0
+
         if self.lambda_s > 0:
-            steps_prob = log_steps.exp()
-            idx = torch.arange(43, dtype=torch.float32, device=self.device)
-            expected_steps = (steps_prob * idx).sum(dim=1)
-            # 将步数归一化到 [-1, 1] 区间
-            steps_adjusted = 2.0 * (expected_steps / 42.0) - 1.0
-            # 如果 value_base > 0 (优势)：惩罚长步数 (- lambda * steps_adjusted)，促使速胜
-            # 如果 value_base < 0 (劣势)：奖励长步数 (+ lambda * steps_adjusted)，促使拖延
+            # Python 侧 steps-value 混合（使用 C++ MLH 时建议 lambda_s=0）
+            steps_adjusted = 2.0 * moves_left_norm - 1.0
             advantage_sign = torch.tanh(5.0 * value_base)
             value = (1 - self.lambda_s) * value_base - self.lambda_s * advantage_sign * steps_adjusted
         else:
             value = value_base
-        return log_prob.exp().cpu().numpy(), value.cpu().view(-1, 1).numpy()
+        return (log_prob.exp().cpu().numpy(),
+                value.cpu().view(-1, 1).numpy(),
+                moves_left_norm.cpu().view(-1, 1).numpy())

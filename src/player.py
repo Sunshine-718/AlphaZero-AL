@@ -87,9 +87,11 @@ class MCTSPlayer(Player):
 
 
 class AlphaZeroPlayer(MCTSPlayer):
-    def __init__(self, policy_value_fn, c_init=1.25, n_playout=100, discount=None, alpha=None, is_selfplay=0, cache_size=5000, eps=0.25, fpu_reduction=0.4, use_symmetry=True):
+    def __init__(self, policy_value_fn, c_init=1.25, n_playout=100, discount=None, alpha=None, is_selfplay=0, cache_size=5000, eps=0.25, fpu_reduction=0.4, use_symmetry=True,
+                 mlh_factor=0.0, mlh_threshold=0.85):
         self.pv_fn = policy_value_fn
-        self.mcts = MCTS_AZ(policy_value_fn, c_init, n_playout, discount, alpha, cache_size, eps, fpu_reduction, use_symmetry)
+        self.mcts = MCTS_AZ(policy_value_fn, c_init, n_playout, discount, alpha, cache_size, eps, fpu_reduction, use_symmetry,
+                            mlh_factor, mlh_threshold)
         self.is_selfplay = is_selfplay
         try:
             self.n_actions = policy_value_fn.n_actions
@@ -139,12 +141,12 @@ class AlphaZeroPlayer(MCTSPlayer):
 class BatchedAlphaZeroPlayer:
     def __init__(self, policy_value_fn, n_envs, c_init=1.25, c_base=500, n_playout=100, discount=1, alpha=0.3, noise_epsilon=0.25, fpu_reduction=0.4,
                  game_name='Connect4', board_converter=None, cache_size=0, use_symmetry=True,
-                 noise_steps=0, noise_eps_min=0.1):
+                 noise_steps=0, noise_eps_min=0.1, mlh_factor=0.0, mlh_threshold=0.85):
         self.pv_func = policy_value_fn
         self.mcts = BatchedMCTS(n_envs, c_init, c_base, discount, alpha, n_playout,
                                 game_name=game_name, board_converter=board_converter,
                                 cache_size=cache_size, noise_epsilon=noise_epsilon, fpu_reduction=fpu_reduction,
-                                use_symmetry=use_symmetry)
+                                use_symmetry=use_symmetry, mlh_factor=mlh_factor, mlh_threshold=mlh_threshold)
         self.n_envs = n_envs
         self.n_actions = self.mcts.action_size
         self.discount = discount
