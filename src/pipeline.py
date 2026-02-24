@@ -116,8 +116,7 @@ class TrainPipeline(ABC):
         model_for_training = self.ddp_net if self.is_ddp else None
         p_l, v_l, s_l, ent, g_n, f1 = self.net.train_step(
             dataloader, self.module.augment, ddp_model=model_for_training,
-            n_epochs=getattr(self, 'n_epochs', 10),
-            balance_class_weight=getattr(self, 'balance_sampling', False))
+            n_epochs=getattr(self, 'n_epochs', 10))
 
         if self.is_ddp:
             dist.barrier()

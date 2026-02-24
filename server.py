@@ -56,9 +56,6 @@ parser.add_argument('--lambda_s', type=float, default=0.1,
 parser.add_argument('--policy_lr_scale', type=float, default=0.1,
                     help='Policy head LR multiplier (e.g. 0.3 = policy LR is 30% of base)')
 parser.add_argument('--dropout', type=float, default=0.2, help='Dropout rate')
-parser.add_argument('--balance_sampling', action='store_true',
-                    help='Enable stratified sampling by winner category and class-weighted value loss (default: off)')
-
 args, _ = parser.parse_known_args()
 
 config = {"lr": args.lr,
@@ -83,8 +80,7 @@ config = {"lr": args.lr,
           "replay_ratio": args.replay_ratio,
           "n_epochs": args.n_epochs,
           "noise_steps": args.noise_steps,
-          "noise_eps_min": args.noise_eps_min,
-          "balance_sampling": args.balance_sampling}
+          "noise_eps_min": args.noise_eps_min}
 
 
 class ServerPipeline(TrainPipeline):
@@ -239,8 +235,7 @@ if __name__ == '__main__':
         buffer = ReplayBuffer(pipeline.net.in_dim, pipeline.buffer_size,
                               pipeline.net.n_actions, rows, cols,
                               replay_ratio=pipeline.replay_ratio,
-                              device=pipeline.device,
-                              balance_done_value=getattr(pipeline, 'balance_sampling', False))
+                              device=pipeline.device)
         pipeline.init_buffer(buffer)
 
         # 启动后台数据搬运线程：inbox → buffer（持续运行）

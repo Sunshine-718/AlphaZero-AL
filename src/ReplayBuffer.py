@@ -8,14 +8,13 @@ from torch.utils.data import TensorDataset, DataLoader
 
 
 class ReplayBuffer:
-    def __init__(self, state_dim, capacity, action_dim, row, col, replay_ratio=0.25, device='cpu', balance_done_value=True):
+    def __init__(self, state_dim, capacity, action_dim, row, col, replay_ratio=0.25, device='cpu'):
         self.state = torch.empty((capacity, state_dim, row, col), dtype=torch.int8, device=device)
         self.prob = torch.empty((capacity, action_dim), dtype=torch.float32, device=device)
         self.winner = torch.full((capacity, 1), 0, dtype=torch.int8, device=device)
         self.steps_to_end = torch.full((capacity, 1), 0, dtype=torch.int8, device=device)
         self.replay_ratio = replay_ratio
         self.device = device
-        self.balance_done_value = balance_done_value
         self.current_capacity = capacity
         self._ptr = 0
 
@@ -85,35 +84,7 @@ class ReplayBuffer:
         assert len(self) > 0
         max_samples = int(total_samples * self.replay_ratio) if len(self) > 10000 / self.replay_ratio else min(total_samples, 10000)
 
-        if self.balance_done_value:
-            idx = self._stratified_sample(max_samples)
-        else:
-            idx = torch.from_numpy(np.random.randint(0, len(self), max_samples, dtype=np.int64))
+        idx = torch.from_numpy(np.random.randint(0, len(self), max_samples, dtype=np.int64))
 
         dataset = TensorDataset(*self.get(idx))
         return DataLoader(dataset, batch_size, True)
-
-    def _stratified_sample(self, max_samples):
-        """按 winner 类别（P1 win=1, Draw=0, P2 win=-1）分层采样，每类等量。"""
-        n = len(self)
-        winners = self.winner[:n].view(-1)
-        per_class = max_samples // 3
-
-        idx_list = []
-        for w in [1, 0, -1]:
-            class_indices = torch.where(winners == w)[0]
-            if len(class_indices) == 0:
-                # 该类别为空，跳过（不应发生，但做防御）
-                continue
-            # 有放回采样：如果该类别数量不足 per_class，自动重复
-            rand_idx = torch.from_numpy(
-                np.random.randint(0, len(class_indices), per_class, dtype=np.int64))
-            idx_list.append(class_indices[rand_idx])
-
-        if not idx_list:
-            return torch.from_numpy(np.random.randint(0, n, max_samples, dtype=np.int64))
-
-        idx = torch.cat(idx_list)
-        # 打乱顺序
-        idx = idx[torch.randperm(len(idx))]
-        return idx
