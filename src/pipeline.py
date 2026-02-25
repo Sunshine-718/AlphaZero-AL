@@ -51,11 +51,22 @@ class TrainPipeline(ABC):
         else:
             self.ddp_net = None
 
+        # MLH warmup：steps_head loss 下降到阈值后才激活 MLH
+        warmup = getattr(self, 'mlh_warmup_loss', 0.0)
+        target_slope = getattr(self, 'mlh_slope', 0.0)
+        if warmup > 0 and target_slope > 0:
+            self._mlh_target_slope = target_slope
+            self.mlh_slope = 0.0  # 初始禁用
+            self._mlh_active = False
+            self._s_loss_ema = None
+        else:
+            self._mlh_active = True
+
         self.az_player = AlphaZeroPlayer(self.net, c_init=self.c_puct, n_playout=self.n_playout,
                                          alpha=self.dirichlet_alpha, is_selfplay=1,
                                          cache_size=self.cache_size, eps=self.eps,
                                          use_symmetry=getattr(self, 'use_symmetry', True),
-                                         mlh_slope=getattr(self, 'mlh_slope', 0.0),
+                                         mlh_slope=self.mlh_slope,
                                          mlh_cap=getattr(self, 'mlh_cap', 0.2),
                                          mlh_threshold=getattr(self, 'mlh_threshold', 0.8))
         self.update_best_net()
@@ -256,6 +267,25 @@ class TrainPipeline(ABC):
     def update_best_net(self):
         self.best_net = deepcopy(self.net)
 
+    def _check_mlh_warmup(self, s_loss):
+        """检查 steps_head loss 是否已降到阈值以下，达标后一次性激活 MLH。"""
+        if self._mlh_active:
+            return
+        if self._s_loss_ema is None:
+            self._s_loss_ema = s_loss
+        else:
+            self._s_loss_ema = 0.9 * self._s_loss_ema + 0.1 * s_loss
+        if self._s_loss_ema <= self.mlh_warmup_loss:
+            self.mlh_slope = self._mlh_target_slope
+            self._mlh_active = True
+            self.az_player.mcts.set_mlh_params(
+                self.mlh_slope,
+                getattr(self, 'mlh_cap', 0.2),
+                getattr(self, 'mlh_threshold', 0.8))
+            print(f'[MLH] Activated: s_loss EMA={self._s_loss_ema:.4f} <= {self.mlh_warmup_loss}, '
+                  f'mlh_slope={self.mlh_slope}')
+            swanlab.log({'Event/MLH_activated': 1}, step=self.global_step)
+
     def _log_train_step(self, p_loss, v_loss, s_loss, entropy, grad_norm, f1):
         if self.episode_len is not None:
             swanlab.log({'Metric/Episode length': self.episode_len}, step=self.global_step)
@@ -323,6 +353,7 @@ class TrainPipeline(ABC):
                 self.net.save(self.current)
                 print(f'batch i: {self.global_step}, episode_len: {self.episode_len}, '
                       f'loss: {p_loss + v_loss + s_loss: .8f}, entropy: {entropy: .8f}')
+                self._check_mlh_warmup(s_loss)
                 self._log_train_step(p_loss, v_loss, s_loss, entropy, grad_norm, f1)
 
                 if self.global_step % self.interval == 0:

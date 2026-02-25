@@ -98,6 +98,22 @@ class Actor:
             print('Waiting for server...')
             time.sleep(2)
 
+    def _sync_mlh_params(self):
+        """从 server 拉取最新 MLH 参数，若有变化则更新 MCTS。"""
+        try:
+            r = requests.get(f'{self.server_url}/config', timeout=5)
+            if r.status_code == 200:
+                cfg = r.json()
+                new_slope = cfg.get('mlh_slope', self.cfg['mlh_slope'])
+                if new_slope != self.cfg['mlh_slope']:
+                    self.cfg['mlh_slope'] = new_slope
+                    self.az_player.mcts.set_mlh_params(
+                        new_slope, cfg.get('mlh_cap', self.cfg['mlh_cap']),
+                        cfg.get('mlh_threshold', self.cfg['mlh_threshold']))
+                    print(f'[MLH] Updated from server: mlh_slope={new_slope}')
+        except requests.exceptions.RequestException:
+            pass
+
     def load_weights(self):
         r = requests.get(f'{self.server_url}/weights?ts={self.mtime}&actor={args.actor}')
         if r.status_code == 200:
@@ -113,6 +129,7 @@ class Actor:
             self.net.to(args.device)
             self.mtime = float(r.headers['X-Timestamp'])
             self.az_player.mcts.refresh_cache(self.net)
+            self._sync_mlh_params()
 
     def push_data(self, data):
         payload = pickle.dumps({'__az__': True, 'data': data}, protocol=pickle.HIGHEST_PROTOCOL)

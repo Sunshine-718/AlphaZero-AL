@@ -62,6 +62,8 @@ g_mlh.add_argument('--mlh_cap', type=float, default=0.2,
                     help='MLH max effect cap: clamp M_utility to [-cap, cap]')
 g_mlh.add_argument('--mlh_threshold', type=float, default=0.8,
                     help='MLH Q threshold: suppress M_utility when |Q| < threshold (0=no threshold)')
+g_mlh.add_argument('--mlh_warmup_loss', type=float, default=0.0,
+                    help='Steps-head loss threshold to activate MLH (0=disabled, MLH active from start)')
 
 # ── Self-play ─────────────────────────────────────────────────────────────────
 g_sp = parser.add_argument_group('Self-play')
@@ -119,7 +121,8 @@ config = {"lr": args.lr,
           "noise_eps_min": args.noise_eps_min,
           "mlh_slope": args.mlh_slope,
           "mlh_cap": args.mlh_cap,
-          "mlh_threshold": args.mlh_threshold}
+          "mlh_threshold": args.mlh_threshold,
+          "mlh_warmup_loss": args.mlh_warmup_loss}
 
 
 class ServerPipeline(TrainPipeline):
