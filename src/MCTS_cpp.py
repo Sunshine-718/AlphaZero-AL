@@ -117,6 +117,13 @@ class BatchedMCTS:
             od[k]['value'] = (new_probs[j].copy(), new_vals[j].item(), new_ml[j].item())
         return self
 
+    def rollout_playout(self, current_boards, turns):
+        """纯 MCTS：整个 playout 循环在 C++ 内完成（random rollout + uniform prior）"""
+        current_boards = current_boards.astype(np.int8)
+        turns = turns.astype(np.int32)
+        self.mcts.rollout_playout(current_boards, turns, self.n_playout)
+        return self
+
     def set_noise_epsilon(self, eps):
         self.mcts.set_noise_epsilon(eps)
 

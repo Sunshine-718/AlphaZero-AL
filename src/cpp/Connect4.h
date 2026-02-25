@@ -8,8 +8,12 @@
 
 namespace AlphaZero
 {
-    /*
-     * Bitboard 布局 (每列 7 位 = 6 行 + 1 哨兵位):
+    /**
+     * Connect4（四子棋）游戏逻辑，满足 MCTSGame concept。
+     *
+     * 使用 bitboard 实现，胜负检测 O(1)。
+     *
+     * Bitboard 布局（每列 7 位 = 6 行 + 1 哨兵位）：
      *
      *   col 0   col 1   col 2   col 3   col 4   col 5   col 6
      *     6      13      20      27      34      41      48    ← 哨兵位
@@ -20,7 +24,7 @@ namespace AlphaZero
      *     1       8      15      22      29      36      43
      *     0       7      14      21      28      35      42    ← 底行 (row 5)
      *
-     * board[row][col] 对应 bit = col * 7 + (ROWS - 1 - row)
+     * board[row][col] 对应 bit = col × 7 + (ROWS - 1 - row)
      *
      * bb[0] = 玩家 1 (turn=1) 的棋子
      * bb[1] = 玩家 -1 (turn=-1) 的棋子
@@ -28,29 +32,28 @@ namespace AlphaZero
     class Connect4
     {
     public:
+        /// 游戏维度常量
         struct Traits
         {
             static constexpr int ROWS = 6;
             static constexpr int COLS = 7;
-            static constexpr int ACTION_SIZE = 7;
-            static constexpr int BOARD_SIZE = ROWS * COLS; // 42
+            static constexpr int ACTION_SIZE = 7;               ///< 动作空间 = 7 列
+            static constexpr int BOARD_SIZE = ROWS * COLS;      ///< 棋盘元素数 = 42
             static constexpr std::array<int, 2> BOARD_SHAPE = {ROWS, COLS};
-            static constexpr int NUM_SYMMETRIES = 2; // 0=identity, 1=horizontal flip
+            static constexpr int NUM_SYMMETRIES = 2;            ///< 0=恒等, 1=水平翻转
         };
 
-        // 为了与 BatchedMCTS memcpy I/O 兼容，保留 board 数组
-        // 但仅在需要导出时才同步（lazy）
-        int8_t board[Traits::ROWS][Traits::COLS];
-        int turn;
+        int8_t board[Traits::ROWS][Traits::COLS]; ///< 显示用棋盘（-1/0/1 = P2/空/P1）
+        int turn;                                  ///< 当前落子方（1 或 -1）
 
-        // Bitboard 核心状态
-        uint64_t bb[2];              // 两个玩家的棋子位置
-        int height[Traits::COLS];    // 每列下一个可用位的 bit 索引
-        int n_pieces;                // 棋盘上的总棋子数
-        int last_player_idx;         // 上一步落子的玩家索引 (0 或 1), -1 表示没有
+        uint64_t bb[2];                 ///< 两个玩家的 bitboard
+        int height[Traits::COLS];       ///< 每列下一个可用 bit 的索引
+        int n_pieces;                   ///< 棋盘上的总棋子数
+        int last_player_idx;            ///< 上一步落子的玩家索引（0 或 1），-1 表示无
 
         Connect4() { reset(); }
 
+        /// 重置为空棋盘，玩家 1 先手
         void reset()
         {
             std::memset(board, 0, sizeof(board));
@@ -61,17 +64,23 @@ namespace AlphaZero
             last_player_idx = -1;
             for (int c = 0; c < Traits::COLS; ++c)
             {
-                height[c] = c * 7; // 每列底部的 bit 位置
+                height[c] = c * 7;
             }
         }
 
-        // ======== I/O 接口 (MCTSGame concept 要求) ========
+        // ======== I/O 接口（MCTSGame concept 要求）========
 
+        /// 返回 board 数组的指针（供 memcpy 导出到 Python）
         [[nodiscard]] const int8_t *board_data() const { return &board[0][0]; }
+        /// 获取当前落子方
         [[nodiscard]] int get_turn() const { return turn; }
+        /// 设置当前落子方
         void set_turn(int t) { turn = t; }
 
-        // 从 Python memcpy 导入棋盘数据并重建 bitboard
+        /**
+         * 从 Python 端 memcpy 导入棋盘数据（int8 数组），并重建 bitboard 状态。
+         * @param src 源数据指针，长度 BOARD_SIZE
+         */
         void import_board(const int8_t *src)
         {
             std::memcpy(board, src, sizeof(board));
@@ -80,7 +89,11 @@ namespace AlphaZero
 
         // ======== 内部同步方法 ========
 
-        // 从 board 数组重建 bitboard 状态（用于从 Python memcpy 导入后）
+        /**
+         * 从 board 数组重建 bitboard 状态。
+         * 用于 import_board() 或 board setter 后同步内部状态。
+         * 从底行向上扫描每列，遇到空格停止（Connect4 重力规则）。
+         */
         void sync_from_board()
         {
             bb[0] = 0;
@@ -101,19 +114,21 @@ namespace AlphaZero
                     }
                     else
                     {
-                        break; // 碰到空格，这列的棋子到此为止
+                        break;
                     }
                 }
             }
-            // 根据棋子数推断上一步落子方，使 check_winner 在导入棋盘后正常工作
-            // 奇数个棋子 → P1(idx=0) 最后落子；偶数个(>0) → P2(idx=1) 最后落子
+            // 根据棋子数推断上一步落子方
             if (n_pieces > 0)
             {
                 last_player_idx = (n_pieces % 2 == 1) ? 0 : 1;
             }
         }
 
-        // 将 bitboard 状态写回 board 数组（用于导出到 Python）
+        /**
+         * 将 bitboard 状态写回 board 数组（用于导出到 Python 或 show()）。
+         * 遍历每列的已用 bit，映射到 board[row][col]。
+         */
         void sync_to_board()
         {
             std::memset(board, 0, sizeof(board));
@@ -133,13 +148,17 @@ namespace AlphaZero
 
         // ======== 游戏逻辑 ========
 
+        /**
+         * 在指定列落子。更新 bitboard、board 数组、height、棋子计数，并切换落子方。
+         * 调用方需确保该列未满（通过 get_valid_moves() 检查）。
+         * @param col 落子列号 [0, 6]
+         */
         void step(int col)
         {
             int player_idx = turn == 1 ? 0 : 1;
             uint64_t move = 1ULL << height[col];
             bb[player_idx] |= move;
 
-            // 同步到 board 数组
             int row = Traits::ROWS - 1 - (height[col] - col * 7);
             board[row][col] = turn;
 
@@ -149,6 +168,14 @@ namespace AlphaZero
             turn = -turn;
         }
 
+        /**
+         * 检查是否有玩家获胜（bitboard O(1) 检测）。
+         *
+         * 对上一步落子方的 bitboard 做 4 方向（垂直、水平、两条对角线）的位移 AND 检测：
+         * 如果存在连续 4 个 bit，则该方向有四子连线。
+         *
+         * @return 1（玩家 1 赢）、-1（玩家 -1 赢）、0（无人获胜）
+         */
         [[nodiscard]] int check_winner() const
         {
             if (last_player_idx == -1)
@@ -156,29 +183,32 @@ namespace AlphaZero
 
             uint64_t b = bb[last_player_idx];
 
-            // 垂直 (|): 间距 1
+            // 垂直（|）：相邻 bit 间距 1
             uint64_t t = b & (b >> 1);
             if (t & (t >> 2)) return last_player_idx == 0 ? 1 : -1;
 
-            // 水平 (—): 间距 7
+            // 水平（—）：相邻 bit 间距 7
             t = b & (b >> 7);
             if (t & (t >> 14)) return last_player_idx == 0 ? 1 : -1;
 
-            // 对角线 (\): 间距 6
+            // 对角线（＼）：相邻 bit 间距 6
             t = b & (b >> 6);
             if (t & (t >> 12)) return last_player_idx == 0 ? 1 : -1;
 
-            // 对角线 (/): 间距 8
+            // 对角线（／）：相邻 bit 间距 8
             t = b & (b >> 8);
             if (t & (t >> 16)) return last_player_idx == 0 ? 1 : -1;
 
             return 0;
         }
 
+        /**
+         * 获取所有合法落子列（未满的列）。
+         * @return ValidMoves 结构体，包含合法列号列表和数量
+         */
         [[nodiscard]] ValidMoves<Traits::ACTION_SIZE> get_valid_moves() const
         {
             ValidMoves<Traits::ACTION_SIZE> moves;
-            // 哨兵位掩码：如果 height[c] 到达了哨兵位 (c*7 + 6)，说明该列已满
             for (int c = 0; c < Traits::COLS; ++c)
             {
                 if (height[c] < c * 7 + Traits::ROWS)
@@ -189,18 +219,24 @@ namespace AlphaZero
             return moves;
         }
 
+        /// 棋盘是否已满（42 颗棋子）
         [[nodiscard]] bool is_full() const
         {
             return n_pieces == Traits::ROWS * Traits::COLS;
         }
 
-        // 对称变换：sym_id=0 恒等, sym_id=1 水平翻转
+        /**
+         * 对称变换：sym_id=0 恒等，sym_id=1 水平翻转。
+         *
+         * 水平翻转通过 bitboard 列掩码交换实现（col 0 ↔ col 6, 1 ↔ 5, 2 ↔ 4），
+         * 中心列 3 不动。同步更新 height 数组和 board 数组。
+         *
+         * @param sym_id 对称变换 ID
+         */
         void apply_symmetry(int sym_id)
         {
             if (sym_id == 0) return;
 
-            // 列掩码批量交换：每列占 7 个连续 bit，col_mask(c) = 0x7F << (c*7)
-            // 交换 3 对列 (0↔6, 1↔5, 2↔4)，中心列 3 不动
             for (int p = 0; p < 2; ++p)
             {
                 uint64_t src = bb[p];
@@ -216,7 +252,6 @@ namespace AlphaZero
                 bb[p] = dst;
             }
 
-            // 交换 height 数组
             for (int c = 0; c < 3; ++c)
             {
                 int mirror = Traits::COLS - 1 - c;
@@ -229,7 +264,12 @@ namespace AlphaZero
             sync_to_board();
         }
 
-        // 对 policy 数组应用对称逆变换（水平翻转是自逆的）
+        /**
+         * 对 policy 数组应用对称逆变换。
+         * 水平翻转是自逆的：交换 policy[i] 和 policy[COLS-1-i]。
+         * @param sym_id 对称变换 ID
+         * @param policy [in/out] 策略数组
+         */
         static void inverse_symmetry_policy(int sym_id,
                                             std::array<float, Traits::ACTION_SIZE> &policy)
         {

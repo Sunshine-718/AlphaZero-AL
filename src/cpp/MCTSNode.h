@@ -7,25 +7,36 @@
 
 namespace AlphaZero
 {
+    /**
+     * MCTS 搜索树节点。
+     *
+     * 存储于 MCTS::node_pool（线性数组），通过 int32_t 索引相互引用。
+     * 每个节点对应搜索树中的一个游戏状态，记录访问次数、Q 值、策略先验等统计量。
+     *
+     * @tparam ACTION_SIZE 动作空间大小（如 Connect4 = 7）
+     */
     template <int ACTION_SIZE>
     struct MCTSNode
     {
-        int32_t parent = -1;
-        // 存储子节点在数组中的索引，初始化为 -1
-        std::array<int32_t, ACTION_SIZE> children;
+        int32_t parent = -1;                        ///< 父节点索引，根节点为 -1
+        std::array<int32_t, ACTION_SIZE> children;  ///< 子节点索引数组，-1 表示未创建
 
-        int n_visits = 0;
-        float Q = 0.0f;
-        float M = 0.0f;    // Moves Left: 预期剩余步数的 running average
-        float prior = 0.0f;
-        float noise = 0.0f;
-        bool is_expanded = false;
+        int n_visits = 0;       ///< 访问次数 N
+        float Q = 0.0f;         ///< 状态价值的运行均值（当前落子方视角）
+        float M = 0.0f;         ///< 预期剩余步数的运行均值（Moves Left Head）
+        float prior = 0.0f;     ///< 神经网络策略先验概率 P(a)
+        float noise = 0.0f;     ///< Dirichlet 噪声（仅根节点的子节点有效）
+        bool is_expanded = false;   ///< 是否已展开（子节点已创建）
 
         MCTSNode() {
             children.fill(-1);
         }
 
-        // 重置节点状态，以便在节点池中复用
+        /**
+         * 重置节点状态，以便在节点池中复用。
+         * @param p      父节点索引
+         * @param p_prior 策略先验概率
+         */
         void reset(int32_t p, float p_prior) {
             parent = p;
             prior = p_prior;
@@ -37,24 +48,44 @@ namespace AlphaZero
             is_expanded = false;
         }
 
-        // 计算 UCB，含 MLH M_utility 项
+        /**
+         * 计算 UCB 分数，用于在树遍历中选择最优动作。
+         *
+         * UCB = q_value + u_score + m_utility
+         *   q_value   = -Q（父节点视角：子节点越差，父节点越好）
+         *   u_score   = C_puct × prior × √N_parent / (1 + N_child)（PUCT 探索项）
+         *   m_utility = clamp(slope × (child_M - parent_M), -cap, cap) × Q（MLH 偏好项）
+         *
+         * @param c_init        PUCT 初始常数
+         * @param c_base        PUCT 对数基数
+         * @param parent_n      父节点访问次数
+         * @param is_root_node  是否为根节点（根节点混合 Dirichlet 噪声）
+         * @param noise_epsilon 噪声混合权重 ε
+         * @param fpu_value     First Play Urgency 值（未访问节点的默认 Q 估计）
+         * @param parent_M      父节点的 M 值
+         * @param mlh_slope     MLH 斜率（0 = 禁用 MLH）
+         * @param mlh_cap       MLH 最大影响上限
+         * @return UCB 分数
+         */
         [[nodiscard]] float get_ucb(float c_init, float c_base, float parent_n,
                                      bool is_root_node, float noise_epsilon, float fpu_value,
                                      float parent_M, float mlh_slope, float mlh_cap) const {
+            // 根节点混合 Dirichlet 噪声：effective_prior = (1-ε)·prior + ε·noise
             float effective_prior = prior;
             if (is_root_node) {
                 effective_prior = (1.0f - noise_epsilon) * prior + noise_epsilon * noise;
             }
 
+            // Q 值：未访问节点用 FPU 替代，已访问节点取 -Q（翻转到父节点视角）
             float q_value = (n_visits == 0) ? fpu_value : -Q;
+            // PUCT 探索项：C(s) = c_init + log((N_parent + c_base + 1) / c_base)
             float c_puct = c_init + std::log((parent_n + c_base + 1.0f) / c_base);
             float u_score = c_puct * effective_prior * std::sqrt(parent_n) / (1.0f + n_visits);
 
-            // MLH: M_utility = clamp(slope * (child_M - parent_M), -cap, cap) * Q
-            // 用 Q（子节点自身视角）代替 sign(-Q)：
+            // MLH 偏好项：鼓励在劣势时快速结束、优势时延长博弈
             //   Q < 0 (对手赢着): 快结束 bonus, 慢结束 penalty
             //   Q > 0 (对手输着): 慢结束 bonus, 快结束 penalty
-            //   Q ≈ 0 (均势):    自然无效果，无需 threshold 参数
+            //   Q ≈ 0 (均势):    自然无效果
             float m_utility = 0.0f;
             if (mlh_slope > 0.0f && n_visits > 0) {
                 float m_diff = M - parent_M;

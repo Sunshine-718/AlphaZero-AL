@@ -20,70 +20,8 @@ def board_to_state(board, turn):
 
 
 @njit(fastmath=True)
-def state_to_board(state):
-    # 统一到 (1, 3, H, W)
-    if state.ndim == 3:
-        H, W = state.shape[1], state.shape[2]
-        tmp = np.zeros((1, 3, H, W), dtype=np.float32)
-        tmp[0, :, :, :] = state
-        state = tmp
-
-    H, W = state.shape[2], state.shape[3]
-    board = np.zeros((H, W), dtype=np.float32)
-
-    # 通道定义：
-    # ch0: 1 的位置，ch1: -1 的位置，ch2: 全 1 表示轮到 1，下 -1 表示轮到 -1
-    ch0 = state[0, 0]
-    ch1 = state[0, 1]
-    ch2 = state[0, 2]
-
-    # 依据 ch0 / ch1 复原棋盘
-    # 使用阈值避免浮点误差（board_to_state 里是精确 0/1）
-    for i in range(H):
-        for j in range(W):
-            if ch0[i, j] > 0.5:
-                board[i, j] = 1.0
-            elif ch1[i, j] > 0.5:
-                board[i, j] = -1.0
-            # 否则保持 0.0
-
-    return board
-
-
-@njit(fastmath=True)
 def check_full(board):
     return len(np.where(board == 0)[0]) == 0
-
-
-@njit(fastmath=True)
-def check_winner(board):
-    rows, cols = board.shape
-
-    for row in range(rows):
-        for col in range(cols - 3):
-            current = board[row, col]
-            if current != 0 and current == board[row, col+1] and current == board[row, col+2] and current == board[row, col+3]:
-                return current
-
-    for row in range(rows - 3):
-        for col in range(cols):
-            current = board[row, col]
-            if current != 0 and current == board[row+1, col] and current == board[row+2, col] and current == board[row+3, col]:
-                return current
-
-    for row in range(rows - 3):
-        for col in range(cols - 3):
-            current = board[row, col]
-            if current != 0 and current == board[row+1, col+1] and current == board[row+2, col+2] and current == board[row+3, col+3]:
-                return current
-
-    for row in range(3, rows):
-        for col in range(cols - 3):
-            current = board[row, col]
-            if current != 0 and current == board[row-1, col+1] and current == board[row-2, col+2] and current == board[row-3, col+3]:
-                return current
-
-    return 0
 
 
 def inspect(net, board=None):
@@ -122,27 +60,8 @@ def augment(batch):
     return state, prob, winner, steps_to_end
 
 
-@njit
-def place(board, action, turn):
-    if action in valid_move(board):
-        row_index = max(np.where(board[:, action] == 0)[0])
-        board[row_index, action] = turn
-        return True
-    return False
-
-
 def print_row(action, probX, probO, max_X, max_O):
     print('⭐️ ' if probX == max_X else '   ', end='')
     print(f'action: {action}, prob_X: {probX * 100: 02.2f}%', end='\t')
     print('⭐️ ' if probO == max_O else '   ', end='')
     print(f'action: {action}, prob_O: {probO * 100: 02.2f}%')
-
-
-@njit
-def valid_move(board):
-    return [i for i in range(board.shape[1]) if 0 in board[:, i]]
-
-
-@njit
-def valid_mask(board):
-    return [0 in board[:, i] for i in range(board.shape[1])]

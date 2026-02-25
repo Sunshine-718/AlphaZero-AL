@@ -4,7 +4,7 @@
 # Created on: 10/Aug/2024  23:47
 import numpy as np
 from abc import abstractmethod, ABC
-from .utils import softmax, RolloutAdapter
+from .utils import softmax
 from .MCTS_cpp import BatchedMCTS
 
 
@@ -71,7 +71,6 @@ class MCTSPlayer(Player):
     """Pure MCTS baseline (uniform prior + random rollout) — wraps C++ BatchedMCTS."""
     def __init__(self, c_puct=4, n_playout=1000, eps=0.0):
         super().__init__()
-        self._adapter = RolloutAdapter()
         self.mcts = BatchedMCTS(
             batch_size=1, c_init=c_puct, c_base=500,
             alpha=0, n_playout=n_playout,
@@ -84,7 +83,7 @@ class MCTSPlayer(Player):
     def get_action(self, env, *args, **kwargs):
         board = env.board[np.newaxis, ...]
         turns = np.array([env.turn], dtype=np.int32)
-        self.mcts.batch_playout(self._adapter, board, turns)
+        self.mcts.rollout_playout(board, turns)
         visits = self.mcts.get_visits_count()[0]
         action = int(np.argmax(visits))
         self.reset_player()
