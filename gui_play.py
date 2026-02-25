@@ -22,6 +22,7 @@ ALPHA               = 0.3
 USE_SYMMETRY        = True
 MLH_SLOPE           = 0.0   # MLH slope (0=disabled, LC0-style: scales child_M - parent_M)
 MLH_CAP             = 0.2   # MLH max effect cap
+MLH_THRESHOLD       = 0.8   # MLH Q threshold: suppress M_utility when |Q| < threshold (0=no threshold)
 
 PARAMS_PATH_FMT     = './params/{model_name}_{env_name}_{network}_{model_type}.pt'
 
@@ -448,7 +449,8 @@ class Connect4GUI(QWidget):
         self.az_player = AlphaZeroPlayer(None, c_init=None, n_playout=None,
                                          alpha=ALPHA, is_selfplay=0, cache_size=10000,
                                          use_symmetry=USE_SYMMETRY,
-                                         mlh_slope=MLH_SLOPE, mlh_cap=MLH_CAP)
+                                         mlh_slope=MLH_SLOPE, mlh_cap=MLH_CAP,
+                                         mlh_threshold=MLH_THRESHOLD)
         self._reload_model()
 
         # 连接信号

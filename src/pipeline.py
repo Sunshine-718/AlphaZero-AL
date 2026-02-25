@@ -56,7 +56,8 @@ class TrainPipeline(ABC):
                                          cache_size=self.cache_size, eps=self.eps,
                                          use_symmetry=getattr(self, 'use_symmetry', True),
                                          mlh_slope=getattr(self, 'mlh_slope', 0.0),
-                                         mlh_cap=getattr(self, 'mlh_cap', 0.2))
+                                         mlh_cap=getattr(self, 'mlh_cap', 0.2),
+                                         mlh_threshold=getattr(self, 'mlh_threshold', 0.8))
         self.update_best_net()
         self.elo = Elo(self.init_elo, 1500)
         self.r_a = 0
@@ -132,7 +133,8 @@ class TrainPipeline(ABC):
                              alpha=None, is_selfplay=False,
                              use_symmetry=getattr(self, 'use_symmetry', True),
                              mlh_slope=getattr(self, 'mlh_slope', 0.0),
-                             mlh_cap=getattr(self, 'mlh_cap', 0.2))
+                             mlh_cap=getattr(self, 'mlh_cap', 0.2),
+                             mlh_threshold=getattr(self, 'mlh_threshold', 0.8))
         az.eval()
         mcts = MCTSPlayer(1, self.pure_mcts_n_playout)
 
@@ -182,16 +184,17 @@ class TrainPipeline(ABC):
         use_sym = getattr(self, 'use_symmetry', True)
         mlh_sl = getattr(self, 'mlh_slope', 0.0)
         mlh_cp = getattr(self, 'mlh_cap', 0.2)
+        mlh_th = getattr(self, 'mlh_threshold', 0.8)
         mcts_p1 = PyBatchedMCTS(
             n_envs, c_init=self.c_puct, c_base=500,
             alpha=self.dirichlet_alpha, n_playout=n_playout, game_name=self.env_name,
             noise_epsilon=eval_noise_eps, use_symmetry=use_sym,
-            mlh_slope=mlh_sl, mlh_cap=mlh_cp)
+            mlh_slope=mlh_sl, mlh_cap=mlh_cp, mlh_threshold=mlh_th)
         mcts_p2 = PyBatchedMCTS(
             n_envs, c_init=self.c_puct, c_base=500,
             alpha=self.dirichlet_alpha, n_playout=n_playout, game_name=self.env_name,
             noise_epsilon=eval_noise_eps, use_symmetry=use_sym,
-            mlh_slope=mlh_sl, mlh_cap=mlh_cp)
+            mlh_slope=mlh_sl, mlh_cap=mlh_cp, mlh_threshold=mlh_th)
 
         envs = [self.env.copy() for _ in range(n_envs)]
         for e in envs:

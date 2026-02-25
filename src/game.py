@@ -31,7 +31,20 @@ class Game:
                         print('Game end. Draw')
                 return winner
 
-    def batch_self_play(self, player, n_games, temperature, temp_thres):
+    @staticmethod
+    def _get_temp(step, temp_init, temp_decay_moves, temp_endgame):
+        """lc0-style linear temperature decay with floor.
+
+        temp(step) = temp_init * max(0, 1 - step / decay_moves)
+        clamped at temp_endgame from below.
+        If decay_moves <= 0, always returns temp_init (no decay).
+        """
+        if temp_decay_moves <= 0:
+            return temp_init
+        t = temp_init * max(0.0, 1.0 - step / temp_decay_moves)
+        return max(t, temp_endgame)
+
+    def batch_self_play(self, player, n_games, temperature, temp_decay_moves, temp_endgame=0):
         envs = [self.env.copy() for _ in range(n_games)]
         for env in envs:
             env.reset()
@@ -43,7 +56,8 @@ class Game:
         while active_indices:
             current_boards = np.array([envs[i].board for i in range(n_games)])
             turns = np.array([envs[i].turn for i in range(n_games)], dtype=np.int32)
-            temps = [temperature if trajectories[i]['steps'] <= temp_thres else 1e-3 for i in range(n_games)]
+            temps = [self._get_temp(trajectories[i]['steps'], temperature, temp_decay_moves, temp_endgame)
+                     for i in range(n_games)]
             # noise epsilon 衰减：开局高探索，随棋局线性衰减到 noise_eps_min
             if getattr(player, 'noise_steps', 0) > 0:
                 step = trajectories[active_indices[0]]['steps']

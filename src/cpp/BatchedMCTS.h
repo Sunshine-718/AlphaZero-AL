@@ -45,17 +45,18 @@ namespace AlphaZero
          * @param use_symmetry   是否启用随机对称增强
          * @param mlh_slope      MLH 斜率
          * @param mlh_cap        MLH 上限
+         * @param mlh_threshold  MLH Q 阈值
          */
         BatchedMCTS(int num_envs, float c_init, float c_base, float alpha,
                     float noise_epsilon = 0.25f, float fpu_reduction = 0.4f, bool use_symmetry = true,
-                    float mlh_slope = 0.0f, float mlh_cap = 0.2f)
+                    float mlh_slope = 0.0f, float mlh_cap = 0.2f, float mlh_threshold = 0.8f)
             : n_envs(num_envs)
         {
             mcts_envs.reserve(n_envs);
             for (int i = 0; i < n_envs; ++i)
             {
                 mcts_envs.push_back(std::make_unique<MCTS<Game>>(c_init, c_base, alpha, noise_epsilon, fpu_reduction, use_symmetry,
-                                                                  mlh_slope, mlh_cap));
+                                                                  mlh_slope, mlh_cap, mlh_threshold));
             }
         }
 
@@ -111,15 +112,17 @@ namespace AlphaZero
 
         /**
          * 批量设置 Moves Left Head 参数。
-         * @param slope MLH 斜率（0 = 禁用）
-         * @param cap   MLH 最大影响上限
+         * @param slope     MLH 斜率（0 = 禁用）
+         * @param cap       MLH 最大影响上限
+         * @param threshold MLH Q 阈值
          */
-        void set_mlh_params(float slope, float cap)
+        void set_mlh_params(float slope, float cap, float threshold)
         {
             for (auto &m : mcts_envs)
             {
                 m->mlh_slope = slope;
                 m->mlh_cap = cap;
+                m->mlh_threshold = threshold;
             }
         }
 

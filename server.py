@@ -60,12 +60,16 @@ g_mlh.add_argument('--mlh_slope', type=float, default=0.0,
                     help='MLH slope for MCTS (0=disabled, LC0-style: scales child_M - parent_M)')
 g_mlh.add_argument('--mlh_cap', type=float, default=0.2,
                     help='MLH max effect cap: clamp M_utility to [-cap, cap]')
+g_mlh.add_argument('--mlh_threshold', type=float, default=0.8,
+                    help='MLH Q threshold: suppress M_utility when |Q| < threshold (0=no threshold)')
 
 # ── Self-play ─────────────────────────────────────────────────────────────────
 g_sp = parser.add_argument_group('Self-play')
 g_sp.add_argument('-t', '--temp', type=float, default=1, help='Self-play temperature')
-g_sp.add_argument('--temp_thres', type=float, default=12,
-                   help='Step threshold to switch temperature to ~0')
+g_sp.add_argument('--temp_decay_moves', type=int, default=30,
+                   help='Number of moves to linearly decay temperature to 0 (0=no decay)')
+g_sp.add_argument('--temp_endgame', type=float, default=0.3,
+                   help='Temperature floor (minimum temperature after decay)')
 g_sp.add_argument('--actor', type=str, default='best',
                    help='Which weight actors load (best/current)')
 
@@ -114,7 +118,8 @@ config = {"lr": args.lr,
           "noise_steps": args.noise_steps,
           "noise_eps_min": args.noise_eps_min,
           "mlh_slope": args.mlh_slope,
-          "mlh_cap": args.mlh_cap}
+          "mlh_cap": args.mlh_cap,
+          "mlh_threshold": args.mlh_threshold}
 
 
 class ServerPipeline(TrainPipeline):
@@ -225,8 +230,10 @@ def get_config():
         'use_symmetry': getattr(pipeline, 'use_symmetry', True),
         'mlh_slope': getattr(pipeline, 'mlh_slope', 0.0),
         'mlh_cap': getattr(pipeline, 'mlh_cap', 0.2),
+        'mlh_threshold': getattr(pipeline, 'mlh_threshold', 0.8),
         'temp': args.temp,
-        'temp_thres': args.temp_thres,
+        'temp_decay_moves': args.temp_decay_moves,
+        'temp_endgame': args.temp_endgame,
     })
 
 

@@ -54,7 +54,7 @@ namespace AlphaZero
          * UCB = q_value + u_score + m_utility
          *   q_value   = -Q（父节点视角：子节点越差，父节点越好）
          *   u_score   = C_puct × prior × √N_parent / (1 + N_child)（PUCT 探索项）
-         *   m_utility = clamp(slope × (child_M - parent_M), -cap, cap) × Q（MLH 偏好项）
+         *   m_utility = clamp(slope × (child_M - parent_M), -cap, cap) × Q × ramp(|Q|, threshold)
          *
          * @param c_init        PUCT 初始常数
          * @param c_base        PUCT 对数基数
@@ -65,11 +65,13 @@ namespace AlphaZero
          * @param parent_M      父节点的 M 值
          * @param mlh_slope     MLH 斜率（0 = 禁用 MLH）
          * @param mlh_cap       MLH 最大影响上限
+         * @param mlh_threshold MLH Q 阈值：|Q| 低于此值时 M utility 为 0（0 = 无阈值）
          * @return UCB 分数
          */
         [[nodiscard]] float get_ucb(float c_init, float c_base, float parent_n,
                                      bool is_root_node, float noise_epsilon, float fpu_value,
-                                     float parent_M, float mlh_slope, float mlh_cap) const {
+                                     float parent_M, float mlh_slope, float mlh_cap,
+                                     float mlh_threshold) const {
             // 根节点混合 Dirichlet 噪声：effective_prior = (1-ε)·prior + ε·noise
             float effective_prior = prior;
             if (is_root_node) {
@@ -86,10 +88,18 @@ namespace AlphaZero
             //   Q < 0 (对手赢着): 快结束 bonus, 慢结束 penalty
             //   Q > 0 (对手输着): 慢结束 bonus, 快结束 penalty
             //   Q ≈ 0 (均势):    自然无效果
+            // mlh_threshold: |Q| 低于阈值时完全抑制 M utility，高于阈值后平滑 ramp-up
             float m_utility = 0.0f;
             if (mlh_slope > 0.0f && n_visits > 0) {
-                float m_diff = M - parent_M;
-                m_utility = std::clamp(mlh_slope * m_diff, -mlh_cap, mlh_cap) * Q;
+                float abs_q = std::abs(Q);
+                if (mlh_threshold <= 0.0f || abs_q >= mlh_threshold) {
+                    float m_diff = M - parent_M;
+                    m_utility = std::clamp(mlh_slope * m_diff, -mlh_cap, mlh_cap) * Q;
+                    // 平滑 ramp-up：|Q| 从 threshold 到 1.0 线性过渡
+                    if (mlh_threshold > 0.0f && mlh_threshold < 1.0f) {
+                        m_utility *= (abs_q - mlh_threshold) / (1.0f - mlh_threshold);
+                    }
+                }
             }
 
             return q_value + u_score + m_utility;

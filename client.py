@@ -78,7 +78,8 @@ class Actor:
             noise_steps=self.cfg['noise_steps'],
             noise_eps_min=self.cfg['noise_eps_min'],
             mlh_slope=self.cfg['mlh_slope'],
-            mlh_cap=self.cfg['mlh_cap'])
+            mlh_cap=self.cfg['mlh_cap'],
+            mlh_threshold=self.cfg['mlh_threshold'])
         self.mtime = 0
 
     def fetch_config(self):
@@ -127,8 +128,10 @@ class Actor:
         try:
             start_time = time.time()
             temp = self.cfg['temp']
-            temp_thres = self.cfg['temp_thres']
-            results = self.game.batch_self_play(self.az_player, self.batch_size, temp, temp_thres)
+            temp_decay_moves = self.cfg['temp_decay_moves']
+            temp_endgame = self.cfg['temp_endgame']
+            results = self.game.batch_self_play(self.az_player, self.batch_size,
+                                                temp, temp_decay_moves, temp_endgame)
             for _, play_data in results:
                 data.append(play_data)
             duration = time.time() - start_time

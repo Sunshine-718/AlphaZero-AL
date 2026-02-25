@@ -58,6 +58,7 @@ namespace AlphaZero
         bool use_symmetry;                  ///< 是否对叶节点随机应用对称变换
         float mlh_slope;                    ///< Moves Left Head 斜率
         float mlh_cap;                      ///< Moves Left Head 最大影响上限
+        float mlh_threshold;                ///< MLH Q 阈值：|Q| 低于此值时 M utility 为 0
 
         /**
          * 构造 MCTS 搜索树。
@@ -69,11 +70,12 @@ namespace AlphaZero
          * @param use_sym   是否启用随机对称增强
          * @param mlh_slope_ MLH 斜率
          * @param mlh_cap_   MLH 上限
+         * @param mlh_threshold_ MLH Q 阈值
          */
         MCTS(float c_i, float c_b, float a, float noise_eps = 0.25f, float fpu_red = 0.4f, bool use_sym = true,
-             float mlh_slope_ = 0.0f, float mlh_cap_ = 0.2f)
+             float mlh_slope_ = 0.0f, float mlh_cap_ = 0.2f, float mlh_threshold_ = 0.8f)
             : c_init(c_i), c_base(c_b), alpha(a), noise_epsilon(noise_eps), fpu_reduction(fpu_red), use_symmetry(use_sym),
-              mlh_slope(mlh_slope_), mlh_cap(mlh_cap_)
+              mlh_slope(mlh_slope_), mlh_cap(mlh_cap_), mlh_threshold(mlh_threshold_)
         {
             node_pool.resize(2000);
             reset();
@@ -207,7 +209,7 @@ namespace AlphaZero
                 {
                     float score = node_pool[child_idx].get_ucb(
                         c_init, c_base, parent_n, is_root, noise_epsilon,
-                        fpu_value, parent_M, mlh_slope, mlh_cap);
+                        fpu_value, parent_M, mlh_slope, mlh_cap, mlh_threshold);
                     if (score > best_score)
                     {
                         best_score = score;

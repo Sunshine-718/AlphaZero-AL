@@ -26,6 +26,8 @@ parser.add_argument('--mlh_slope', type=float, default=0.0,
                     help='MLH slope (0=disabled, LC0-style: scales child_M - parent_M)')
 parser.add_argument('--mlh_cap', type=float, default=0.2,
                     help='MLH max effect cap')
+parser.add_argument('--mlh_threshold', type=float, default=0.8,
+                    help='MLH Q threshold: suppress M_utility when |Q| < threshold (0=no threshold)')
 
 args = parser.parse_args()
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -51,7 +53,8 @@ if __name__ == '__main__':
             az_player = AlphaZeroPlayer(net, c_init=args.c_init,
                                         n_playout=args.n, alpha=args.alpha, is_selfplay=0,
                                         use_symmetry=not args.no_symmetry,
-                                        mlh_slope=args.mlh_slope, mlh_cap=args.mlh_cap)
+                                        mlh_slope=args.mlh_slope, mlh_cap=args.mlh_cap,
+                                        mlh_threshold=args.mlh_threshold)
         az_player.eval()
 
         human = Human()
