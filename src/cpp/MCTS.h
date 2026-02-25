@@ -285,6 +285,38 @@ namespace AlphaZero
             }
             return counts;
         }
+
+        // 返回 root 自身 + 每个 action 的子节点统计量
+        // 输出: root_N, root_Q, root_M, 以及每个 action 的 (N, Q, prior, noise, M)
+        // 数据写入预分配的 flat 缓冲区: 长度 = 3 + ACTION_SIZE * 5
+        // 布局: [root_N, root_Q, root_M, a0_N, a0_Q, a0_prior, a0_noise, a0_M, a1_N, ...]
+        void get_root_stats(float *out) const
+        {
+            const Node &root = node_pool[root_idx];
+            out[0] = static_cast<float>(root.n_visits);
+            out[1] = root.Q;
+            out[2] = root.M;
+
+            float *p = out + 3;
+            for (int a = 0; a < ACTION_SIZE; ++a)
+            {
+                int32_t child_idx = root.children[a];
+                if (child_idx != -1)
+                {
+                    const Node &child = node_pool[child_idx];
+                    p[0] = static_cast<float>(child.n_visits);
+                    p[1] = child.Q;
+                    p[2] = child.prior;
+                    p[3] = child.noise;
+                    p[4] = child.M;
+                }
+                else
+                {
+                    p[0] = p[1] = p[2] = p[3] = p[4] = 0.0f;
+                }
+                p += 5;
+            }
+        }
     };
 }
 

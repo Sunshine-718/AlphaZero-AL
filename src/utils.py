@@ -55,3 +55,24 @@ def rollout_policy_fn(env):
 def softmax(x):
     probs = np.exp(x - np.max(x))
     return probs / np.sum(probs)
+
+
+class RolloutAdapter:
+    """Random rollout adapter — 将随机 rollout 包装成 NN predict 接口。
+    供 MCTSPlayer (纯 MCTS 基线) 使用。"""
+    n_actions = 7
+
+    def predict(self, state):
+        from src.environments.Connect4 import Env
+        batch = state.shape[0] if state.ndim == 4 else 1
+        if state.ndim == 3:
+            state = state[np.newaxis, ...]
+        all_probs = np.ones((batch, self.n_actions), dtype=np.float32) / self.n_actions
+        all_vals = np.zeros((batch, 1), dtype=np.float32)
+        all_ml = np.full((batch, 1), 0.5, dtype=np.float32)
+        for i in range(batch):
+            env = Env()
+            env.board = (state[i, 0] - state[i, 1]).astype(np.float32)
+            env.turn = 1 if state[i, 2, 0, 0] > 0 else -1
+            all_vals[i, 0] = evaluate_rollout(env.copy())
+        return all_probs, all_vals, all_ml

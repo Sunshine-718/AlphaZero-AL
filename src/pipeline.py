@@ -128,8 +128,11 @@ class TrainPipeline(ABC):
     def update_elo(self):
         print('Updating elo score...')
         self.net.eval()
-        az = deepcopy(self.az_player)
-        az.is_selfplay = False
+        az = AlphaZeroPlayer(self.net, c_init=self.c_puct, n_playout=self.n_playout,
+                             alpha=None, is_selfplay=False,
+                             use_symmetry=getattr(self, 'use_symmetry', True),
+                             mlh_slope=getattr(self, 'mlh_slope', 0.0),
+                             mlh_cap=getattr(self, 'mlh_cap', 0.2))
         az.eval()
         mcts = MCTSPlayer(1, self.pure_mcts_n_playout)
 

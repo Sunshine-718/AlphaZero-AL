@@ -155,6 +155,17 @@ namespace AlphaZero
             }
             return all_counts;
         }
+
+        // 每个 env 的 root stats 布局: [root_N, root_Q, root_M, a0_N, a0_Q, a0_prior, a0_noise, a0_M, a1_N, ...]
+        static constexpr int STATS_PER_ENV = 3 + ACTION_SIZE * 5;
+
+        void get_all_root_stats(float *out)
+        {
+            for (int i = 0; i < n_envs; ++i)
+            {
+                mcts_envs[i]->get_root_stats(out + i * STATS_PER_ENV);
+            }
+        }
     };
 }
 

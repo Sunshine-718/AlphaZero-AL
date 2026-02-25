@@ -1,9 +1,7 @@
 from setuptools import setup, Extension
-from Cython.Build import cythonize
 import platform
 import pybind11
 import shutil
-import numpy
 import os
 
 
@@ -28,55 +26,42 @@ else:
     extra_compile_args = ["-std=c++20", "-fopenmp", "-O3", "-march=native"]
     extra_link_args = ["-fopenmp"]
 
-try:
+pybind_includes = [
+    pybind11.get_include(),
+    pybind11.get_include(user=True),
+    "src/cpp",
+    "."
+]
 
-    ext_modules = [
-        Extension(
-            "mcts_cpp",  # 生成的包名
-            ["src/cpp/bindings.cpp"],  # 只需要编译这个绑定文件，它会 include 头文件
-            include_dirs=[
-                pybind11.get_include(),  # pybind11 头文件路径
-                pybind11.get_include(user=True),
-                "src/cpp",  # 你的 .h 文件所在的路径
-                "."
-            ],
-            language="c++",
-            extra_compile_args=extra_compile_args,
-            extra_link_args=extra_link_args,
-        ),
-    ]
-    setup(
-        name="AlphaZeroMCTS",
-        version="1.0",
-        description="High performance MCTS with C++20 and pybind11",
-        ext_modules=ext_modules,
-    )
-    
-    ext_modules = cythonize(
-        ["./src/env_cython.pyx"],
-        compiler_directives={
-            "language_level": "3",
-            "boundscheck": False,
-            "wraparound": False
-        }
-    )
-    setup(
-        ext_modules=ext_modules,
-        include_dirs=[numpy.get_include()],
-    )
-except Exception as e:
-    print(f"[Error] Cython 编译失败: {e}")
+ext_modules = [
+    Extension(
+        "mcts_cpp",
+        ["src/cpp/mcts_bindings.cpp"],
+        include_dirs=pybind_includes,
+        language="c++",
+        extra_compile_args=extra_compile_args,
+        extra_link_args=extra_link_args,
+    ),
+    Extension(
+        "env_cpp",
+        ["src/cpp/env_bindings.cpp"],
+        include_dirs=pybind_includes,
+        language="c++",
+        extra_compile_args=extra_compile_args,
+        extra_link_args=extra_link_args,
+    ),
+]
 
-finally:
-    for name in os.listdir():
-        if "mcts_cpp" in name:
-            shutil.move(name, f"./src/{name}")
-    folder = './src/'
-    for filename in os.listdir(folder):
-        if '.cpp' in filename and filename != "bindings.cpp":
-            os.remove(folder + filename)
-    for filename in os.listdir():
-        if ('env_cython' in filename) and ('.pyd' in filename or '.so' in filename):
-            shutil.move(filename, f'./src/environments/Connect4/{filename}')
+setup(
+    name="AlphaZero",
+    version="1.0",
+    description="AlphaZero: C++ MCTS engine + Connect4 environment",
+    ext_modules=ext_modules,
+)
 
-    shutil.rmtree('./build', ignore_errors=True)
+# 将编译产物移到 src/ 目录
+for name in os.listdir():
+    if ("mcts_cpp" in name or "env_cpp" in name) and (".pyd" in name or ".so" in name):
+        shutil.move(name, f"./src/{name}")
+
+shutil.rmtree('./build', ignore_errors=True)

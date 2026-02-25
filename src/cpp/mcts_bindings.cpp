@@ -39,6 +39,17 @@ void register_batched_mcts(py::module_ &m, const char *name)
 
         .def("get_all_counts", &BM::get_all_counts)
 
+        .def("get_all_root_stats", [](BM &self)
+             {
+            int n = self.get_num_envs();
+            constexpr int S = BM::STATS_PER_ENV;
+            py::array_t<float> out({n, S});
+            float* ptr = static_cast<float*>(out.request().ptr);
+            self.get_all_root_stats(ptr);
+            return out; },
+             "Returns root node stats: shape (n_envs, 3 + action_size*5).\n"
+             "Per-env layout: [root_N, root_Q, root_M, a0_N, a0_Q, a0_prior, a0_noise, a0_M, ...]")
+
         // 暴露游戏维度信息，供 Python 端查询
         .def_property_readonly_static("action_size",
             [](py::object) { return ACTION_SIZE; })

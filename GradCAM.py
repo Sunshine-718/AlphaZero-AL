@@ -4,8 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 
-from src.environments.Connect4 import CNN
-from src.environments.Connect4.env import Env
+from src.environments.Connect4 import CNN, Env
 from src.environments.Connect4.Network import ResidualBlock
 
 

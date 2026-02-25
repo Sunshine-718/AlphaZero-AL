@@ -10,7 +10,7 @@
 
 ## 特性
 
-- **C++20 MCTS 引擎** &mdash; 基于模板的 OpenMP 并行批量 MCTS，通过 pybind11 绑定到 Python
+- **C++20 MCTS 引擎 + 游戏环境** &mdash; 基于模板的 OpenMP 并行批量 MCTS 与 bitboard 游戏逻辑，全部通过 pybind11 绑定到 Python
 - **分布式 Actor-Learner** &mdash; Flask REST 服务器 + 任意数量的自对弈客户端，支持跨机器部署
 - **多 GPU DDP** &mdash; 通过 `torchrun` 进行数据并行训练；单 GPU 时直接 `python server.py` 即可
 - **Moves Left Head (MLH)** &mdash; LC0 风格的辅助头，减少已分胜负局面中的无效搜索
@@ -31,7 +31,7 @@
 ### 编译
 
 ```bash
-# 安装依赖并编译 C++ MCTS 引擎 + Cython 环境
+# 安装依赖并编译 C++ 扩展
 # Windows
 build.bat
 
@@ -41,8 +41,8 @@ chmod +x build.sh && ./build.sh
 
 以上命令会依次执行 `pip install -r requirements.txt` 和 `python setup.py build_ext --inplace`，编译产物：
 
-- `src/cpp/bindings.cpp` &rarr; `src/mcts_cpp.*.pyd`（或 `.so`）
-- `src/env_cython.pyx` &rarr; `src/env_cython.*.pyd`（或 `.so`）
+- `src/cpp/mcts_bindings.cpp` &rarr; `src/mcts_cpp.*.pyd`（或 `.so`）&mdash; MCTS 引擎
+- `src/cpp/env_bindings.cpp` &rarr; `src/env_cpp.*.pyd`（或 `.so`）&mdash; 游戏环境（`env_cpp.connect4.Env`）
 
 <details>
 <summary>各平台编译参数</summary>
@@ -192,34 +192,34 @@ AlphaZero-AL/
 ├── play.py                # 终端对弈
 ├── gui_play.py            # PyQt5 图形界面对弈
 ├── GradCAM.py             # Grad-CAM 热力图可视化
-├── setup.py               # C++ / Cython 编译脚本
+├── setup.py               # C++ 编译脚本
 │
 ├── src/
 │   ├── cpp/
 │   │   ├── GameContext.h       # MCTSGame concept + ValidMoves<N>
 │   │   ├── MCTSNode.h          # 节点结构体（Q, M, prior, noise, UCB）
-│   │   ├── MCTS.h              # 单树 MCTS（模拟 + 反向传播）
+│   │   ├── MCTS.h              # 单树 MCTS（模拟 + 反向传播 + 节点统计）
 │   │   ├── BatchedMCTS.h       # 批量封装（OpenMP 并行）
-│   │   ├── Connect4.h          # Connect4 游戏逻辑
-│   │   └── bindings.cpp        # pybind11 绑定
+│   │   ├── Connect4.h          # Connect4 bitboard 游戏逻辑
+│   │   ├── mcts_bindings.cpp   # MCTS pybind11 绑定 → mcts_cpp 模块
+│   │   ├── env_bindings.cpp    # 环境 pybind11 绑定聚合 → env_cpp 模块
+│   │   └── env_connect4.h      # Connect4 Env 绑定（env_cpp.connect4）
 │   │
 │   ├── environments/
 │   │   └── Connect4/
-│   │       ├── env.py          # Python 环境
 │   │       ├── Network.py      # CNN（ResidualBlock + 双策略头 + WDL + Steps）
 │   │       └── utils.py        # 数据增强、棋盘检查
 │   │
-│   ├── MCTS.py            # 纯 Python MCTS（用于评估）
 │   ├── MCTS_cpp.py        # C++ BatchedMCTS 的 Python 封装
-│   ├── player.py          # 玩家类（Human, AlphaZero, Batched）
+│   ├── player.py          # 玩家类（Human, AlphaZero, MCTSPlayer, Batched）
 │   ├── pipeline.py        # 训练循环（DDP 广播、评估、日志）
 │   ├── game.py            # 自对弈驱动
+│   ├── utils.py           # 工具函数（softmax, RolloutAdapter）
 │   ├── ReplayBuffer.py    # 循环回放缓冲区
 │   └── Cache.py           # LRU 置换表
 │
 └── tools/
-    ├── inspect_buffer.py   # 回放缓冲区分析
-    └── diagnose_mcts.py    # MCTS 树诊断
+    └── inspect_buffer.py   # 回放缓冲区分析
 ```
 
 ### 神经网络
@@ -258,10 +258,11 @@ m_utility = clamp(slope × (child_M - parent_M), -cap, cap) × Q （MLH 偏好�
 1. 在 `src/cpp/` 中编写 `NewGame.h`，实现 `MCTSGame` concept（参考 `Connect4.h`）：
    - 定义 `struct Traits { ACTION_SIZE, BOARD_SIZE, BOARD_SHAPE, NUM_SYMMETRIES }`
    - 实现游戏逻辑（`step`、`check_winner`、`is_full`、`get_valid_moves` 等）
-2. 在 `src/cpp/bindings.cpp` 中：`#include "NewGame.h"` 并添加 `register_batched_mcts<NewGame>(m, "BatchedMCTS_NewGame")`
-3. 在 `src/MCTS_cpp.py` 中：添加到 `_BACKENDS` 字典
-4. 创建 `src/environments/NewGame/` 目录，包含 `env.py`、`Network.py`、`utils.py`、`__init__.py`
-5. 重新编译：`python setup.py build_ext --inplace`
+2. MCTS 绑定 &mdash; 在 `src/cpp/mcts_bindings.cpp` 中：`#include "NewGame.h"` 并添加 `register_batched_mcts<NewGame>(m, "BatchedMCTS_NewGame")`
+3. 环境绑定 &mdash; 编写 `src/cpp/env_newgame.h`（参考 `env_connect4.h`），在 `env_bindings.cpp` 中调用注册函数，暴露为 `env_cpp.newgame.Env`
+4. 在 `src/MCTS_cpp.py` 中：添加到 `_BACKENDS` 字典
+5. 创建 `src/environments/NewGame/` 目录，包含 `Network.py`、`utils.py`、`__init__.py`（`__init__.py` 中 `from src.env_cpp.newgame import Env`）
+6. 重新编译：`python setup.py build_ext --inplace`
 
 ---
 

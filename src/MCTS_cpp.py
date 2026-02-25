@@ -139,3 +139,34 @@ class BatchedMCTS:
     def get_mcts_probs(self):
         counts = self.get_visits_count()
         return counts / counts.sum(axis=1, keepdims=True)
+
+    def get_root_stats(self):
+        """返回所有 env 的 root 节点统计信息。
+
+        Returns:
+            dict with keys:
+                'root_N':  (batch_size,)         root 访问次数
+                'root_Q':  (batch_size,)         root Q 值
+                'root_M':  (batch_size,)         root 预期剩余步数
+                'N':       (batch_size, action_size)  各 action 子节点访问次数
+                'Q':       (batch_size, action_size)  各 action 子节点 Q 值
+                'prior':   (batch_size, action_size)  各 action NN 先验概率
+                'noise':   (batch_size, action_size)  各 action Dirichlet 噪声
+                'M':       (batch_size, action_size)  各 action 预期剩余步数
+        """
+        raw = self.mcts.get_all_root_stats()  # (batch_size, 3 + action_size*5)
+        B, A = self.batch_size, self.action_size
+
+        root_info = raw[:, :3]
+        children = raw[:, 3:].reshape(B, A, 5)
+
+        return {
+            'root_N': root_info[:, 0],
+            'root_Q': root_info[:, 1],
+            'root_M': root_info[:, 2],
+            'N':      children[:, :, 0],
+            'Q':      children[:, :, 1],
+            'prior':  children[:, :, 2],
+            'noise':  children[:, :, 3],
+            'M':      children[:, :, 4],
+        }

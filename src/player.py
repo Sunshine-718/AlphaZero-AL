@@ -4,8 +4,7 @@
 # Created on: 10/Aug/2024  23:47
 import numpy as np
 from abc import abstractmethod, ABC
-from src.utils import policy_value_fn, softmax
-from .MCTS import MCTS, MCTS_AZ
+from .utils import softmax, RolloutAdapter
 from .MCTS_cpp import BatchedMCTS
 
 
@@ -69,68 +68,123 @@ class Human(Player):
 
 
 class MCTSPlayer(Player):
-    def __init__(self, c_puct=4, n_playout=1000, eps=0.25):
+    """Pure MCTS baseline (uniform prior + random rollout) — wraps C++ BatchedMCTS."""
+    def __init__(self, c_puct=4, n_playout=1000, eps=0.0):
         super().__init__()
-        self.mcts = MCTS(policy_value_fn, c_puct, n_playout, None, eps)
+        self._adapter = RolloutAdapter()
+        self.mcts = BatchedMCTS(
+            batch_size=1, c_init=c_puct, c_base=500,
+            alpha=0, n_playout=n_playout,
+            noise_epsilon=0.0, fpu_reduction=0.0, use_symmetry=False,
+        )
 
     def reset_player(self):
-        self.mcts.prune_root(-1)
+        self.mcts.reset_env(0)
 
-    def get_action(self, env):
-        action = self.mcts.get_action(env)
-        self.mcts.prune_root(action)
-        return action
+    def get_action(self, env, *args, **kwargs):
+        board = env.board[np.newaxis, ...]
+        turns = np.array([env.turn], dtype=np.int32)
+        self.mcts.batch_playout(self._adapter, board, turns)
+        visits = self.mcts.get_visits_count()[0]
+        action = int(np.argmax(visits))
+        self.reset_player()
+        return action, None
 
 
-class AlphaZeroPlayer(MCTSPlayer):
-    def __init__(self, policy_value_fn, c_init=1.25, n_playout=100, alpha=None, is_selfplay=0, cache_size=5000, eps=0.25, fpu_reduction=0.4, use_symmetry=True,
+class AlphaZeroPlayer(Player):
+    """AlphaZero MCTS — wraps C++ BatchedMCTS with n_envs=1."""
+    def __init__(self, policy_value_fn, c_init=1.25, n_playout=100, alpha=None, is_selfplay=0,
+                 cache_size=0, eps=0.25, fpu_reduction=0.4, use_symmetry=True,
                  mlh_slope=0.0, mlh_cap=0.2):
+        super().__init__()
         self.pv_fn = policy_value_fn
-        self.mcts = MCTS_AZ(policy_value_fn, c_init, n_playout, alpha, cache_size, eps, fpu_reduction, use_symmetry,
-                            mlh_slope, mlh_cap)
         self.is_selfplay = is_selfplay
-        try:
-            self.n_actions = policy_value_fn.n_actions
-        except AttributeError:
-            self.n_actions = None
+        self.n_actions = getattr(policy_value_fn, 'n_actions', 7) if policy_value_fn else 7
+        self._noise_eps = eps
+        self._alpha = alpha if alpha is not None else 0.3
+        self._c_init = c_init if c_init is not None else 1.25
+        self._c_base = 500
+        self._n_playout = n_playout if n_playout is not None else 100
+        self._cache_size = cache_size
+        self._fpu_reduction = fpu_reduction
+        self._use_symmetry = use_symmetry
+        self._mlh_slope = mlh_slope
+        self._mlh_cap = mlh_cap
+
+        # alpha=None → eval mode, no noise from construction
+        init_eps = eps if alpha is not None else 0.0
+
+        if policy_value_fn is not None and c_init is not None and n_playout is not None:
+            self.mcts = self._make_mcts(init_eps)
+        else:
+            self.mcts = None  # gui_play creates with None, then reload
+
+    def _make_mcts(self, noise_eps):
+        return BatchedMCTS(
+            batch_size=1, c_init=self._c_init, c_base=self._c_base,
+            alpha=self._alpha, n_playout=self._n_playout,
+            cache_size=self._cache_size, noise_epsilon=noise_eps,
+            fpu_reduction=self._fpu_reduction, use_symmetry=self._use_symmetry,
+            mlh_slope=self._mlh_slope, mlh_cap=self._mlh_cap,
+        )
 
     def reload(self, policy_value_fn, c_puct=None, n_playout=None, alpha=None, is_self_play=None):
         self.pv_fn = policy_value_fn
-        self.mcts.policy = policy_value_fn
         if c_puct is not None:
-            self.mcts.c_init = c_puct
+            self._c_init = c_puct
         if n_playout is not None:
-            self.mcts.n_playout = n_playout
+            self._n_playout = n_playout
         if alpha is not None:
-            self.mcts.alpha = alpha
+            self._alpha = alpha
         if is_self_play is not None:
             self.is_selfplay = is_self_play
         self.n_actions = policy_value_fn.n_actions
-        self.mcts.refresh_cache()
+        # Recreate MCTS with updated params
+        self.mcts = self._make_mcts(self._noise_eps)
 
     def to(self, device='cpu'):
         self.pv_fn.to(device)
 
     def train(self):
-        self.mcts.train()
+        if self.mcts:
+            self.mcts.set_noise_epsilon(self._noise_eps)
 
     def eval(self):
-        self.mcts.eval()
+        if self.mcts:
+            self.mcts.set_noise_epsilon(0.0)
+
+    def reset_player(self):
+        if self.mcts:
+            self.mcts.reset_env(0)
 
     def get_action(self, env, temp=0):
-        action_probs = np.zeros((self.n_actions,), dtype=np.float32)
-        actions, visits = self.mcts.get_action_visits(env)
-        if temp == 0:
-            probs = np.zeros(len(visits), dtype=np.float32)
-            probs[np.where(np.array(visits) == max(visits))] = 1 / list(visits).count(max(visits))
+        board = env.board[np.newaxis, ...]  # (1, 6, 7)
+        turns = np.array([env.turn], dtype=np.int32)
+
+        self.mcts.batch_playout(self.pv_fn, board, turns)
+        visits = self.mcts.get_visits_count()[0]
+
+        action_probs = np.zeros(self.n_actions, dtype=np.float32)
+        valid_mask = visits > 0
+
+        if not valid_mask.any():
+            return 0, action_probs
+
+        action_probs[valid_mask] = visits[valid_mask] / visits[valid_mask].sum()
+
+        if temp <= 1e-6:
+            action = int(np.argmax(visits))
         else:
-            probs = softmax(np.log(visits) / temp)
-        action_probs[list(actions)] = probs
-        action = np.random.choice(actions, p=probs)
+            valid_actions = np.where(valid_mask)[0]
+            log_visits = np.log(visits[valid_mask])
+            sample_dist = softmax(log_visits / temp)
+            action = np.random.choice(valid_actions, p=sample_dist)
+
         if self.is_selfplay:
-            self.mcts.prune_root(action)
+            self.mcts.prune_roots(np.array([action], dtype=np.int32))
         else:
             self.reset_player()
+
         return action, action_probs
 
 
