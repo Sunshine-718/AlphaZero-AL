@@ -12,7 +12,7 @@ class ReplayBuffer:
         self.state = torch.empty((capacity, state_dim, row, col), dtype=torch.int8, device=device)
         self.prob = torch.empty((capacity, action_dim), dtype=torch.float32, device=device)
         self.winner = torch.full((capacity, 1), 0, dtype=torch.int8, device=device)
-        self.steps_to_end = torch.full((capacity, 1), 0, dtype=torch.int8, device=device)
+        self.steps_to_end = torch.full((capacity, 1), 0, dtype=torch.int16, device=device)
         self.replay_ratio = replay_ratio
         self.device = device
         self.current_capacity = capacity
