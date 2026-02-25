@@ -23,7 +23,7 @@ void register_batched_mcts(py::module_ &m, const char *name)
              py::arg("n_envs"), py::arg("c_init"), py::arg("c_base"),
              py::arg("discount"), py::arg("alpha"), py::arg("noise_epsilon") = 0.25f,
              py::arg("fpu_reduction") = 0.4f, py::arg("use_symmetry") = true,
-             py::arg("mlh_factor") = 0.0f, py::arg("mlh_threshold") = 0.85f)
+             py::arg("mlh_slope") = 0.0f, py::arg("mlh_cap") = 0.2f)
 
         .def("set_seed", &BM::set_seed, "Set random seed for all OpenMP threads")
 
@@ -32,8 +32,8 @@ void register_batched_mcts(py::module_ &m, const char *name)
              "Set noise epsilon for all MCTS environments")
 
         .def("set_mlh_params", &BM::set_mlh_params,
-             py::arg("factor"), py::arg("threshold"),
-             "Set Moves Left Head parameters for all MCTS environments")
+             py::arg("slope"), py::arg("cap"),
+             "Set Moves Left Head parameters (LC0-style: slope and cap)")
 
         .def("reset_env", &BM::reset_env)
 

@@ -57,15 +57,10 @@ g_noise.add_argument('--noise_eps_min', type=float, default=0.1, help='Minimum n
 
 # ── Moves Left Head (MLH) ────────────────────────────────────────────────────
 g_mlh = parser.add_argument_group('Moves Left Head (MLH)')
-g_mlh.add_argument('--mlh_factor', type=float, default=0.0,
-                    help='MLH factor for MCTS (0=disabled, recommended 0.2-0.3)')
-g_mlh.add_argument('--mlh_threshold', type=float, default=0.85,
-                    help='MLH activation threshold: only adjusts when |Q| exceeds this')
-g_mlh.add_argument('--mlh_warmup', type=int, default=20,
-                    help='MLH ramp-up steps after activation (linear 0 -> target)')
-g_mlh.add_argument('--mlh_warmup_loss', type=float, default=0.,
-                    help='Activate MLH when steps_loss < threshold '
-                         '(0=immediate, -1=auto log(max_steps+1), or manual e.g. 3.0)')
+g_mlh.add_argument('--mlh_slope', type=float, default=0.0,
+                    help='MLH slope for MCTS (0=disabled, LC0-style: scales child_M - parent_M)')
+g_mlh.add_argument('--mlh_cap', type=float, default=0.2,
+                    help='MLH max effect cap: clamp M_utility to [-cap, cap]')
 
 # ── Self-play ─────────────────────────────────────────────────────────────────
 g_sp = parser.add_argument_group('Self-play')
@@ -120,10 +115,8 @@ config = {"lr": args.lr,
           "n_epochs": args.n_epochs,
           "noise_steps": args.noise_steps,
           "noise_eps_min": args.noise_eps_min,
-          "mlh_factor": args.mlh_factor,
-          "mlh_threshold": args.mlh_threshold,
-          "mlh_warmup": args.mlh_warmup,
-          "mlh_warmup_loss": args.mlh_warmup_loss}
+          "mlh_slope": args.mlh_slope,
+          "mlh_cap": args.mlh_cap}
 
 
 class ServerPipeline(TrainPipeline):
@@ -212,12 +205,9 @@ def weights():
         return payload, 200, {
             'Content-Type': 'application/octet-stream',
             'X-Timestamp': str(mtime),
-            'X-MLH-Factor': str(getattr(pipeline, 'mlh_factor', 0.0)),
         }
     else:
-        return '', 304, {
-            'X-MLH-Factor': str(getattr(pipeline, 'mlh_factor', 0.0)),
-        }
+        return '', 304, {}
 
 
 @app.route('/config', methods=['GET'])
@@ -236,8 +226,8 @@ def get_config():
         'noise_eps_min': getattr(pipeline, 'noise_eps_min', 0.1),
         'fpu_reduction': pipeline.fpu_reduction,
         'use_symmetry': getattr(pipeline, 'use_symmetry', True),
-        'mlh_factor': getattr(pipeline, 'mlh_factor', 0.0),
-        'mlh_threshold': getattr(pipeline, 'mlh_threshold', 0.85),
+        'mlh_slope': getattr(pipeline, 'mlh_slope', 0.0),
+        'mlh_cap': getattr(pipeline, 'mlh_cap', 0.2),
         'temp': args.temp,
         'temp_thres': args.temp_thres,
     })

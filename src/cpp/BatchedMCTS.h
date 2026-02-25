@@ -22,14 +22,14 @@ namespace AlphaZero
     public:
         BatchedMCTS(int num_envs, float c_init, float c_base, float discount, float alpha,
                     float noise_epsilon = 0.25f, float fpu_reduction = 0.4f, bool use_symmetry = true,
-                    float mlh_factor = 0.0f, float mlh_threshold = 0.85f)
+                    float mlh_slope = 0.0f, float mlh_cap = 0.2f)
             : n_envs(num_envs)
         {
             mcts_envs.reserve(n_envs);
             for (int i = 0; i < n_envs; ++i)
             {
                 mcts_envs.push_back(std::make_unique<MCTS<Game>>(c_init, c_base, discount, alpha, noise_epsilon, fpu_reduction, use_symmetry,
-                                                                  mlh_factor, mlh_threshold));
+                                                                  mlh_slope, mlh_cap));
             }
         }
 
@@ -69,12 +69,12 @@ namespace AlphaZero
             }
         }
 
-        void set_mlh_params(float factor, float threshold)
+        void set_mlh_params(float slope, float cap)
         {
             for (auto &m : mcts_envs)
             {
-                m->mlh_factor = factor;
-                m->mlh_threshold = threshold;
+                m->mlh_slope = slope;
+                m->mlh_cap = cap;
             }
         }
 

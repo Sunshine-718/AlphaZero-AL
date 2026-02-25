@@ -13,6 +13,7 @@ class TreeNode:
         self.children = {}
         self.n_visits = 0
         self.Q = 0
+        self.M = 0.0  # Moves Left: 预期剩余步数的 running average
         self.u = 0
         self.prior = prior
         self.discount = discount
@@ -46,7 +47,7 @@ class TreeNode:
     def is_root(self):
         return self.parent is None
 
-    def PUCT(self, c_init, c_base, fpu_value=0.0):
+    def PUCT(self, c_init, c_base, fpu_value=0.0, mlh_slope=0.0, mlh_cap=0.2):
         if self.parent.is_root:
             prior = (1 - self.eps) * self.prior + self.eps * self.noise
         else:
@@ -54,7 +55,14 @@ class TreeNode:
         self.u = (c_init + math.log((1 + self.parent.n_visits + c_base) / c_base)
                   ) * prior * math.sqrt(self.parent.n_visits) / (1 + self.n_visits)
         q_value = fpu_value if self.n_visits == 0 else -self.Q
-        return q_value + self.u
+        # MLH: M_utility = clamp(slope * (child_M - parent_M), -cap, cap) * sign(-Q)
+        m_utility = 0.0
+        if mlh_slope > 0 and self.n_visits > 0:
+            m_diff = self.M - self.parent.M
+            m_utility = max(-mlh_cap, min(mlh_cap, mlh_slope * m_diff))
+            sign_neg_q = (1.0 if -self.Q > 0 else (-1.0 if -self.Q < 0 else 0.0))
+            m_utility *= sign_neg_q
+        return q_value + self.u + m_utility
 
     def UCT(self, c_init, c_base):
         if self.n_visits == 0:
@@ -64,11 +72,11 @@ class TreeNode:
                       ) * math.sqrt(math.log(self.parent.n_visits) / self.n_visits)
         return -self.Q + self.u
 
-    def UCB(self, c_init, c_base, UCT=False, fpu_value=0.0):
+    def UCB(self, c_init, c_base, UCT=False, fpu_value=0.0, mlh_slope=0.0, mlh_cap=0.2):
         if UCT:
             return self.UCT(c_init, c_base)
         else:
-            return self.PUCT(c_init, c_base, fpu_value)
+            return self.PUCT(c_init, c_base, fpu_value, mlh_slope, mlh_cap)
 
     def expand(self, action_probs, noise=None):
         for idx, (action, prior) in enumerate(action_probs):
@@ -78,7 +86,7 @@ class TreeNode:
                 else:
                     self.children[action] = TreeNode(self, prior, self.discount, noise[idx], self.eps)
 
-    def select(self, c_init, c_base, UCT=False, fpu_reduction=0.4):
+    def select(self, c_init, c_base, UCT=False, fpu_reduction=0.4, mlh_slope=0.0, mlh_cap=0.2):
         if UCT:
             fpu_value = 0.0
         else:
@@ -89,19 +97,19 @@ class TreeNode:
             seen_policy = sum(c.prior for c in self.children.values() if c.n_visits > 0)
             fpu_value = self.Q - effective_fpu * math.sqrt(seen_policy)
             fpu_value = max(-1.0, fpu_value)
-        return max(self.children.items(), key=lambda action_node: action_node[1].UCB(c_init, c_base, UCT, fpu_value))
+        return max(self.children.items(), key=lambda action_node: action_node[1].UCB(c_init, c_base, UCT, fpu_value, mlh_slope, mlh_cap))
 
-    def update(self, leaf_value):
+    def update(self, leaf_value, moves_left=0.0):
         if self.parent:
-            self.parent.update(-leaf_value * self.discount)
+            self.parent.update(-leaf_value * self.discount, moves_left + 1.0)
         self.n_visits += 1
-        # Q = ((n - 1) * Q_old + leaf_value) / n
         self.Q += (leaf_value - self.Q) / self.n_visits
+        self.M += (moves_left - self.M) / self.n_visits
 
 
 class MCTS:
     def __init__(self, policy_value_fn, c_init, n_playout, discount, alpha, eps=0.25, fpu_reduction=0.4, use_symmetry=True,
-                 mlh_factor=0.0, mlh_threshold=0.85):
+                 mlh_slope=0.0, mlh_cap=0.2):
         self.root = TreeNode(None, 1, discount, None, eps)
         self.policy = policy_value_fn
         self.c_init = c_init
@@ -112,8 +120,8 @@ class MCTS:
         self.deterministic = False
         self.fpu_reduction = fpu_reduction
         self.use_symmetry = use_symmetry
-        self.mlh_factor = mlh_factor
-        self.mlh_threshold = mlh_threshold
+        self.mlh_slope = mlh_slope
+        self.mlh_cap = mlh_cap
 
     def train(self):
         self.root.train()
@@ -126,7 +134,7 @@ class MCTS:
     def select_leaf_node(self, env, UCT=False):
         node = self.root
         while not node.is_leaf:
-            action, node = node.select(self.c_init, self.c_base, UCT, self.fpu_reduction)
+            action, node = node.select(self.c_init, self.c_base, UCT, self.fpu_reduction, self.mlh_slope, self.mlh_cap)
             env.step(action)
         return node
 
@@ -158,9 +166,9 @@ class MCTS:
 
 class MCTS_AZ(MCTS):
     def __init__(self, policy_value_fn, c_init, n_playout, discount, alpha, cache_size, eps=0.25, fpu_reduction=0.4, use_symmetry=True,
-                 mlh_factor=0.0, mlh_threshold=0.85):
+                 mlh_slope=0.0, mlh_cap=0.2):
         super().__init__(policy_value_fn, c_init, n_playout, discount, alpha, eps, fpu_reduction, use_symmetry,
-                         mlh_factor, mlh_threshold)
+                         mlh_slope, mlh_cap)
         self.cache = Cache(cache_size)
         self.use_cache = cache_size > 0
 
@@ -188,18 +196,11 @@ class MCTS_AZ(MCTS):
         probs /= sum(probs)
         action_probs = tuple(zip(valid, probs))
         leaf_value = value.flatten()[0]
+        ml = moves_left.flatten()[0]
         #
         if sym_id != 0:
             action_probs = [(env.inverse_symmetry_action(sym_id, action), prob) for action, prob in action_probs]
         if not env.done():
-            # Moves Left Head: 仅当 |value| 极端时激活
-            if self.mlh_factor > 0:
-                ml = moves_left.flatten()[0]
-                abs_v = abs(leaf_value)
-                if abs_v > self.mlh_threshold:
-                    activation = (abs_v - self.mlh_threshold) / (1.0 - self.mlh_threshold)
-                    bonus = self.mlh_factor * ml * activation
-                    leaf_value += bonus if leaf_value < 0 else -bonus
             if self.alpha is not None and not self.deterministic:
                 noise = np.random.dirichlet([self.alpha for _ in action_probs])
             node.expand(action_probs, noise)
@@ -209,7 +210,8 @@ class MCTS_AZ(MCTS):
                 leaf_value = 0
             else:
                 leaf_value = (1 if winner == env.turn else -1)
-        node.update(leaf_value)
+            ml = 0.0
+        node.update(leaf_value, ml)
 
     def get_action_visits(self, env):
         assert ((self.alpha is not None) or (self.alpha is None and self.deterministic))

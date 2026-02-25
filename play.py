@@ -22,10 +22,10 @@ parser.add_argument('--name', type=str, default='AZ', help='Model name')
 parser.add_argument('-c', '--c_init', type=float, default=4, help='C_puct init')
 parser.add_argument('-a', '--alpha', type=float, default=0.1, help='Dirichlet alpha')
 parser.add_argument('--no_symmetry', action='store_true', help='Disable random symmetry augmentation during MCTS search')
-parser.add_argument('--mlh_factor', type=float, default=0.0,
-                    help='Moves Left Head factor (0=disabled, recommended 0.2-0.3)')
-parser.add_argument('--mlh_threshold', type=float, default=0.85,
-                    help='MLH activation threshold')
+parser.add_argument('--mlh_slope', type=float, default=0.0,
+                    help='MLH slope (0=disabled, LC0-style: scales child_M - parent_M)')
+parser.add_argument('--mlh_cap', type=float, default=0.2,
+                    help='MLH max effect cap')
 
 args = parser.parse_args()
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -51,7 +51,7 @@ if __name__ == '__main__':
             az_player = AlphaZeroPlayer(net, c_init=args.c_init,
                                         n_playout=args.n, discount=0.99, alpha=args.alpha, is_selfplay=0,
                                         use_symmetry=not args.no_symmetry,
-                                        mlh_factor=args.mlh_factor, mlh_threshold=args.mlh_threshold)
+                                        mlh_slope=args.mlh_slope, mlh_cap=args.mlh_cap)
         az_player.eval()
 
         human = Human()

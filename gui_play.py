@@ -21,8 +21,8 @@ C_INIT              = 0.8
 DISCOUNT            = 1
 ALPHA               = 0.3
 USE_SYMMETRY        = True
-MLH_FACTOR          = 0.0   # Moves Left Head factor (0=disabled, 推荐 0.2-0.3)
-MLH_THRESHOLD       = 0.85  # MLH 激活阈值：仅当 |Q| 超过此值时调整
+MLH_SLOPE           = 0.0   # MLH slope (0=disabled, LC0-style: scales child_M - parent_M)
+MLH_CAP             = 0.2   # MLH max effect cap
 
 PARAMS_PATH_FMT     = './params/{model_name}_{env_name}_{network}_{model_type}.pt'
 
@@ -449,7 +449,7 @@ class Connect4GUI(QWidget):
         self.az_player = AlphaZeroPlayer(None, c_init=None, n_playout=None,
                                          discount=DISCOUNT, alpha=ALPHA, is_selfplay=0, cache_size=10000,
                                          use_symmetry=USE_SYMMETRY,
-                                         mlh_factor=MLH_FACTOR, mlh_threshold=MLH_THRESHOLD)
+                                         mlh_slope=MLH_SLOPE, mlh_cap=MLH_CAP)
         self._reload_model()
 
         # 连接信号

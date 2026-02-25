@@ -16,6 +16,7 @@ namespace AlphaZero
 
         int n_visits = 0;
         float Q = 0.0f;
+        float M = 0.0f;    // Moves Left: 预期剩余步数的 running average
         float prior = 0.0f;
         float noise = 0.0f;
         bool is_expanded = false;
@@ -31,13 +32,15 @@ namespace AlphaZero
             children.fill(-1);
             n_visits = 0;
             Q = 0.0f;
+            M = 0.0f;
             noise = 0.0f;
             is_expanded = false;
         }
 
-        // 计算 UCB 时需要传入父节点的访问次数，因为现在不通过指针找 parent
+        // 计算 UCB，含 MLH M_utility 项
         [[nodiscard]] float get_ucb(float c_init, float c_base, float parent_n,
-                                     bool is_root_node, float noise_epsilon, float fpu_value) const {
+                                     bool is_root_node, float noise_epsilon, float fpu_value,
+                                     float parent_M, float mlh_slope, float mlh_cap) const {
             float effective_prior = prior;
             if (is_root_node) {
                 effective_prior = (1.0f - noise_epsilon) * prior + noise_epsilon * noise;
@@ -46,7 +49,18 @@ namespace AlphaZero
             float q_value = (n_visits == 0) ? fpu_value : -Q;
             float c_puct = c_init + std::log((parent_n + c_base + 1.0f) / c_base);
             float u_score = c_puct * effective_prior * std::sqrt(parent_n) / (1.0f + n_visits);
-            return q_value + u_score;
+
+            // MLH: M_utility = clamp(slope * (child_M - parent_M), -cap, cap) * sign(-Q)
+            float m_utility = 0.0f;
+            if (mlh_slope > 0.0f && n_visits > 0) {
+                float m_diff = M - parent_M;
+                m_utility = std::clamp(mlh_slope * m_diff, -mlh_cap, mlh_cap);
+                // sign(-Q): 赢棋时偏好更短游戏，输棋时偏好更长游戏
+                float sign_neg_q = (-Q > 0.0f) ? 1.0f : ((-Q < 0.0f) ? -1.0f : 0.0f);
+                m_utility *= sign_neg_q;
+            }
+
+            return q_value + u_score + m_utility;
         }
     };
 }

@@ -77,8 +77,8 @@ class Actor:
             use_symmetry=self.cfg['use_symmetry'],
             noise_steps=self.cfg['noise_steps'],
             noise_eps_min=self.cfg['noise_eps_min'],
-            mlh_factor=self.cfg['mlh_factor'],
-            mlh_threshold=self.cfg['mlh_threshold'])
+            mlh_slope=self.cfg['mlh_slope'],
+            mlh_cap=self.cfg['mlh_cap'])
         self.mtime = 0
 
     def fetch_config(self):
@@ -112,12 +112,6 @@ class Actor:
             self.net.to(args.device)
             self.mtime = float(r.headers['X-Timestamp'])
             self.az_player.mcts.refresh_cache(self.net)
-
-        # 无论 200 还是 304，都同步最新 mlh_factor（warmup 由 server 计算）
-        mlh_factor = r.headers.get('X-MLH-Factor')
-        if mlh_factor is not None:
-            self.az_player.mcts.mcts.set_mlh_params(
-                float(mlh_factor), self.cfg['mlh_threshold'])
 
     def push_data(self, data):
         payload = pickle.dumps({'__az__': True, 'data': data}, protocol=pickle.HIGHEST_PROTOCOL)
