@@ -80,7 +80,7 @@ g_train.add_argument('--q_size', type=int, default=100,
 g_train.add_argument('--replay_ratio', type=float, default=0.1,
                       help='Fraction of buffer sampled per training step')
 g_train.add_argument('--n_epochs', type=int, default=5, help='Training epochs per update')
-g_train.add_argument('--policy_lr_scale', type=float, default=0.1,
+g_train.add_argument('--policy_lr_scale', type=float, default=0.3,
                       help='Policy head LR multiplier')
 g_train.add_argument('--dropout', type=float, default=0.2, help='Dropout rate')
 
