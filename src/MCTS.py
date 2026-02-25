@@ -55,13 +55,11 @@ class TreeNode:
         self.u = (c_init + math.log((1 + self.parent.n_visits + c_base) / c_base)
                   ) * prior * math.sqrt(self.parent.n_visits) / (1 + self.n_visits)
         q_value = fpu_value if self.n_visits == 0 else -self.Q
-        # MLH: M_utility = clamp(slope * (child_M - parent_M), -cap, cap) * sign(-Q)
+        # MLH: M_utility = clamp(slope * (child_M - parent_M), -cap, cap) * Q
         m_utility = 0.0
         if mlh_slope > 0 and self.n_visits > 0:
             m_diff = self.M - self.parent.M
-            m_utility = max(-mlh_cap, min(mlh_cap, mlh_slope * m_diff))
-            sign_neg_q = (1.0 if -self.Q > 0 else (-1.0 if -self.Q < 0 else 0.0))
-            m_utility *= sign_neg_q
+            m_utility = max(-mlh_cap, min(mlh_cap, mlh_slope * m_diff)) * self.Q
         return q_value + self.u + m_utility
 
     def UCT(self, c_init, c_base):

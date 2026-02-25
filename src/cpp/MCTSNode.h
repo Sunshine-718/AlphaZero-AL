@@ -50,14 +50,15 @@ namespace AlphaZero
             float c_puct = c_init + std::log((parent_n + c_base + 1.0f) / c_base);
             float u_score = c_puct * effective_prior * std::sqrt(parent_n) / (1.0f + n_visits);
 
-            // MLH: M_utility = clamp(slope * (child_M - parent_M), -cap, cap) * sign(-Q)
+            // MLH: M_utility = clamp(slope * (child_M - parent_M), -cap, cap) * Q
+            // 用 Q（子节点自身视角）代替 sign(-Q)：
+            //   Q < 0 (对手赢着): 快结束 bonus, 慢结束 penalty
+            //   Q > 0 (对手输着): 慢结束 bonus, 快结束 penalty
+            //   Q ≈ 0 (均势):    自然无效果，无需 threshold 参数
             float m_utility = 0.0f;
             if (mlh_slope > 0.0f && n_visits > 0) {
                 float m_diff = M - parent_M;
-                m_utility = std::clamp(mlh_slope * m_diff, -mlh_cap, mlh_cap);
-                // sign(-Q): 赢棋时偏好更短游戏，输棋时偏好更长游戏
-                float sign_neg_q = (-Q > 0.0f) ? 1.0f : ((-Q < 0.0f) ? -1.0f : 0.0f);
-                m_utility *= sign_neg_q;
+                m_utility = std::clamp(mlh_slope * m_diff, -mlh_cap, mlh_cap) * Q;
             }
 
             return q_value + u_score + m_utility;
