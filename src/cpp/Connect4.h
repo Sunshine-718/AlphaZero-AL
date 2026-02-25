@@ -37,11 +37,15 @@ namespace AlphaZero
         {
             static constexpr int ROWS = 6;
             static constexpr int COLS = 7;
+            static constexpr int BITS_PER_COL = ROWS + 1;      ///< 每列 bit 数（含哨兵位）
             static constexpr int ACTION_SIZE = 7;               ///< 动作空间 = 7 列
             static constexpr int BOARD_SIZE = ROWS * COLS;      ///< 棋盘元素数 = 42
             static constexpr std::array<int, 2> BOARD_SHAPE = {ROWS, COLS};
             static constexpr int NUM_SYMMETRIES = 2;            ///< 0=恒等, 1=水平翻转
         };
+
+        /// 列掩码：col 列占用的 7 bit 位 (bit[col*7] ~ bit[col*7+6])
+        static constexpr uint64_t col_mask(int col) { return 0x7FULL << (col * Traits::BITS_PER_COL); }
 
         int8_t board[Traits::ROWS][Traits::COLS]; ///< 显示用棋盘（-1/0/1 = P2/空/P1）
         int turn;                                  ///< 当前落子方（1 或 -1）
@@ -63,9 +67,7 @@ namespace AlphaZero
             n_pieces = 0;
             last_player_idx = -1;
             for (int c = 0; c < Traits::COLS; ++c)
-            {
-                height[c] = c * 7;
-            }
+                height[c] = c * Traits::BITS_PER_COL;
         }
 
         // ======== I/O 接口（MCTSGame concept 要求）========
@@ -102,7 +104,7 @@ namespace AlphaZero
             last_player_idx = -1;
             for (int c = 0; c < Traits::COLS; ++c)
             {
-                height[c] = c * 7;
+                height[c] = c * Traits::BITS_PER_COL;
                 for (int r = Traits::ROWS - 1; r >= 0; --r)
                 {
                     if (board[r][c] != 0)
@@ -134,7 +136,7 @@ namespace AlphaZero
             std::memset(board, 0, sizeof(board));
             for (int c = 0; c < Traits::COLS; ++c)
             {
-                int base = c * 7;
+                int base = c * Traits::BITS_PER_COL;
                 for (int bit = base; bit < height[c]; ++bit)
                 {
                     int row = Traits::ROWS - 1 - (bit - base);
@@ -159,7 +161,7 @@ namespace AlphaZero
             uint64_t move = 1ULL << height[col];
             bb[player_idx] |= move;
 
-            int row = Traits::ROWS - 1 - (height[col] - col * 7);
+            int row = Traits::ROWS - 1 - (height[col] - col * Traits::BITS_PER_COL);
             board[row][col] = turn;
 
             height[col]++;
@@ -182,22 +184,19 @@ namespace AlphaZero
                 return 0;
 
             uint64_t b = bb[last_player_idx];
+            int result = last_player_idx == 0 ? 1 : -1;
 
-            // 垂直（|）：相邻 bit 间距 1
-            uint64_t t = b & (b >> 1);
-            if (t & (t >> 2)) return last_player_idx == 0 ? 1 : -1;
+            // 四方向连续 4 子检测，每个方向的相邻 bit 间距不同：
+            constexpr int H = Traits::BITS_PER_COL;     // 7: 水平（—）相邻列间距
+            constexpr int V = 1;                         // 1: 垂直（|）相邻行间距
+            constexpr int D1 = H - 1;                   // 6: 对角线（＼）
+            constexpr int D2 = H + 1;                   // 8: 对角线（／）
 
-            // 水平（—）：相邻 bit 间距 7
-            t = b & (b >> 7);
-            if (t & (t >> 14)) return last_player_idx == 0 ? 1 : -1;
-
-            // 对角线（＼）：相邻 bit 间距 6
-            t = b & (b >> 6);
-            if (t & (t >> 12)) return last_player_idx == 0 ? 1 : -1;
-
-            // 对角线（／）：相邻 bit 间距 8
-            t = b & (b >> 8);
-            if (t & (t >> 16)) return last_player_idx == 0 ? 1 : -1;
+            uint64_t t;
+            t = b & (b >> V);  if (t & (t >> (2 * V)))  return result;  // 垂直
+            t = b & (b >> H);  if (t & (t >> (2 * H)))  return result;  // 水平
+            t = b & (b >> D1); if (t & (t >> (2 * D1))) return result;  // ＼ 对角线
+            t = b & (b >> D2); if (t & (t >> (2 * D2))) return result;  // ／ 对角线
 
             return 0;
         }
@@ -211,10 +210,8 @@ namespace AlphaZero
             ValidMoves<Traits::ACTION_SIZE> moves;
             for (int c = 0; c < Traits::COLS; ++c)
             {
-                if (height[c] < c * 7 + Traits::ROWS)
-                {
+                if (height[c] < c * Traits::BITS_PER_COL + Traits::ROWS)
                     moves.moves[moves.count++] = c;
-                }
             }
             return moves;
         }
@@ -237,28 +234,31 @@ namespace AlphaZero
         {
             if (sym_id == 0) return;
 
+            constexpr int B = Traits::BITS_PER_COL;  // 7
             for (int p = 0; p < 2; ++p)
             {
                 uint64_t src = bb[p];
-                uint64_t dst = src & (0x7FULL << 21); // 保留 col 3
+                uint64_t dst = src & col_mask(3);     // 保留中心列 col 3
 
-                dst |= (src & (0x7FULL <<  0)) << 42; // col 0 → col 6
-                dst |= (src & (0x7FULL << 42)) >> 42; // col 6 → col 0
-                dst |= (src & (0x7FULL <<  7)) << 28; // col 1 → col 5
-                dst |= (src & (0x7FULL << 35)) >> 28; // col 5 → col 1
-                dst |= (src & (0x7FULL << 14)) << 14; // col 2 → col 4
-                dst |= (src & (0x7FULL << 28)) >> 14; // col 4 → col 2
+                // 交换对称列对：col c ↔ col (6-c)，位移差 = (6-2c) × BITS_PER_COL
+                dst |= (src & col_mask(0)) << (6 * B); // col 0 → col 6
+                dst |= (src & col_mask(6)) >> (6 * B); // col 6 → col 0
+                dst |= (src & col_mask(1)) << (4 * B); // col 1 → col 5
+                dst |= (src & col_mask(5)) >> (4 * B); // col 5 → col 1
+                dst |= (src & col_mask(2)) << (2 * B); // col 2 → col 4
+                dst |= (src & col_mask(4)) >> (2 * B); // col 4 → col 2
 
                 bb[p] = dst;
             }
 
+            constexpr int BPC = Traits::BITS_PER_COL;
             for (int c = 0; c < 3; ++c)
             {
                 int mirror = Traits::COLS - 1 - c;
-                int h_c = height[c] - c * 7;
-                int h_m = height[mirror] - mirror * 7;
-                height[c] = c * 7 + h_m;
-                height[mirror] = mirror * 7 + h_c;
+                int h_c = height[c] - c * BPC;
+                int h_m = height[mirror] - mirror * BPC;
+                height[c] = c * BPC + h_m;
+                height[mirror] = mirror * BPC + h_c;
             }
 
             sync_to_board();

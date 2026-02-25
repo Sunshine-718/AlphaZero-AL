@@ -50,7 +50,7 @@ class Game:
                 decay = max(0.0, 1.0 - step / player.noise_steps)
                 eps = player.noise_eps_min + (player.noise_eps_init - player.noise_eps_min) * decay
                 player.mcts.set_noise_epsilon(eps)
-            actions, probs = player.get_action(current_boards, turns, temps)
+            actions, probs = player.get_batch_action(current_boards, turns, temps)
             next_active_indices = []
             for i in active_indices:
                 action = actions[i]

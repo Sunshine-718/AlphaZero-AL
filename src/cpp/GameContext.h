@@ -17,7 +17,7 @@ namespace AlphaZero
     template <int MAX_ACTIONS>
     struct ValidMoves
     {
-        int moves[MAX_ACTIONS];
+        std::array<int, MAX_ACTIONS> moves;
         int count = 0;
 
         /// 是否没有合法动作
@@ -25,8 +25,8 @@ namespace AlphaZero
         /// 合法动作数量
         [[nodiscard]] int size() const { return count; }
         /// range-for 迭代支持
-        const int *begin() const { return moves; }
-        const int *end() const { return moves + count; }
+        const int *begin() const { return moves.data(); }
+        const int *end() const { return moves.data() + count; }
     };
 
     /**

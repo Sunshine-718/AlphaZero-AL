@@ -165,17 +165,13 @@ namespace AlphaZero
                 current_game.import_board(input_boards + offset);
                 current_game.set_turn(turns[i]);
 
-                Game leaf_board;
-                bool is_term;
-                float term_val = 0.0f;
+                auto result = mcts_envs[i]->simulate(current_game);
 
-                mcts_envs[i]->simulate(current_game, leaf_board, is_term, term_val);
+                output_is_term[i] = result.is_terminal ? 1 : 0;
+                output_term_values[i] = result.terminal_value;
+                output_turns[i] = result.board.get_turn();
 
-                output_is_term[i] = is_term ? 1 : 0;
-                output_term_values[i] = term_val;
-                output_turns[i] = leaf_board.get_turn();
-
-                std::memcpy(output_boards + offset, leaf_board.board_data(), BOARD_SIZE);
+                std::memcpy(output_boards + offset, result.board.board_data(), BOARD_SIZE);
             }
         }
 

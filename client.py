@@ -3,7 +3,7 @@ import requests
 import pickle
 from src.game import Game
 from src.environments import load
-from src.player import BatchedAlphaZeroPlayer
+from src.player import AlphaZeroPlayer
 import argparse
 import signal
 import time
@@ -63,13 +63,14 @@ class Actor:
         else:
             raise ValueError(f'Unknown model type: {model_name}')
 
-        self.az_player = BatchedAlphaZeroPlayer(
+        self.az_player = AlphaZeroPlayer(
             self.net,
             n_envs=self.batch_size,
             c_init=self.cfg['c_init'],
             c_base=self.cfg['c_base'],
             n_playout=self.cfg['n_playout'],
             alpha=self.cfg['dirichlet_alpha'],
+            is_selfplay=1,
             cache_size=args.cache_size,
             noise_epsilon=self.cfg['noise_eps'],
             fpu_reduction=self.cfg['fpu_reduction'],

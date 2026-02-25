@@ -91,27 +91,46 @@ class MCTSPlayer(Player):
 
 
 class AlphaZeroPlayer(Player):
-    """AlphaZero MCTS — wraps C++ BatchedMCTS with n_envs=1."""
-    def __init__(self, policy_value_fn, c_init=1.25, n_playout=100, alpha=None, is_selfplay=0,
-                 cache_size=0, eps=0.25, fpu_reduction=0.4, use_symmetry=True,
-                 mlh_slope=0.0, mlh_cap=0.2):
+    """AlphaZero MCTS player — 支持单环境 (n_envs=1) 和批量并行 (n_envs>1) 两种模式。
+
+    单环境模式：get_action(env, temp) — 用于 play.py / gui_play.py / pipeline Elo 评估
+    批量模式：  get_batch_action(boards, turns, temps) — 用于 client.py 分布式自对弈
+    """
+    def __init__(self, policy_value_fn, n_envs=1, c_init=1.25, c_base=500,
+                 n_playout=100, alpha=None, is_selfplay=0,
+                 cache_size=0, noise_epsilon=0.25, fpu_reduction=0.4, use_symmetry=True,
+                 game_name='Connect4', board_converter=None,
+                 noise_steps=0, noise_eps_min=0.1,
+                 mlh_slope=0.0, mlh_cap=0.2,
+                 # 向后兼容：旧调用方用 eps= 而非 noise_epsilon=
+                 eps=None):
         super().__init__()
         self.pv_fn = policy_value_fn
         self.is_selfplay = is_selfplay
+        self.n_envs = n_envs
         self.n_actions = getattr(policy_value_fn, 'n_actions', 7) if policy_value_fn else 7
-        self._noise_eps = eps
+
+        # eps= 是旧参数名的兼容，优先使用 eps（若显式传入），否则用 noise_epsilon
+        self._noise_eps = eps if eps is not None else noise_epsilon
         self._alpha = alpha if alpha is not None else 0.3
         self._c_init = c_init if c_init is not None else 1.25
-        self._c_base = 500
+        self._c_base = c_base
         self._n_playout = n_playout if n_playout is not None else 100
         self._cache_size = cache_size
         self._fpu_reduction = fpu_reduction
         self._use_symmetry = use_symmetry
+        self._game_name = game_name
+        self._board_converter = board_converter
         self._mlh_slope = mlh_slope
         self._mlh_cap = mlh_cap
 
+        # 噪声衰减（批量自对弈用）
+        self.noise_eps_init = self._noise_eps
+        self.noise_steps = noise_steps
+        self.noise_eps_min = noise_eps_min
+
         # alpha=None → eval mode, no noise from construction
-        init_eps = eps if alpha is not None else 0.0
+        init_eps = self._noise_eps if alpha is not None else 0.0
 
         if policy_value_fn is not None and c_init is not None and n_playout is not None:
             self.mcts = self._make_mcts(init_eps)
@@ -120,8 +139,9 @@ class AlphaZeroPlayer(Player):
 
     def _make_mcts(self, noise_eps):
         return BatchedMCTS(
-            batch_size=1, c_init=self._c_init, c_base=self._c_base,
+            batch_size=self.n_envs, c_init=self._c_init, c_base=self._c_base,
             alpha=self._alpha, n_playout=self._n_playout,
+            game_name=self._game_name, board_converter=self._board_converter,
             cache_size=self._cache_size, noise_epsilon=noise_eps,
             fpu_reduction=self._fpu_reduction, use_symmetry=self._use_symmetry,
             mlh_slope=self._mlh_slope, mlh_cap=self._mlh_cap,
@@ -138,7 +158,6 @@ class AlphaZeroPlayer(Player):
         if is_self_play is not None:
             self.is_selfplay = is_self_play
         self.n_actions = policy_value_fn.n_actions
-        # Recreate MCTS with updated params
         self.mcts = self._make_mcts(self._noise_eps)
 
     def to(self, device='cpu'):
@@ -154,7 +173,10 @@ class AlphaZeroPlayer(Player):
 
     def reset_player(self):
         if self.mcts:
-            self.mcts.reset_env(0)
+            for i in range(self.n_envs):
+                self.mcts.reset_env(i)
+
+    # ── 单环境接口（play.py / gui_play.py / pipeline Elo）────────────────────
 
     def get_action(self, env, temp=0):
         board = env.board[np.newaxis, ...]  # (1, 6, 7)
@@ -182,40 +204,18 @@ class AlphaZeroPlayer(Player):
         if self.is_selfplay:
             self.mcts.prune_roots(np.array([action], dtype=np.int32))
         else:
-            self.reset_player()
+            self.mcts.reset_env(0)
 
         return action, action_probs
 
+    # ── 批量环境接口（client.py 分布式自对弈）────────────────────────────────
 
-class BatchedAlphaZeroPlayer:
-    def __init__(self, policy_value_fn, n_envs, c_init=1.25, c_base=500, n_playout=100, alpha=0.3, noise_epsilon=0.25, fpu_reduction=0.4,
-                 game_name='Connect4', board_converter=None, cache_size=0, use_symmetry=True,
-                 noise_steps=0, noise_eps_min=0.1, mlh_slope=0.0, mlh_cap=0.2):
-        self.pv_func = policy_value_fn
-        self.mcts = BatchedMCTS(n_envs, c_init, c_base, alpha, n_playout,
-                                game_name=game_name, board_converter=board_converter,
-                                cache_size=cache_size, noise_epsilon=noise_epsilon, fpu_reduction=fpu_reduction,
-                                use_symmetry=use_symmetry, mlh_slope=mlh_slope, mlh_cap=mlh_cap)
-        self.n_envs = n_envs
-        self.n_actions = self.mcts.action_size
-        self.noise_eps_init = noise_epsilon
-        self.noise_steps = noise_steps
-        self.noise_eps_min = noise_eps_min
-
-    def to(self, device='cpu'):
-        self.pv_fn.to(device)
-
-    def reset_player(self):
-        for i in range(self.n_envs):
-            self.mcts.reset_env(i)
-
-    def get_action(self, current_boards, turns, temps=None):
+    def get_batch_action(self, current_boards, turns, temps=None):
         assert len(current_boards) == self.n_envs
         if temps is None:
             temps = [0 for _ in range(self.n_envs)]
 
-        self.mcts.batch_playout(self.pv_func, current_boards, turns)
-
+        self.mcts.batch_playout(self.pv_fn, current_boards, turns)
         visits = self.mcts.get_visits_count()
 
         batch_actions = []
@@ -225,12 +225,9 @@ class BatchedAlphaZeroPlayer:
             visit = visits[i]
             temp = temps[i]
 
-            # 训练策略目标：使用原始 count 归一化分布，不受 temp 影响
             action_probs = np.zeros(self.n_actions, dtype=np.float32)
             valid_mask = visit > 0
 
-            # 已结束的游戏可能所有 visit 都为 0（终局状态被正确识别），
-            # 此时返回 action=0 和全零 probs，调用方不会使用这些值。
             if not valid_mask.any():
                 batch_actions.append(0)
                 batch_probs.append(action_probs)
@@ -238,18 +235,17 @@ class BatchedAlphaZeroPlayer:
 
             action_probs[valid_mask] = visit[valid_mask] / visit[valid_mask].sum()
 
-            # 动作采样：根据 temp 缩放后的分布采样
             if temp <= 1e-6:
                 action = np.argmax(visit)
             else:
                 valid_actions = np.where(valid_mask)[0]
-                # 用 log 域计算 N^(1/temp)，等价但数值稳定
                 log_visits = np.log(visit[valid_mask])
                 sample_dist = softmax(log_visits / temp)
                 action = np.random.choice(valid_actions, p=sample_dist)
 
             batch_actions.append(action)
             batch_probs.append(action_probs)
+
         actions_array = np.array(batch_actions, dtype=np.int32)
         self.mcts.prune_roots(actions_array)
         return batch_actions, np.array(batch_probs)

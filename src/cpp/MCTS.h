@@ -17,6 +17,18 @@ namespace AlphaZero
     }
 
     /**
+     * simulate() 的返回值：叶节点状态及其终局信息。
+     * 使用结构体返回替代 4 个 out 参数，利用 NRVO 零开销。
+     */
+    template <MCTSGame Game>
+    struct SimResult
+    {
+        Game board;             ///< 叶节点棋盘（可能经过对称变换）
+        float terminal_value;   ///< 终局价值（-1=上一手赢, 0=平局），仅终局有效
+        bool is_terminal;       ///< 是否为终局状态
+    };
+
+    /**
      * 单棵 MCTS 搜索树，对应一局游戏。
      *
      * 核心流程：simulate() 选择叶节点 → 外部评估（NN 或 rollout）→ backprop() 反向传播。
@@ -124,18 +136,16 @@ namespace AlphaZero
             std::mt19937 &rng = get_rng();
             std::gamma_distribution<float> gamma(alpha, 1.0f);
 
-            int32_t valid_children[ACTION_SIZE];
+            std::array<int32_t, ACTION_SIZE> valid_children;
             int n_valid = 0;
             for (int a = 0; a < ACTION_SIZE; ++a)
             {
                 if (node_pool[root_idx].children[a] != -1)
-                {
                     valid_children[n_valid++] = node_pool[root_idx].children[a];
-                }
             }
             if (n_valid == 0) return;
 
-            float noise_arr[ACTION_SIZE];
+            std::array<float, ACTION_SIZE> noise_arr;
             float sum = 0.0f;
             for (int i = 0; i < n_valid; ++i)
             {
@@ -143,26 +153,104 @@ namespace AlphaZero
                 sum += noise_arr[i];
             }
             for (int i = 0; i < n_valid; ++i)
-            {
                 node_pool[valid_children[i]].noise = noise_arr[i] / sum;
-            }
         }
+
+        // ======== Selection 辅助函数 ========
+
+        /**
+         * 计算 FPU（First Play Urgency）：未访问动作的默认价值估计。
+         * 劣势时降低 FPU，鼓励探索新走法。
+         *
+         * @param node_idx  当前节点索引
+         * @param valids    合法动作列表
+         * @return FPU 值，用于未访问子节点的 UCB Q 值替代
+         */
+        float compute_fpu(int32_t node_idx, const ValidMoves<ACTION_SIZE> &valids) const
+        {
+            const Node &node = node_pool[node_idx];
+            float seen_policy = 0.0f;
+            for (int action : valids)
+            {
+                int32_t child_idx = node.children[action];
+                if (child_idx != -1 && node_pool[child_idx].n_visits > 0)
+                    seen_policy += node_pool[child_idx].prior;
+            }
+            float scale = (1.0f + node.Q) / 2.0f;
+            float effective_fpu = fpu_reduction * scale;
+            float fpu_value = node.Q - effective_fpu * std::sqrt(seen_policy);
+            return std::max(-1.0f, fpu_value);
+        }
+
+        /**
+         * 在已展开节点中按 UCB 分数选择最优动作。
+         *
+         * @param node_idx  当前节点索引
+         * @param valids    合法动作列表
+         * @param fpu_value FPU 值（未访问子节点的默认 Q 估计）
+         * @return 最优动作索引；所有子节点都不存在时返回 -1
+         */
+        int select_action(int32_t node_idx, const ValidMoves<ACTION_SIZE> &valids, float fpu_value) const
+        {
+            const Node &node = node_pool[node_idx];
+            float parent_n = static_cast<float>(node.n_visits);
+            float parent_M = node.M;
+            bool is_root = (node_idx == root_idx);
+
+            float best_score = -std::numeric_limits<float>::infinity();
+            int best_action = -1;
+
+            for (int action : valids)
+            {
+                int32_t child_idx = node.children[action];
+                if (child_idx != -1)
+                {
+                    float score = node_pool[child_idx].get_ucb(
+                        c_init, c_base, parent_n, is_root, noise_epsilon,
+                        fpu_value, parent_M, mlh_slope, mlh_cap);
+                    if (score > best_score)
+                    {
+                        best_score = score;
+                        best_action = action;
+                    }
+                }
+            }
+            return best_action;
+        }
+
+        /**
+         * 对叶节点状态随机应用对称变换（若启用）。
+         * 增加 NN 输入多样性，逆变换在 backprop 中恢复。
+         *
+         * @param state [in/out] 叶节点状态
+         * @return 应用的对称变换 ID（0=恒等）
+         */
+        int apply_random_symmetry(Game &state)
+        {
+            if (use_symmetry && Game::Traits::NUM_SYMMETRIES > 1)
+            {
+                std::mt19937 &rng = get_rng();
+                std::uniform_int_distribution<int> dist(0, Game::Traits::NUM_SYMMETRIES - 1);
+                int sym_id = dist(rng);
+                state.apply_symmetry(sym_id);
+                return sym_id;
+            }
+            return 0;
+        }
+
+        // ======== 核心搜索流程 ========
 
         /**
          * MCTS 模拟阶段（Selection）：从根节点沿搜索树向下选择，直到到达叶节点或终局状态。
          *
-         * 在已展开的节点中，按 UCB 分数选择最优动作并前进；
-         * 遇到未展开节点（叶节点）或终局状态时停止。
+         * 在已展开节点中，按 UCB 分数选择最优动作并前进；
+         * 遇到未展开节点或终局状态时停止。
+         * 对非终局叶节点可选应用随机对称变换。
          *
-         * 对于非终局叶节点，若启用对称增强，会随机对叶节点状态应用对称变换，
-         * 以增加神经网络的输入多样性（逆变换在 backprop 中恢复）。
-         *
-         * @param start_state        当前棋盘状态
-         * @param out_nn_input_board [输出] 叶节点状态（可能经过对称变换），用于 NN 评估
-         * @param out_is_terminal    [输出] 是否为终局状态
-         * @param out_terminal_val   [输出] 终局价值（-1=上一手赢, 0=平局），仅终局有效
+         * @param start_state 当前棋盘状态
+         * @return SimResult 包含叶节点状态和终局信息
          */
-        void simulate(const Game &start_state, Game &out_nn_input_board, bool &out_is_terminal, float &out_terminal_val)
+        SimResult<Game> simulate(const Game &start_state)
         {
             sim_env = start_state;
             int32_t curr_idx = root_idx;
@@ -171,176 +259,137 @@ namespace AlphaZero
             // Selection：沿已展开路径选择最优动作
             while (node_pool[curr_idx].is_expanded)
             {
-                float best_score = -std::numeric_limits<float>::infinity();
-                int best_action = -1;
-                float p_n = static_cast<float>(node_pool[curr_idx].n_visits);
-
                 auto valids = sim_env.get_valid_moves();
                 if (valids.empty()) break;
 
-                // 计算 FPU（First Play Urgency）：未访问过的动作的默认价值估计
-                // 劣势时降低 FPU，鼓励探索新走法
-                float parent_value = node_pool[curr_idx].Q;
-                float seen_policy = 0.0f;
-                for (int action : valids)
-                {
-                    int32_t child_idx = node_pool[curr_idx].children[action];
-                    if (child_idx != -1 && node_pool[child_idx].n_visits > 0)
-                    {
-                        seen_policy += node_pool[child_idx].prior;
-                    }
-                }
-                float scale = (1.0f + parent_value) / 2.0f;
-                float effective_fpu = fpu_reduction * scale;
-                float fpu_value = parent_value - effective_fpu * std::sqrt(seen_policy);
-                fpu_value = std::max(-1.0f, fpu_value);
+                float fpu = compute_fpu(curr_idx, valids);
+                int action = select_action(curr_idx, valids, fpu);
+                if (action == -1) break;
 
-                // 对每个合法动作计算 UCB，选分数最高的
-                float parent_M = node_pool[curr_idx].M;
-                for (int action : valids)
-                {
-                    int32_t child_idx = node_pool[curr_idx].children[action];
-                    if (child_idx != -1)
-                    {
-                        float score = node_pool[child_idx].get_ucb(c_init, c_base, p_n, curr_idx == root_idx, noise_epsilon, fpu_value,
-                                                                    parent_M, mlh_slope, mlh_cap);
-                        if (score > best_score)
-                        {
-                            best_score = score;
-                            best_action = action;
-                        }
-                    }
-                }
-                if (best_action == -1) break;
-
-                sim_env.step(best_action);
-                curr_idx = node_pool[curr_idx].children[best_action];
+                sim_env.step(action);
+                curr_idx = node_pool[curr_idx].children[action];
 
                 if (sim_env.check_winner() != 0 || sim_env.is_full()) break;
             }
             current_leaf_idx = curr_idx;
 
-            // 检查是否为终局状态
+            // 终局状态：有人赢（-1）或平局（0）
             int winner = sim_env.check_winner();
             if (winner != 0)
-            {
-                out_is_terminal = true;
-                out_terminal_val = -1.0f;       // 有人赢了 → 对当前落子方来说是 -1
-                out_nn_input_board = sim_env;
-                return;
-            } else if (sim_env.is_full())
-            {
-                out_is_terminal = true;
-                out_terminal_val = 0.0f;        // 平局
-                out_nn_input_board = sim_env;
-                return;
-            }
+                return {sim_env, -1.0f, true};
+            if (sim_env.is_full())
+                return {sim_env, 0.0f, true};
 
             // 非终局叶节点：保存原始状态，可选应用随机对称变换
-            out_is_terminal = false;
             leaf_state = sim_env;
+            current_sym_id = apply_random_symmetry(sim_env);
 
-            if (use_symmetry && Game::Traits::NUM_SYMMETRIES > 1)
+            return {sim_env, 0.0f, false};
+        }
+
+        // ======== Backpropagation 辅助函数 ========
+
+        /**
+         * 展开叶节点：为所有合法动作创建子节点，设置策略先验和可选 Dirichlet 噪声。
+         *
+         * 流程：
+         *   1. 对 policy 应用对称逆变换（恢复 simulate 中的随机对称）
+         *   2. 归一化策略概率
+         *   3. 根节点首次展开时生成 Dirichlet 噪声
+         *   4. 为每个合法动作分配子节点
+         *
+         * @param policy_logits NN 策略输出（或 uniform prior），长度 ACTION_SIZE
+         */
+        void expand_leaf(std::span<const float> policy_logits)
+        {
+            // 对称逆变换：恢复 simulate 中的随机对称
+            std::array<float, ACTION_SIZE> policy;
+            std::copy(policy_logits.begin(), policy_logits.end(), policy.begin());
+            Game::inverse_symmetry_policy(current_sym_id, policy);
+
+            auto valids = leaf_state.get_valid_moves();
+
+            // 策略归一化：只对合法动作的 logits 求和
+            float policy_sum = 0.0f;
+            for (int action : valids)
+                policy_sum += policy[action];
+
+            // 根节点首次展开时生成 Dirichlet 噪声
+            std::array<float, ACTION_SIZE> noise_arr{};
+            bool has_noise = (node_pool[current_leaf_idx].parent == -1 && alpha > 0.0f);
+            if (has_noise)
             {
                 std::mt19937 &rng = get_rng();
-                std::uniform_int_distribution<int> sym_dist(0, Game::Traits::NUM_SYMMETRIES - 1);
-                current_sym_id = sym_dist(rng);
-                sim_env.apply_symmetry(current_sym_id);
+                std::gamma_distribution<float> gamma(alpha, 1.0f);
+                float sum = 0.0f;
+                for (int i = 0; i < valids.size(); ++i)
+                {
+                    noise_arr[i] = gamma(rng);
+                    sum += noise_arr[i];
+                }
+                for (int i = 0; i < valids.size(); ++i)
+                    noise_arr[i] /= sum;
             }
 
-            out_nn_input_board = sim_env;
+            // 展开：为每个合法动作创建子节点
+            int noise_idx = 0;
+            for (int action : valids)
+            {
+                float prob = policy[action] / (policy_sum + 1e-8f);
+                if (node_pool[current_leaf_idx].children[action] == -1)
+                {
+                    int32_t new_node = allocate_node(current_leaf_idx, prob);
+                    node_pool[current_leaf_idx].children[action] = new_node;
+                    if (has_noise)
+                        node_pool[new_node].noise = noise_arr[noise_idx];
+                }
+                ++noise_idx;
+            }
+            node_pool[current_leaf_idx].is_expanded = true;
         }
 
         /**
-         * 反向传播阶段（Expansion + Backpropagation）：用评估结果展开叶节点并更新路径上的统计量。
+         * 从叶节点沿 parent 链向上更新统计量。
+         * 每层翻转 value（对手视角），moves_left 递增 1（父节点比子节点多一步）。
          *
-         * 非终局叶节点：
-         *   1. 对 policy 应用对称逆变换（恢复 simulate 中的随机对称）
-         *   2. 在根节点处生成 Dirichlet 噪声
-         *   3. 为所有合法动作创建子节点，设置策略先验
-         * 终局叶节点：不展开，仅反向传播。
-         *
-         * 反向传播：从叶节点沿 parent 链向上更新 N, Q, M，每层翻转 value 符号。
+         * @param value      叶节点评估值 ∈ [-1, 1]
+         * @param moves_left 预期剩余步数
+         */
+        void propagate(float value, float moves_left)
+        {
+            int32_t idx = current_leaf_idx;
+            float val = value;
+            float ml = moves_left;
+            while (idx != -1)
+            {
+                Node &node = node_pool[idx];
+                node.n_visits++;
+                node.Q += (val - node.Q) / node.n_visits;
+                node.M += (ml - node.M) / node.n_visits;
+                val = -val;
+                ml += 1.0f;
+                idx = node.parent;
+            }
+        }
+
+        // ======== 公共反向传播接口 ========
+
+        /**
+         * 反向传播阶段：用评估结果展开叶节点并更新路径上的统计量。
          *
          * @param policy_logits NN 输出的策略 logits（或 uniform），长度 ACTION_SIZE
          * @param value         叶节点评估值 ∈ [-1, 1]
          * @param moves_left    预期剩余步数（NN 输出，纯 MCTS 时为 0）
-         * @param is_terminal   是否为终局状态
+         * @param is_terminal   是否为终局状态（终局不展开，仅传播）
          */
         void backprop(std::span<const float> policy_logits, float value, float moves_left, bool is_terminal)
         {
             if (current_leaf_idx == -1) return;
 
-            // 终局状态不展开，直接反向传播
             if (!is_terminal)
-            {
-                // 对称逆变换：恢复 simulate 中的随机对称
-                std::array<float, ACTION_SIZE> final_policy;
-                std::copy(policy_logits.begin(), policy_logits.end(), final_policy.begin());
-                Game::inverse_symmetry_policy(current_sym_id, final_policy);
+                expand_leaf(policy_logits);
 
-                auto valids = leaf_state.get_valid_moves();
-
-                // 根节点首次展开时生成 Dirichlet 噪声
-                float noise_arr[ACTION_SIZE];
-                int noise_count = 0;
-                if (node_pool[current_leaf_idx].parent == -1 && alpha > 0.0f)
-                {
-                    std::mt19937 &rng = get_rng();
-                    std::gamma_distribution<float> gamma(alpha, 1.0f);
-
-                    float sum = 0.0f;
-                    for (int i = 0; i < valids.size(); ++i)
-                    {
-                        float n = gamma(rng);
-                        noise_arr[i] = n;
-                        sum += n;
-                    }
-                    noise_count = valids.size();
-                    for (int i = 0; i < noise_count; ++i)
-                        noise_arr[i] /= sum;
-                }
-
-                // 策略归一化：只对合法动作的 logits 求和
-                float policy_sum = 0.0f;
-                for (int action : valids)
-                {
-                    policy_sum += final_policy[action];
-                }
-
-                // 展开：为每个合法动作创建子节点
-                int noise_idx = 0;
-                for (int action : valids)
-                {
-                    float prob = final_policy[action] / (policy_sum + 1e-8f);
-                    if (node_pool[current_leaf_idx].children[action] == -1)
-                    {
-                        int32_t new_node = allocate_node(current_leaf_idx, prob);
-                        node_pool[current_leaf_idx].children[action] = new_node;
-
-                        if (noise_count > 0)
-                        {
-                            node_pool[new_node].noise = noise_arr[noise_idx++];
-                        }
-                    }
-                }
-                node_pool[current_leaf_idx].is_expanded = true;
-            }
-
-            // 反向传播：从叶节点沿 parent 链向上更新统计量
-            // 每层翻转 value（对手视角），moves_left 递增 1（父节点比子节点多一步）
-            int32_t update_idx = current_leaf_idx;
-            float val = value;
-            float ml = is_terminal ? 0.0f : moves_left;
-            while (update_idx != -1)
-            {
-                node_pool[update_idx].n_visits++;
-                node_pool[update_idx].Q += (val - node_pool[update_idx].Q) / node_pool[update_idx].n_visits;
-                node_pool[update_idx].M += (ml - node_pool[update_idx].M) / node_pool[update_idx].n_visits;
-                val = -val;
-                ml += 1.0f;
-                update_idx = node_pool[update_idx].parent;
-            }
+            propagate(value, is_terminal ? 0.0f : moves_left);
         }
 
         // ========== Random Rollout（纯 MCTS 基线）==========
@@ -372,15 +421,12 @@ namespace AlphaZero
          */
         void simulate_with_rollout(const Game &start_state)
         {
-            Game out_board;
-            bool is_terminal;
-            float term_val;
-            simulate(start_state, out_board, is_terminal, term_val);
+            auto result = simulate(start_state);
 
-            if (is_terminal)
+            if (result.is_terminal)
             {
                 std::array<float, ACTION_SIZE> dummy{};
-                backprop(dummy, term_val, 0.0f, true);
+                backprop(dummy, result.terminal_value, 0.0f, true);
             }
             else
             {
