@@ -251,14 +251,13 @@ namespace AlphaZero
                 bb[p] = dst;
             }
 
-            constexpr int BPC = Traits::BITS_PER_COL;
             for (int c = 0; c < 3; ++c)
             {
                 int mirror = Traits::COLS - 1 - c;
-                int h_c = height[c] - c * BPC;
-                int h_m = height[mirror] - mirror * BPC;
-                height[c] = c * BPC + h_m;
-                height[mirror] = mirror * BPC + h_c;
+                int h_c = height[c] - c * B;
+                int h_m = height[mirror] - mirror * B;
+                height[c] = c * B + h_m;
+                height[mirror] = mirror * B + h_c;
             }
 
             sync_to_board();
