@@ -42,7 +42,6 @@ g_mcts.add_argument('-c', '--c_init', type=float, default=1.4, help='PUCT explor
 g_mcts.add_argument('--c_base_factor', type=float, default=1000,
                      help='PUCT base factor (c_base = n * c_base_factor)')
 g_mcts.add_argument('--fpu_reduction', type=float, default=0.2, help='First-play urgency reduction')
-g_mcts.add_argument('--discount', type=float, default=1, help='Value discount factor')
 g_mcts.add_argument('--cache_size', type=int, default=10000, help='LRU transposition table max size')
 g_mcts.add_argument('--no_symmetry', action='store_true',
                      help='Disable random symmetry augmentation during MCTS')
@@ -99,7 +98,6 @@ config = {"lr": args.lr,
           "fpu_reduction": args.fpu_reduction,
           "eps": args.eps,
           "n_playout": args.n,
-          "discount": args.discount,
           "buffer_size": args.buf,
           "batch_size": args.batch_size,
           "pure_mcts_n_playout": args.mcts_n,
@@ -219,7 +217,6 @@ def get_config():
         'c_init': pipeline.c_puct,
         'c_base': pipeline.c_base,
         'n_playout': pipeline.n_playout,
-        'discount': pipeline.discount,
         'dirichlet_alpha': pipeline.dirichlet_alpha,
         'noise_eps': pipeline.eps,
         'noise_steps': getattr(pipeline, 'noise_steps', 0),

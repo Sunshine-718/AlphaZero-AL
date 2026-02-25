@@ -69,13 +69,9 @@ class Human(Player):
 
 
 class MCTSPlayer(Player):
-    def __init__(self, c_puct=4, n_playout=1000, discount=1, eps=0.25):
+    def __init__(self, c_puct=4, n_playout=1000, eps=0.25):
         super().__init__()
-        self.mcts = MCTS(policy_value_fn, c_puct, n_playout, discount, None, eps)
-
-    @property
-    def discount(self):
-        return self.mcts.root.discount
+        self.mcts = MCTS(policy_value_fn, c_puct, n_playout, None, eps)
 
     def reset_player(self):
         self.mcts.prune_root(-1)
@@ -87,10 +83,10 @@ class MCTSPlayer(Player):
 
 
 class AlphaZeroPlayer(MCTSPlayer):
-    def __init__(self, policy_value_fn, c_init=1.25, n_playout=100, discount=None, alpha=None, is_selfplay=0, cache_size=5000, eps=0.25, fpu_reduction=0.4, use_symmetry=True,
+    def __init__(self, policy_value_fn, c_init=1.25, n_playout=100, alpha=None, is_selfplay=0, cache_size=5000, eps=0.25, fpu_reduction=0.4, use_symmetry=True,
                  mlh_slope=0.0, mlh_cap=0.2):
         self.pv_fn = policy_value_fn
-        self.mcts = MCTS_AZ(policy_value_fn, c_init, n_playout, discount, alpha, cache_size, eps, fpu_reduction, use_symmetry,
+        self.mcts = MCTS_AZ(policy_value_fn, c_init, n_playout, alpha, cache_size, eps, fpu_reduction, use_symmetry,
                             mlh_slope, mlh_cap)
         self.is_selfplay = is_selfplay
         try:
@@ -139,17 +135,16 @@ class AlphaZeroPlayer(MCTSPlayer):
 
 
 class BatchedAlphaZeroPlayer:
-    def __init__(self, policy_value_fn, n_envs, c_init=1.25, c_base=500, n_playout=100, discount=1, alpha=0.3, noise_epsilon=0.25, fpu_reduction=0.4,
+    def __init__(self, policy_value_fn, n_envs, c_init=1.25, c_base=500, n_playout=100, alpha=0.3, noise_epsilon=0.25, fpu_reduction=0.4,
                  game_name='Connect4', board_converter=None, cache_size=0, use_symmetry=True,
                  noise_steps=0, noise_eps_min=0.1, mlh_slope=0.0, mlh_cap=0.2):
         self.pv_func = policy_value_fn
-        self.mcts = BatchedMCTS(n_envs, c_init, c_base, discount, alpha, n_playout,
+        self.mcts = BatchedMCTS(n_envs, c_init, c_base, alpha, n_playout,
                                 game_name=game_name, board_converter=board_converter,
                                 cache_size=cache_size, noise_epsilon=noise_epsilon, fpu_reduction=fpu_reduction,
                                 use_symmetry=use_symmetry, mlh_slope=mlh_slope, mlh_cap=mlh_cap)
         self.n_envs = n_envs
         self.n_actions = self.mcts.action_size
-        self.discount = discount
         self.noise_eps_init = noise_epsilon
         self.noise_steps = noise_steps
         self.noise_eps_min = noise_eps_min

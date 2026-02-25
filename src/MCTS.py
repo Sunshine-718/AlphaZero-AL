@@ -8,7 +8,7 @@ from .Cache import LRUCache as Cache
 
 
 class TreeNode:
-    def __init__(self, parent, prior, discount, dirichlet_noise=None, eps=0.25):
+    def __init__(self, parent, prior, dirichlet_noise=None, eps=0.25):
         self.parent = parent
         self.children = {}
         self.n_visits = 0
@@ -16,7 +16,6 @@ class TreeNode:
         self.M = 0.0  # Moves Left: 预期剩余步数的 running average
         self.u = 0
         self.prior = prior
-        self.discount = discount
         self.noise = dirichlet_noise if dirichlet_noise is not None else prior
         self.eps = eps
         self.deterministic = False
@@ -80,9 +79,9 @@ class TreeNode:
         for idx, (action, prior) in enumerate(action_probs):
             if action not in self.children:
                 if self.deterministic or noise is None:
-                    self.children[action] = TreeNode(self, prior, self.discount, None, self.eps)
+                    self.children[action] = TreeNode(self, prior, None, self.eps)
                 else:
-                    self.children[action] = TreeNode(self, prior, self.discount, noise[idx], self.eps)
+                    self.children[action] = TreeNode(self, prior, noise[idx], self.eps)
 
     def select(self, c_init, c_base, UCT=False, fpu_reduction=0.4, mlh_slope=0.0, mlh_cap=0.2):
         if UCT:
@@ -99,16 +98,16 @@ class TreeNode:
 
     def update(self, leaf_value, moves_left=0.0):
         if self.parent:
-            self.parent.update(-leaf_value * self.discount, moves_left + 1.0)
+            self.parent.update(-leaf_value, moves_left + 1.0)
         self.n_visits += 1
         self.Q += (leaf_value - self.Q) / self.n_visits
         self.M += (moves_left - self.M) / self.n_visits
 
 
 class MCTS:
-    def __init__(self, policy_value_fn, c_init, n_playout, discount, alpha, eps=0.25, fpu_reduction=0.4, use_symmetry=True,
+    def __init__(self, policy_value_fn, c_init, n_playout, alpha, eps=0.25, fpu_reduction=0.4, use_symmetry=True,
                  mlh_slope=0.0, mlh_cap=0.2):
-        self.root = TreeNode(None, 1, discount, None, eps)
+        self.root = TreeNode(None, 1, None, eps)
         self.policy = policy_value_fn
         self.c_init = c_init
         self.c_base = 500
@@ -159,13 +158,13 @@ class MCTS:
             self.root = self.root.children[node_index]
             self.root.parent = None
         else:
-            self.root = TreeNode(None, 1, self.root.discount)
+            self.root = TreeNode(None, 1)
 
 
 class MCTS_AZ(MCTS):
-    def __init__(self, policy_value_fn, c_init, n_playout, discount, alpha, cache_size, eps=0.25, fpu_reduction=0.4, use_symmetry=True,
+    def __init__(self, policy_value_fn, c_init, n_playout, alpha, cache_size, eps=0.25, fpu_reduction=0.4, use_symmetry=True,
                  mlh_slope=0.0, mlh_cap=0.2):
-        super().__init__(policy_value_fn, c_init, n_playout, discount, alpha, eps, fpu_reduction, use_symmetry,
+        super().__init__(policy_value_fn, c_init, n_playout, alpha, eps, fpu_reduction, use_symmetry,
                          mlh_slope, mlh_cap)
         self.cache = Cache(cache_size)
         self.use_cache = cache_size > 0

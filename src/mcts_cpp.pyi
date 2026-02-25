@@ -2,20 +2,18 @@ import numpy as np
 from typing import Tuple, List, Union
 
 class BatchedMCTS:
-    def __init__(self, 
-                 n_envs: int, 
-                 c_init: float, 
-                 c_base: float, 
-                 discount: float, 
+    def __init__(self,
+                 n_envs: int,
+                 c_init: float,
+                 c_base: float,
                  alpha: float) -> None:
         """
         初始化 BatchedMCTS 引擎。
-        
+
         Args:
             n_envs: 并行环境数量 (Batch Size)
             c_init: PUCT 参数 c_init (通常 1.25)
             c_base: PUCT 参数 c_base (通常 19652)
-            discount: 折扣因子 gamma (通常 0.99)
             alpha: Dirichlet 噪声参数 (通常 0.3 - 1.0)
         """
         ...

@@ -110,7 +110,7 @@ while (update_idx != -1) {
     node.n_visits++;
     node.Q += (val - node.Q) / node.n_visits;   // Q 的增量更新
     node.M += (ml - node.M) / node.n_visits;     // M 的增量更新
-    val = -val * discount;
+    val = -val;
     ml += 1.0f;   // 父节点比子节点多一步
     update_idx = node.parent;
 }
@@ -256,7 +256,7 @@ void backprop(std::span<const float> policy_logits, float value,
         node_pool[update_idx].n_visits++;
         node_pool[update_idx].Q += (val - node_pool[update_idx].Q) / node_pool[update_idx].n_visits;
         node_pool[update_idx].M += (ml - node_pool[update_idx].M) / node_pool[update_idx].n_visits;
-        val = -val * discount;
+        val = -val;
         ml += 1.0f;  // 父节点离游戏结束多一步
         update_idx = node_pool[update_idx].parent;
     }
@@ -304,7 +304,7 @@ return (log_prob.exp().cpu().numpy(),
 ```python
 def update(self, leaf_value, moves_left=0.0):
     if self.parent:
-        self.parent.update(-leaf_value * self.discount, moves_left + 1.0)
+        self.parent.update(-leaf_value, moves_left + 1.0)
     self.n_visits += 1
     self.Q += (leaf_value - self.Q) / self.n_visits
     self.M += (moves_left - self.M) / self.n_visits

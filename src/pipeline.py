@@ -52,7 +52,7 @@ class TrainPipeline(ABC):
             self.ddp_net = None
 
         self.az_player = AlphaZeroPlayer(self.net, c_init=self.c_puct, n_playout=self.n_playout,
-                                         discount=self.discount, alpha=self.dirichlet_alpha, is_selfplay=1,
+                                         alpha=self.dirichlet_alpha, is_selfplay=1,
                                          cache_size=self.cache_size, eps=self.eps,
                                          use_symmetry=getattr(self, 'use_symmetry', True),
                                          mlh_slope=getattr(self, 'mlh_slope', 0.0),
@@ -131,7 +131,7 @@ class TrainPipeline(ABC):
         az = deepcopy(self.az_player)
         az.is_selfplay = False
         az.eval()
-        mcts = MCTSPlayer(1, self.pure_mcts_n_playout, self.discount)
+        mcts = MCTSPlayer(1, self.pure_mcts_n_playout)
 
         w1 = self.game.play(player1=az, player2=mcts, show=0)
         self.elo.update(1 if w1 == 1 else 0.5 if w1 == 0 else 0)
@@ -180,12 +180,12 @@ class TrainPipeline(ABC):
         mlh_sl = getattr(self, 'mlh_slope', 0.0)
         mlh_cp = getattr(self, 'mlh_cap', 0.2)
         mcts_p1 = PyBatchedMCTS(
-            n_envs, c_init=self.c_puct, c_base=500, discount=self.discount,
+            n_envs, c_init=self.c_puct, c_base=500,
             alpha=self.dirichlet_alpha, n_playout=n_playout, game_name=self.env_name,
             noise_epsilon=eval_noise_eps, use_symmetry=use_sym,
             mlh_slope=mlh_sl, mlh_cap=mlh_cp)
         mcts_p2 = PyBatchedMCTS(
-            n_envs, c_init=self.c_puct, c_base=500, discount=self.discount,
+            n_envs, c_init=self.c_puct, c_base=500,
             alpha=self.dirichlet_alpha, n_playout=n_playout, game_name=self.env_name,
             noise_epsilon=eval_noise_eps, use_symmetry=use_sym,
             mlh_slope=mlh_sl, mlh_cap=mlh_cp)
@@ -262,8 +262,6 @@ class TrainPipeline(ABC):
             'Metric/Loss/Steps loss': s_loss,
             'Metric/Entropy': entropy,
         }
-        if getattr(self, 'mlh_slope', 0.0) > 0:
-            log_dict['Metric/MLH slope'] = self.mlh_slope
         swanlab.log(log_dict, step=self.global_step)
 
     def _log_eval(self, r_a, r_b, win_rate, best_counter):
@@ -295,7 +293,6 @@ class TrainPipeline(ABC):
                   f'\tC_puct: {self.c_puct}\n'
                   f'\tSimulation (AlphaZero): {self.n_playout}\n'
                   f'\tSimulation (Benchmark): {self.pure_mcts_n_playout}\n'
-                  f'\tDiscount: {self.discount}\n'
                   f'\tDirichlet alpha: {self.dirichlet_alpha}\n'
                   f'\tBuffer size: {self.buffer_size}\n'
                   f'\tBatch size: {self.batch_size}\n'

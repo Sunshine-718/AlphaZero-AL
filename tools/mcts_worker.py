@@ -24,7 +24,7 @@ class RolloutAdapter:
         return probs, np.array([[val]], dtype=np.float32), np.array([[0.5]], dtype=np.float32)
 
 
-def run_single(board, turn, c_init, alpha, fpu_reduction, n_playout, discount=1.0):
+def run_single(board, turn, c_init, alpha, fpu_reduction, n_playout):
     """单次 MCTS 运行 (子进程 worker)"""
     env = Env()
     env.board = board.copy()
@@ -34,7 +34,6 @@ def run_single(board, turn, c_init, alpha, fpu_reduction, n_playout, discount=1.
         policy_value_fn=adapter,
         c_init=c_init,
         n_playout=n_playout,
-        discount=discount,
         alpha=alpha,
         cache_size=0,
         eps=0.25,

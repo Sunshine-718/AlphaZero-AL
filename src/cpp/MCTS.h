@@ -32,16 +32,16 @@ namespace AlphaZero
         int32_t current_leaf_idx = -1;
         int current_sym_id = 0;
 
-        float c_init, c_base, discount, alpha;
+        float c_init, c_base, alpha;
         float noise_epsilon;
         float fpu_reduction;
         bool use_symmetry;
         float mlh_slope;
         float mlh_cap;
 
-        MCTS(float c_i, float c_b, float disc, float a, float noise_eps = 0.25f, float fpu_red = 0.4f, bool use_sym = true,
+        MCTS(float c_i, float c_b, float a, float noise_eps = 0.25f, float fpu_red = 0.4f, bool use_sym = true,
              float mlh_slope_ = 0.0f, float mlh_cap_ = 0.2f)
-            : c_init(c_i), c_base(c_b), discount(disc), alpha(a), noise_epsilon(noise_eps), fpu_reduction(fpu_red), use_symmetry(use_sym),
+            : c_init(c_i), c_base(c_b), alpha(a), noise_epsilon(noise_eps), fpu_reduction(fpu_red), use_symmetry(use_sym),
               mlh_slope(mlh_slope_), mlh_cap(mlh_cap_)
         {
             // 预分配内存，减少 search 过程中的扩容
@@ -266,7 +266,7 @@ namespace AlphaZero
                 node_pool[update_idx].n_visits++;
                 node_pool[update_idx].Q += (val - node_pool[update_idx].Q) / node_pool[update_idx].n_visits;
                 node_pool[update_idx].M += (ml - node_pool[update_idx].M) / node_pool[update_idx].n_visits;
-                val = -val * discount;
+                val = -val;
                 ml += 1.0f;  // 父节点比子节点多一步
                 update_idx = node_pool[update_idx].parent;
             }

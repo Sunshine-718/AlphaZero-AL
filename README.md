@@ -140,7 +140,6 @@ python client.py --host <服务器IP> -B 100
 |                  | `-c` / `--c_init`     | `1.4`      | PUCT 探索常数                      |
 |                  | `--c_base_factor`       | `1000`     | PUCT base = n&times; factor        |
 |                  | `--fpu_reduction`       | `0.2`      | 首次探索紧迫度衰减                 |
-|                  | `--discount`            | `1`        | 价值折扣因子                       |
 |                  | `--cache_size`          | `10000`    | LRU 置换表大小                     |
 |                  | `--no_symmetry`         | 关闭         | 禁用对称性增强                     |
 | **噪声**   | `-a` / `--alpha`      | `0.03`     | Dirichlet alpha                    |

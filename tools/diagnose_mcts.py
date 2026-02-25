@@ -35,7 +35,6 @@ console = Console()
 C_INIT       = 1.0
 C_BASE       = 100_000   # C++ = n * c_base_factor = 100 * 1000
 N_PLAYOUT    = 100
-DISCOUNT     = 1.0
 ALPHA        = 0.3
 NOISE_EPS    = 0.25
 FPU_REDUCTION = 0.2
@@ -90,7 +89,6 @@ def make_mcts(net, n_playout=N_PLAYOUT, deterministic=False):
         policy_value_fn=net,
         c_init=C_INIT,
         n_playout=n_playout,
-        discount=DISCOUNT,
         alpha=None if deterministic else ALPHA,
         cache_size=0,
         eps=NOISE_EPS,
@@ -330,7 +328,7 @@ def section7(env, desc, budgets, c_inits=None):
         console.print(f'  [bold]c_init={c}[/bold]')
         for ns in budgets:
             console.print(f'    [dim]Running pure MCTS c={c} n={ns} ...[/dim]')
-            pure = MCTS(rollout_pv_fn, c_init=c, n_playout=ns, discount=1.0,
+            pure = MCTS(rollout_pv_fn, c_init=c, n_playout=ns,
                         alpha=None, use_symmetry=False)
             pure.get_action(env.copy())
             root = pure.root
@@ -397,12 +395,12 @@ def _run_pure_hp_sweep(env, param_name, param_values, n_runs, n_playout, **defau
     # 构建所有任务: (param_val, run_idx) -> future
     tasks = []
     for val in param_values:
-        kwargs = dict(c_init=4, alpha=None, fpu_reduction=0.0, discount=1.0)
+        kwargs = dict(c_init=4, alpha=None, fpu_reduction=0.0)
         kwargs.update(defaults)
         kwargs[param_name] = val
         for _ in range(n_runs):
             tasks.append((val, kwargs['c_init'], kwargs['alpha'],
-                          kwargs['fpu_reduction'], n_playout, kwargs['discount']))
+                          kwargs['fpu_reduction'], n_playout))
 
     # 收集结果
     raw = {val: [] for val in param_values}
@@ -411,8 +409,8 @@ def _run_pure_hp_sweep(env, param_name, param_values, n_runs, n_playout, **defau
         bar = progress.add_task(f'  {param_name} sweep', total=total_tasks)
         with ProcessPoolExecutor(max_workers=n_workers) as pool:
             futures = {}
-            for val, c_init, alpha, fpu, npl, disc in tasks:
-                f = pool.submit(run_single, board, turn, c_init, alpha, fpu, npl, disc)
+            for val, c_init, alpha, fpu, npl in tasks:
+                f = pool.submit(run_single, board, turn, c_init, alpha, fpu, npl)
                 futures[f] = val
             for f in as_completed(futures):
                 val = futures[f]
@@ -447,17 +445,16 @@ def section8(env, desc, c_inits, alphas, fpus, n_runs, n_playout):
 
     all_results = {}
 
-    # ── c_init sweep at each discount (alpha=0.3, fpu=0.2) ──
-    for disc in [1.0, 0.99, 0.975]:
-        label = f'c_init (discount={disc})'
-        console.print(f'  [bold]Sweep c_init[/bold]  (alpha=0.3, fpu=0.2, discount={disc})')
-        res_c = _run_pure_hp_sweep(env, 'c_init', c_inits, n_runs, n_playout,
-                                   alpha=0.3, fpu_reduction=0.2, discount=disc)
-        all_results[label] = (c_inits, res_c)
-        for val in c_inits:
-            d3 = res_c[val].get(3, {})
-            console.print(f'    c_init={val:<5}  col3={d3.get("pct_mean",0):.1f}%  '
-                          f'-Q={-d3.get("Q_mean",0):+.3f}')
+    # ── c_init sweep (alpha=0.3, fpu=0.2) ──
+    label = 'c_init'
+    console.print(f'  [bold]Sweep c_init[/bold]  (alpha=0.3, fpu=0.2)')
+    res_c = _run_pure_hp_sweep(env, 'c_init', c_inits, n_runs, n_playout,
+                               alpha=0.3, fpu_reduction=0.2)
+    all_results[label] = (c_inits, res_c)
+    for val in c_inits:
+        d3 = res_c[val].get(3, {})
+        console.print(f'    c_init={val:<5}  col3={d3.get("pct_mean",0):.1f}%  '
+                      f'-Q={-d3.get("Q_mean",0):+.3f}')
 
     return all_results
 

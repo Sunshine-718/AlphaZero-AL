@@ -18,7 +18,6 @@ MODEL_TYPE_DEFAULT  = 'current'
 N_PLAYOUT_DEFAULT   = 500
 ANIMATION_MS        = 30
 C_INIT              = 0.8
-DISCOUNT            = 1
 ALPHA               = 0.3
 USE_SYMMETRY        = True
 MLH_SLOPE           = 0.0   # MLH slope (0=disabled, LC0-style: scales child_M - parent_M)
@@ -447,7 +446,7 @@ class Connect4GUI(QWidget):
         # 玩家对象
         self.human     = Human()
         self.az_player = AlphaZeroPlayer(None, c_init=None, n_playout=None,
-                                         discount=DISCOUNT, alpha=ALPHA, is_selfplay=0, cache_size=10000,
+                                         alpha=ALPHA, is_selfplay=0, cache_size=10000,
                                          use_symmetry=USE_SYMMETRY,
                                          mlh_slope=MLH_SLOPE, mlh_cap=MLH_CAP)
         self._reload_model()

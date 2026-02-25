@@ -19,9 +19,9 @@ void register_batched_mcts(py::module_ &m, const char *name)
     constexpr int BOARD_SIZE = Game::Traits::BOARD_SIZE;
 
     py::class_<BM>(m, name)
-        .def(py::init<int, float, float, float, float, float, float, bool, float, float>(),
+        .def(py::init<int, float, float, float, float, float, bool, float, float>(),
              py::arg("n_envs"), py::arg("c_init"), py::arg("c_base"),
-             py::arg("discount"), py::arg("alpha"), py::arg("noise_epsilon") = 0.25f,
+             py::arg("alpha"), py::arg("noise_epsilon") = 0.25f,
              py::arg("fpu_reduction") = 0.4f, py::arg("use_symmetry") = true,
              py::arg("mlh_slope") = 0.0f, py::arg("mlh_cap") = 0.2f)
 

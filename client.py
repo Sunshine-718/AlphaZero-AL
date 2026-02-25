@@ -69,7 +69,6 @@ class Actor:
             c_init=self.cfg['c_init'],
             c_base=self.cfg['c_base'],
             n_playout=self.cfg['n_playout'],
-            discount=self.cfg['discount'],
             alpha=self.cfg['dirichlet_alpha'],
             cache_size=args.cache_size,
             noise_epsilon=self.cfg['noise_eps'],

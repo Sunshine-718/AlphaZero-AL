@@ -49,7 +49,7 @@ if __name__ == '__main__':
             az_player = NetworkPlayer(net)
         else:
             az_player = AlphaZeroPlayer(net, c_init=args.c_init,
-                                        n_playout=args.n, discount=0.99, alpha=args.alpha, is_selfplay=0,
+                                        n_playout=args.n, alpha=args.alpha, is_selfplay=0,
                                         use_symmetry=not args.no_symmetry,
                                         mlh_slope=args.mlh_slope, mlh_cap=args.mlh_cap)
         az_player.eval()
