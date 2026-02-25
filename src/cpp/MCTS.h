@@ -406,13 +406,15 @@ namespace AlphaZero
         float random_rollout(Game state) const
         {
             std::mt19937 &rng = get_rng();
+            float sign = 1.0f;  // 追踪相对于叶节点玩家的视角翻转
             while (true)
             {
-                if (state.check_winner() != 0) return -1.0f;
+                if (state.check_winner() != 0) return sign * -1.0f;
                 if (state.is_full()) return 0.0f;
                 auto valids = state.get_valid_moves();
                 std::uniform_int_distribution<int> dist(0, valids.size() - 1);
                 state.step(valids.moves[dist(rng)]);
+                sign = -sign;
             }
         }
 
