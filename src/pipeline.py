@@ -102,8 +102,8 @@ class TrainPipeline(ABC):
         dist.broadcast(winner, src=0)
         dist.broadcast(steps_to_end, src=0)
 
-        winner = winner.to(self.buffer.winner.dtype)
-        steps_to_end = steps_to_end.to(self.buffer.steps_to_end.dtype)
+        winner = winner.to(torch.int8)
+        steps_to_end = steps_to_end.to(torch.int16)
         dataset = TensorDataset(state, prob, winner, steps_to_end)
         return DataLoader(dataset, self.batch_size, shuffle=True)
 

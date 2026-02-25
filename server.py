@@ -149,14 +149,15 @@ class ServerPipeline(TrainPipeline):
         self._warmed_up = True
 
     def inbox_worker(self, buffer):
-        """后台线程：持续从 inbox 取数据存入 buffer，每存完一局就通知训练线程。"""
+        """后台线程：持续从 inbox 取整批数据存入 buffer，存完整批后通知训练线程。"""
         while True:
-            play_data = self._inbox.get()  # 阻塞等待
-            for data in play_data:
-                buffer.store(*data)
-            with self._episode_len_lock:
-                self._episode_len_list.append(len(play_data))
-            self._new_data_event.set()  # 通知训练线程
+            batch = self._inbox.get()  # 阻塞等待，batch = list of games
+            for play_data in batch:
+                for data in play_data:
+                    buffer.store(*data)
+                with self._episode_len_lock:
+                    self._episode_len_list.append(len(play_data))
+            self._new_data_event.set()  # 整批处理完才通知训练线程
 
 
 app = Flask(__name__)
@@ -175,8 +176,7 @@ def upload():
         return jsonify({'status': 'error', 'message': 'invalid payload'}), 400
     if not isinstance(raw, dict) or not raw.get('__az__'):
         return jsonify({'status': 'error', 'message': 'bad format'}), 400
-    for d in raw['data']:
-        pipeline._inbox.put(d)
+    pipeline._inbox.put(raw['data'])
     return jsonify({'status': 'success'})
 
 
