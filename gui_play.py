@@ -27,8 +27,8 @@ ALPHA               = 0.3       # Dirichlet 噪声 alpha (0=禁用噪声)
 NOISE_EPSILON       = 0.25      # 噪声混合权重 ε: prior = (1-ε)*P + ε*noise (eval 模式下强制为 0)
 USE_SYMMETRY        = True      # 叶节点随机对称变换增强
 CACHE_SIZE          = 10000     # LRU 置换表大小 (0=禁用)
-MLH_SLOPE           = 0.1       # Moves Left Head 斜率 (0=禁用, LC0 风格: 按 child_M - parent_M 缩放)
-MLH_CAP             = 0.2       # MLH 最大效果上限
+MLH_SLOPE           = 0.2       # Moves Left Head 斜率 (0=禁用, LC0 风格: 按 child_M - parent_M 缩放)
+MLH_CAP             = 0.3       # MLH 最大效果上限
 MLH_THRESHOLD       = 0.8       # MLH Q 阈值: |Q| < threshold 时抑制 M_utility (0=无阈值)
 
 PARAMS_PATH_FMT     = './params/{model_name}_{env_name}_{network}_{model_type}.pt'
