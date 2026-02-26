@@ -324,17 +324,6 @@ class TrainPipeline(ABC):
 
     def run(self):
         if self.rank == 0:
-            print('=' * 50)
-            print(f'Hyperparameters:\n'
-                  f'\tC_puct: {self.c_puct}\n'
-                  f'\tSimulation (AlphaZero): {self.n_playout}\n'
-                  f'\tSimulation (Benchmark): {self.pure_mcts_n_playout}\n'
-                  f'\tDirichlet alpha: {self.dirichlet_alpha}\n'
-                  f'\tBuffer size: {self.buffer_size}\n'
-                  f'\tBatch size: {self.batch_size}\n'
-                  f'\tWorld size: {self.world_size}')
-            print('=' * 50)
-
             run_config = {'env_name': self.env_name, 'model': self.net.name()}
             run_config.update(self.raw_config)
             swanlab.init(project="AlphaZero-AL", experiment_name=self.name, config=run_config)

@@ -60,7 +60,7 @@ g_mlh.add_argument('--mlh_slope', type=float, default=0.0,
                     help='MLH slope for MCTS (0=disabled, LC0-style: scales child_M - parent_M)')
 g_mlh.add_argument('--mlh_cap', type=float, default=0.2,
                     help='MLH max effect cap: clamp M_utility to [-cap, cap]')
-g_mlh.add_argument('--mlh_threshold', type=float, default=0.8,
+g_mlh.add_argument('--mlh_threshold', type=float, default=0.,
                     help='MLH Q threshold: suppress M_utility when |Q| < threshold (0=no threshold)')
 g_mlh.add_argument('--mlh_warmup_loss', type=float, default=0.0,
                     help='Steps-head loss threshold to activate MLH (0=disabled, MLH active from start)')
@@ -96,6 +96,8 @@ g_eval.add_argument('--num_eval', type=int, default=50, help='Number of evaluati
 g_eval.add_argument('--thres', type=float, default=0.52, help='Win rate threshold for new best')
 g_eval.add_argument('--mcts_n', type=int, default=1000, help='Benchmark pure MCTS simulations')
 
+parser.add_argument('--config', action='store_true', help='Display current config and exit')
+
 args, _ = parser.parse_known_args()
 
 config = {"lr": args.lr,
@@ -123,6 +125,97 @@ config = {"lr": args.lr,
           "mlh_cap": args.mlh_cap,
           "mlh_threshold": args.mlh_threshold,
           "mlh_warmup_loss": args.mlh_warmup_loss}
+
+
+def print_config():
+    from rich.console import Console
+    from rich.table import Table
+    from rich.panel import Panel
+
+    console = Console()
+    groups = [
+        ("Server", {
+            "host": args.host,
+            "port": args.port,
+        }),
+        ("Environment & Model", {
+            "env": args.env,
+            "model": args.model,
+            "name": args.name,
+            "device": args.device,
+        }),
+        ("MCTS Search", {
+            "n_playout": args.n,
+            "c_init": args.c_init,
+            "c_base": args.n * args.c_base_factor,
+            "fpu_reduction": args.fpu_reduction,
+            "cache_size": args.cache_size,
+            "use_symmetry": not args.no_symmetry,
+        }),
+        ("Exploration Noise", {
+            "dirichlet_alpha": args.alpha,
+            "noise_epsilon": args.eps,
+            "noise_steps": args.noise_steps,
+            "noise_eps_min": args.noise_eps_min,
+        }),
+        ("Moves Left Head (MLH)", {
+            "mlh_slope": args.mlh_slope,
+            "mlh_cap": args.mlh_cap,
+            "mlh_threshold": args.mlh_threshold,
+            "mlh_warmup_loss": args.mlh_warmup_loss,
+        }),
+        ("Self-play", {
+            "temperature": args.temp,
+            "temp_decay_moves": args.temp_decay_moves,
+            "temp_endgame": args.temp_endgame,
+            "actor": args.actor,
+        }),
+        ("Training", {
+            "lr": args.lr,
+            "batch_size": args.batch_size,
+            "buffer_size": args.buf,
+            "min_buffer_size": args.q_size,
+            "replay_ratio": args.replay_ratio,
+            "n_epochs": args.n_epochs,
+            "policy_lr_scale": args.policy_lr_scale,
+            "dropout": args.dropout,
+        }),
+        ("Evaluation", {
+            "interval": args.interval,
+            "num_eval": args.num_eval,
+            "win_rate_threshold": args.thres,
+            "pure_mcts_n_playout": args.mcts_n,
+        }),
+    ]
+
+    table = Table(show_header=True, header_style="bold cyan", border_style="dim")
+    table.add_column("Group", style="bold yellow", min_width=12)
+    table.add_column("Parameter", min_width=20)
+    table.add_column("Value", justify="right", style="bold green", min_width=10)
+
+    for i, (group_name, params) in enumerate(groups):
+        if i > 0:
+            table.add_section()
+        first = True
+        for key, val in params.items():
+            table.add_row(group_name if first else "", key, str(val))
+            first = False
+
+    console.print()
+    console.print(Panel(table, title="[bold]AlphaZero Training Server Config[/bold]",
+                        subtitle=f"[dim]{args.env} / {args.model}[/dim]",
+                        border_style="blue"))
+
+    if args.mlh_slope == 0 and args.mlh_warmup_loss == 0:
+        console.print("[bold yellow]WARNING:[/bold yellow] mlh_slope=0 and mlh_warmup_loss=0, "
+                      "Moves Left Head is completely disabled.")
+
+    console.print()
+
+
+if args.config:
+    print_config()
+    sys.exit(0)
 
 
 class ServerPipeline(TrainPipeline):
@@ -293,6 +386,8 @@ if __name__ == '__main__':
     set_seed(rank)
 
     if rank == 0:
+        print_config()
+
         log_file = 'flask_access.log'
         with open(log_file, 'w'):
             pass
