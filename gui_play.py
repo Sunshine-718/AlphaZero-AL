@@ -5,8 +5,9 @@ import torch.nn.functional as F
 from PyQt5.QtCore import Qt, QTimer, QRectF, QPointF
 from PyQt5.QtGui import QPainter, QColor, QFont, QPen, QLinearGradient, QRadialGradient, QPainterPath
 from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
-                             QLabel, QSpinBox, QComboBox, QPushButton, QFrame,
-                             QSizePolicy, QSplitter, QGroupBox)
+                             QLabel, QSpinBox, QComboBox, QSlider,
+                             QPushButton, QCheckBox, QFrame,
+                             QSizePolicy, QGroupBox, QScrollArea)
 import time
 import torch
 
@@ -15,14 +16,20 @@ ENV_NAME            = 'Connect4'
 NETWORK_DEFAULT     = 'CNN'
 MODEL_NAME          = 'AZ'
 MODEL_TYPE_DEFAULT  = 'current'
-N_PLAYOUT_DEFAULT   = 500
 ANIMATION_MS        = 30
-C_INIT              = 0.8
-ALPHA               = 0.3
-USE_SYMMETRY        = True
-MLH_SLOPE           = 0.0   # MLH slope (0=disabled, LC0-style: scales child_M - parent_M)
-MLH_CAP             = 0.2   # MLH max effect cap
-MLH_THRESHOLD       = 0.8   # MLH Q threshold: suppress M_utility when |Q| < threshold (0=no threshold)
+
+# ── MCTS 超参数 ───────────────────────────────────────────────────────────────
+N_PLAYOUT_DEFAULT   = 500       # 每步模拟次数
+C_INIT              = 1.4       # PUCT 探索常数 (UCB = Q + c_puct * P * sqrt(N_parent) / (1+N_child))
+C_BASE              = 500       # PUCT 对数基底 (c_puct = c_init + log((N_parent + c_base + 1) / c_base))
+FPU_REDUCTION       = 0.2       # First Play Urgency: 未访问节点的 Q 惩罚系数
+ALPHA               = 0.3       # Dirichlet 噪声 alpha (0=禁用噪声)
+NOISE_EPSILON       = 0.25      # 噪声混合权重 ε: prior = (1-ε)*P + ε*noise (eval 模式下强制为 0)
+USE_SYMMETRY        = True      # 叶节点随机对称变换增强
+CACHE_SIZE          = 10000     # LRU 置换表大小 (0=禁用)
+MLH_SLOPE           = 0.1       # Moves Left Head 斜率 (0=禁用, LC0 风格: 按 child_M - parent_M 缩放)
+MLH_CAP             = 0.2       # MLH 最大效果上限
+MLH_THRESHOLD       = 0.8       # MLH Q 阈值: |Q| < threshold 时抑制 M_utility (0=无阈值)
 
 PARAMS_PATH_FMT     = './params/{model_name}_{env_name}_{network}_{model_type}.pt'
 
@@ -84,9 +91,44 @@ QComboBox, QSpinBox {{
 QComboBox:hover, QSpinBox:hover {{
     border: 1px solid {ACCENT.name()};
 }}
+QSlider::groove:horizontal {{
+    height: 6px;
+    background: #2a2e3a;
+    border-radius: 3px;
+}}
+QSlider::handle:horizontal {{
+    width: 14px;
+    height: 14px;
+    margin: -5px 0;
+    background: {ACCENT.name()};
+    border-radius: 7px;
+}}
+QSlider::handle:horizontal:hover {{
+    background: #6a9aff;
+}}
+QSlider::sub-page:horizontal {{
+    background: {BTN_ACTIVE};
+    border-radius: 3px;
+}}
 QComboBox::drop-down {{
     border: none;
     width: 20px;
+}}
+QCheckBox {{
+    color: {TEXT_MAIN};
+    background: transparent;
+    spacing: 5px;
+}}
+QCheckBox::indicator {{
+    width: 16px;
+    height: 16px;
+    border: 1px solid #3a4055;
+    border-radius: 3px;
+    background-color: #2a2e3a;
+}}
+QCheckBox::indicator:checked {{
+    background-color: {BTN_ACTIVE};
+    border-color: {BTN_ACTIVE};
 }}
 QPushButton {{
     background-color: {BTN_NORMAL};
@@ -111,6 +153,33 @@ QPushButton#primary:hover {{
 }}
 QFrame#separator {{
     color: #2e3240;
+}}
+QWidget#statusBar {{
+    background-color: {CARD_BG};
+    border: 1px solid #2e3240;
+    border-radius: 8px;
+}}
+QScrollArea {{
+    background: transparent;
+    border: none;
+}}
+QScrollBar:vertical {{
+    background: transparent;
+    width: 8px;
+}}
+QScrollBar::handle:vertical {{
+    background: #3a4055;
+    border-radius: 4px;
+    min-height: 20px;
+}}
+QScrollBar::handle:vertical:hover {{
+    background: #4a5070;
+}}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+    height: 0;
+}}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+    background: transparent;
 }}
 """
 
@@ -285,33 +354,36 @@ class StepsBar(QWidget):
         qp.drawText(bar_w + 4, 0, text_w, h, Qt.AlignVCenter | Qt.AlignLeft, text)
 
 
-class ControlPanel(QWidget):
+class StatusBar(QWidget):
+    """棋盘下方状态栏：对局结果、思考时间、胜率、剩余步数。"""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
-        self.setFixedWidth(220)
-        root = QVBoxLayout(self)
-        root.setContentsMargins(12, 12, 12, 12)
-        root.setSpacing(12)
+        self.setObjectName("statusBar")
 
-        # ── 状态卡片 ─────────────────────────────────────────────────────────
-        status_box = QGroupBox("对局状态")
-        sl = QVBoxLayout(status_box)
+        root = QHBoxLayout(self)
+        root.setContentsMargins(14, 8, 14, 8)
+        root.setSpacing(16)
+
+        # 左：对局结果 + 思考时间
+        left = QVBoxLayout()
+        left.setSpacing(2)
         self.result_label = QLabel("")
-        self.result_label.setWordWrap(True)
         self.result_label.setAlignment(Qt.AlignCenter)
+        self.result_label.setMinimumWidth(100)
         f = self.result_label.font()
-        f.setPointSize(14)
+        f.setPointSize(13)
         f.setBold(True)
         self.result_label.setFont(f)
-        sl.addWidget(self.result_label)
-
+        left.addWidget(self.result_label)
         self.thinking_label = QLabel("AI 思考时间: —")
         self.thinking_label.setObjectName("dim")
         self.thinking_label.setAlignment(Qt.AlignCenter)
-        sl.addWidget(self.thinking_label)
+        left.addWidget(self.thinking_label)
+        root.addLayout(left)
 
-        # 胜率数字
+        # 中：胜率
+        mid = QVBoxLayout()
+        mid.setSpacing(4)
         rate_row = QHBoxLayout()
         self.win_lbl  = self._rate_lbl("Win",  RED_DARK.name())
         self.draw_lbl = self._rate_lbl("Draw", "#505a6e")
@@ -319,59 +391,22 @@ class ControlPanel(QWidget):
         rate_row.addWidget(self.win_lbl)
         rate_row.addWidget(self.draw_lbl)
         rate_row.addWidget(self.lose_lbl)
-        sl.addLayout(rate_row)
-
+        mid.addLayout(rate_row)
         self.bar = WinRateBar()
-        sl.addWidget(self.bar)
+        mid.addWidget(self.bar)
+        root.addLayout(mid, stretch=1)
 
-        steps_title = QLabel("<font color='#8090b0'><b>预测剩余步数</b></font>")
+        # 右：剩余步数
+        right = QVBoxLayout()
+        right.setSpacing(4)
+        steps_title = QLabel("<font color='#8090b0'><b>预测剩余</b></font>")
         steps_title.setAlignment(Qt.AlignCenter)
         steps_title.setTextFormat(Qt.RichText)
-        sl.addWidget(steps_title)
+        right.addWidget(steps_title)
         self.steps_bar = StepsBar()
-        sl.addWidget(self.steps_bar)
-
-        root.addWidget(status_box)
-
-        # ── 设置卡片 ─────────────────────────────────────────────────────────
-        cfg_box = QGroupBox("设置")
-        cl = QVBoxLayout(cfg_box)
-        cl.setSpacing(8)
-
-        cl.addWidget(QLabel("网络结构:"))
-        self.network_cb = QComboBox()
-        self.network_cb.addItems(["CNN", "ViT"])
-        cl.addWidget(self.network_cb)
-
-        cl.addWidget(QLabel("模型权重:"))
-        self.model_type_cb = QComboBox()
-        self.model_type_cb.addItems(["current", "best"])
-        cl.addWidget(self.model_type_cb)
-
-        cl.addWidget(QLabel("先手:"))
-        self.player_cb = QComboBox()
-        self.player_cb.addItems(["我先手 (X)", "AI 先手 (X)"])
-        cl.addWidget(self.player_cb)
-
-        cl.addWidget(QLabel("模拟次数:"))
-        self.n_playout_spin = QSpinBox()
-        self.n_playout_spin.setRange(1, 10000)
-        self.n_playout_spin.setValue(N_PLAYOUT_DEFAULT)
-        cl.addWidget(self.n_playout_spin)
-
-        root.addWidget(cfg_box)
-
-        # ── 操作按钮 ──────────────────────────────────────────────────────────
-        btn_row = QHBoxLayout()
-        self.undo_btn = QPushButton("悔棋")
-        self.undo_btn.setEnabled(False)
-        btn_row.addWidget(self.undo_btn)
-        self.restart_btn = QPushButton("重新开始")
-        self.restart_btn.setObjectName("primary")
-        btn_row.addWidget(self.restart_btn)
-        root.addLayout(btn_row)
-
-        root.addStretch()
+        self.steps_bar.setMinimumWidth(110)
+        right.addWidget(self.steps_bar)
+        root.addLayout(right)
 
     @staticmethod
     def _rate_lbl(prefix, color):
@@ -400,6 +435,103 @@ class ControlPanel(QWidget):
         self.steps_bar.set_steps(steps)
 
 
+class ControlPanel(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(10)
+
+        # ── 游戏设置 ─────────────────────────────────────────────────────────
+        game_box = QGroupBox("游戏设置")
+        gl = QVBoxLayout(game_box)
+        gl.setSpacing(6)
+
+        gl.addWidget(QLabel("网络结构:"))
+        self.network_cb = QComboBox()
+        self.network_cb.addItems(["CNN", "ViT"])
+        gl.addWidget(self.network_cb)
+
+        gl.addWidget(QLabel("模型权重:"))
+        self.model_type_cb = QComboBox()
+        self.model_type_cb.addItems(["current", "best"])
+        gl.addWidget(self.model_type_cb)
+
+        gl.addWidget(QLabel("先手:"))
+        self.player_cb = QComboBox()
+        self.player_cb.addItems(["我先手 (X)", "AI 先手 (X)"])
+        gl.addWidget(self.player_cb)
+
+        root.addWidget(game_box)
+
+        # ── MCTS 搜索参数 ────────────────────────────────────────────────────
+        mcts_box = QGroupBox("MCTS 搜索")
+        ml = QVBoxLayout(mcts_box)
+        ml.setSpacing(6)
+
+        # 模拟次数
+        row = QHBoxLayout()
+        row.addWidget(QLabel("模拟次数"))
+        self.n_playout_spin = QSpinBox()
+        self.n_playout_spin.setRange(1, 10000)
+        self.n_playout_spin.setValue(N_PLAYOUT_DEFAULT)
+        row.addWidget(self.n_playout_spin)
+        ml.addLayout(row)
+
+        # 滑条参数
+        self.c_init_slider   = self._add_slider(ml, "c_init",    0.0, 10.0, 0.1, C_INIT)
+        self.c_base_slider   = self._add_slider(ml, "c_base",    1, 100000, 100, C_BASE, decimals=0)
+        self.alpha_slider    = self._add_slider(ml, "alpha",     0.0, 5.0,  0.01, ALPHA)
+        self.noise_eps_slider = self._add_slider(ml, "epsilon",  0.0, 1.0,  0.05, NOISE_EPSILON)
+        self.fpu_slider      = self._add_slider(ml, "fpu",       0.0, 2.0,  0.1, FPU_REDUCTION)
+
+        # 对称增强 checkbox
+        self.symmetry_check = QCheckBox("对称增强")
+        self.symmetry_check.setChecked(USE_SYMMETRY)
+        ml.addWidget(self.symmetry_check)
+
+        self.cache_slider      = self._add_slider(ml, "cache",     0, 1000000, 1000, CACHE_SIZE, decimals=0)
+        self.mlh_slope_slider  = self._add_slider(ml, "mlh slope", 0.0, 1.0, 0.01, MLH_SLOPE)
+        self.mlh_cap_slider    = self._add_slider(ml, "mlh cap",   0.0, 1.0, 0.05, MLH_CAP)
+        self.mlh_threshold_slider = self._add_slider(ml, "mlh thr", 0.0, 1.0, 0.05, MLH_THRESHOLD)
+
+        root.addWidget(mcts_box)
+
+    # ── 工具方法 ──────────────────────────────────────────────────────────
+    def _add_slider(self, layout, label, lo, hi, step, default, decimals=2):
+        """添加一行: [label] [slider] [value_label]，返回 (slider, value_label)。
+        slider 内部用整数，通过 _scale 属性换算浮点值。"""
+        row = QHBoxLayout()
+        name_lbl = QLabel(label)
+        name_lbl.setFixedWidth(60)
+        row.addWidget(name_lbl)
+
+        scale = 10 ** decimals
+        slider = QSlider(Qt.Horizontal)
+        slider._scale = scale
+        slider.setRange(int(lo * scale), int(hi * scale))
+        slider.setSingleStep(max(1, int(step * scale)))
+        slider.setValue(int(default * scale))
+
+        val_lbl = QLabel(f"{default:.{decimals}f}" if decimals else str(int(default)))
+        val_lbl.setFixedWidth(52)
+        val_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        val_lbl._decimals = decimals
+
+        def _update(v):
+            if decimals:
+                val_lbl.setText(f"{v / scale:.{decimals}f}")
+            else:
+                val_lbl.setText(str(v))
+        slider.valueChanged.connect(_update)
+
+        row.addWidget(slider, stretch=1)
+        row.addWidget(val_lbl)
+        layout.addLayout(row)
+        return slider
+
+
 class Connect4GUI(QWidget):
     def __init__(self):
         super().__init__()
@@ -414,13 +546,43 @@ class Connect4GUI(QWidget):
         # 子控件
         self.board = BoardWidget(self.env)
         self.panel = ControlPanel()
+        self.status_bar = StatusBar()
+
+        # 右侧面板放入滚动区域
+        scroll = QScrollArea()
+        scroll.setWidget(self.panel)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFixedWidth(260)
+
+        # 操作按钮（右下角）
+        self.undo_btn = QPushButton("悔棋")
+        self.undo_btn.setEnabled(False)
+        self.restart_btn = QPushButton("重新开始")
+        self.restart_btn.setObjectName("primary")
+        btn_row = QHBoxLayout()
+        btn_row.addWidget(self.undo_btn)
+        btn_row.addWidget(self.restart_btn)
+
+        # 左列：棋盘 + 状态栏（与棋盘等宽）
+        left_col = QVBoxLayout()
+        left_col.setSpacing(10)
+        left_col.addWidget(self.board)
+        left_col.addWidget(self.status_bar)
+
+        # 右列：设置面板(滚动) + 按钮
+        right_col = QVBoxLayout()
+        right_col.setSpacing(10)
+        right_col.addWidget(scroll, stretch=1)
+        right_col.addLayout(btn_row)
 
         # 顶层布局
-        h = QHBoxLayout(self)
-        h.setContentsMargins(16, 16, 16, 16)
-        h.setSpacing(16)
-        h.addWidget(self.board)
-        h.addWidget(self.panel)
+        hbox = QHBoxLayout(self)
+        hbox.setContentsMargins(16, 16, 16, 16)
+        hbox.setSpacing(16)
+        hbox.addLayout(left_col)
+        hbox.addLayout(right_col)
         self.adjustSize()
         self.setFixedSize(self.sizeHint())
 
@@ -446,20 +608,36 @@ class Connect4GUI(QWidget):
 
         # 玩家对象
         self.human     = Human()
-        self.az_player = AlphaZeroPlayer(None, c_init=None, n_playout=None,
-                                         alpha=ALPHA, is_selfplay=0, cache_size=10000,
+        self.az_player = AlphaZeroPlayer(None, c_init=None, c_base=C_BASE,
+                                         n_playout=None,
+                                         alpha=ALPHA, noise_epsilon=NOISE_EPSILON,
+                                         is_selfplay=0, cache_size=CACHE_SIZE,
+                                         fpu_reduction=FPU_REDUCTION,
                                          use_symmetry=USE_SYMMETRY,
                                          mlh_slope=MLH_SLOPE, mlh_cap=MLH_CAP,
                                          mlh_threshold=MLH_THRESHOLD)
         self._reload_model()
 
-        # 连接信号
-        self.panel.network_cb.currentIndexChanged.connect(lambda _: self._settings_timer.start(400))
-        self.panel.model_type_cb.currentIndexChanged.connect(lambda _: self._settings_timer.start(400))
-        self.panel.n_playout_spin.valueChanged.connect(lambda _: self._settings_timer.start(400))
+        # 连接信号 — 切换网络/权重/MCTS参数 → 延迟重载模型
+        _mcts_reload = lambda _: self._settings_timer.start(400)
+        self.panel.network_cb.currentIndexChanged.connect(_mcts_reload)
+        self.panel.model_type_cb.currentIndexChanged.connect(_mcts_reload)
+        self.panel.n_playout_spin.valueChanged.connect(_mcts_reload)
+        # 高级 MCTS 参数（滑条 + checkbox）
+        self.panel.c_init_slider.valueChanged.connect(_mcts_reload)
+        self.panel.c_base_slider.valueChanged.connect(_mcts_reload)
+        self.panel.alpha_slider.valueChanged.connect(_mcts_reload)
+        self.panel.noise_eps_slider.valueChanged.connect(_mcts_reload)
+        self.panel.fpu_slider.valueChanged.connect(_mcts_reload)
+        self.panel.symmetry_check.stateChanged.connect(_mcts_reload)
+        self.panel.cache_slider.valueChanged.connect(_mcts_reload)
+        self.panel.mlh_slope_slider.valueChanged.connect(_mcts_reload)
+        self.panel.mlh_cap_slider.valueChanged.connect(_mcts_reload)
+        self.panel.mlh_threshold_slider.valueChanged.connect(_mcts_reload)
+        # 切换先手 → 重新开始
         self.panel.player_cb.currentIndexChanged.connect(lambda _: self.reload_timer.start(100))
-        self.panel.restart_btn.clicked.connect(self._reload_and_restart)
-        self.panel.undo_btn.clicked.connect(self._undo)
+        self.restart_btn.clicked.connect(self._reload_and_restart)
+        self.undo_btn.clicked.connect(self._undo)
 
         self._start_game()
 
@@ -467,7 +645,6 @@ class Connect4GUI(QWidget):
     def _reload_model(self):
         network    = self.panel.network_cb.currentText()
         model_type = self.panel.model_type_cb.currentText()
-        n_playout  = self.panel.n_playout_spin.value()
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         net = getattr(self.env_module, network)(lr=0, device=device)
         net.eval()
@@ -475,8 +652,26 @@ class Connect4GUI(QWidget):
         path = PARAMS_PATH_FMT.format(model_name=MODEL_NAME, env_name=ENV_NAME,
                                       network=network, model_type=model_type)
         self.net.load(path)
-        self.az_player.reload(self.net, C_INIT, n_playout, ALPHA, is_self_play=0)
-        self.az_player.eval()
+
+        # 从 UI 读取所有 MCTS 超参数，写入 player 内部状态
+        _sv = lambda s: s.value() / s._scale   # slider → float
+        p = self.az_player
+        p._c_base         = int(_sv(self.panel.c_base_slider))
+        p._fpu_reduction  = _sv(self.panel.fpu_slider)
+        p._noise_eps      = _sv(self.panel.noise_eps_slider)
+        p.noise_eps_init  = _sv(self.panel.noise_eps_slider)
+        p._use_symmetry   = self.panel.symmetry_check.isChecked()
+        p._cache_size     = int(_sv(self.panel.cache_slider))
+        p._mlh_slope      = _sv(self.panel.mlh_slope_slider)
+        p._mlh_cap        = _sv(self.panel.mlh_cap_slider)
+        p._mlh_threshold  = _sv(self.panel.mlh_threshold_slider)
+
+        p.reload(self.net,
+                 c_puct=_sv(self.panel.c_init_slider),
+                 n_playout=self.panel.n_playout_spin.value(),
+                 alpha=_sv(self.panel.alpha_slider),
+                 is_self_play=0)
+        p.eval()
         self.player_color = 1 if "我先手" in self.panel.player_cb.currentText() else -1
 
     def _reload_and_restart(self):
@@ -491,10 +686,10 @@ class Connect4GUI(QWidget):
         self.board.anim_col   = -1
         self.board.anim_color = None
         self.board.update()
-        self.panel.set_result("")
-        self.panel.set_thinking(-1)
+        self.status_bar.set_result("")
+        self.status_bar.set_thinking(-1)
         self._history.clear()
-        self.panel.undo_btn.setEnabled(False)
+        self.undo_btn.setEnabled(False)
         self._update_winrate()
         if self.env.turn != self.player_color:
             QTimer.singleShot(100, self._ai_move)
@@ -514,15 +709,15 @@ class Connect4GUI(QWidget):
             win, lose = vp[1] * 100, vp[2] * 100
         else:
             win, lose = vp[2] * 100, vp[1] * 100
-        self.panel.set_rates(win, draw, lose)
-        self.panel.set_steps(expected_steps)
+        self.status_bar.set_rates(win, draw, lose)
+        self.status_bar.set_steps(expected_steps)
 
     def _ai_move(self):
         if self.animating or self.env.done():
             return
         t0 = time.time()
         action, _ = self.az_player.get_action(self.env)
-        self.panel.set_thinking(time.time() - t0)
+        self.status_bar.set_thinking(time.time() - t0)
         row = self.board.find_drop_row(action)
         if row != -1:
             self.board.last_move = (row, action)
@@ -542,11 +737,11 @@ class Connect4GUI(QWidget):
     def _show_result(self):
         winner = self.env.winPlayer()
         if winner == self.player_color:
-            self.panel.set_result("你赢了！", "#5cb85c")
+            self.status_bar.set_result("你赢了！", "#5cb85c")
         elif winner == -self.player_color:
-            self.panel.set_result("你输了！", "#d9534f")
+            self.status_bar.set_result("你输了！", "#d9534f")
         else:
-            self.panel.set_result("平局！", "#f0ad4e")
+            self.status_bar.set_result("平局！", "#f0ad4e")
 
     # ── 动画 ──────────────────────────────────────────────────────────────────
     def _start_animation(self, target_row, col, color, callback):
@@ -581,8 +776,8 @@ class Connect4GUI(QWidget):
         self.board.anim_row  = -1
         self.board.anim_col  = -1
         self.board.update()
-        self.panel.set_result("")
-        self.panel.undo_btn.setEnabled(bool(self._history))
+        self.status_bar.set_result("")
+        self.undo_btn.setEnabled(bool(self._history))
         self._update_winrate()
 
     # ── 鼠标交互 ─────────────────────────────────────────────────────────────
@@ -601,7 +796,7 @@ class Connect4GUI(QWidget):
             return
         # 落子前保存快照（env + last_move），用于悔棋
         self._history.append((self.env.copy(), self.board.last_move))
-        self.panel.undo_btn.setEnabled(True)
+        self.undo_btn.setEnabled(True)
 
         self.board.last_move = (row, col)
         color = RED_DARK if self.player_color == 1 else YEL_DARK

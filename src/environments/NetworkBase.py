@@ -56,7 +56,7 @@ class Base(ABC, nn.Module):
                 per_sample_p = -torch.sum(prob * log_p_pred, dim=1)
                 p_loss = torch.mean(per_sample_p * mask)
                 s_loss = F.nll_loss(steps_pred, steps_target)
-                loss = p_loss + v_loss + s_loss
+                loss = p_loss + v_loss + 0.5 * s_loss
                 loss.backward()
                 nn.utils.clip_grad_norm_(self.parameters(), 5)
                 self.opt.step()

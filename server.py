@@ -48,7 +48,7 @@ g_mcts.add_argument('--no_symmetry', action='store_true',
 
 # ── Exploration Noise ─────────────────────────────────────────────────────────
 g_noise = parser.add_argument_group('Exploration Noise')
-g_noise.add_argument('-a', '--alpha', type=float, default=0.03, help='Dirichlet noise alpha')
+g_noise.add_argument('-a', '--alpha', type=float, default=0.3, help='Dirichlet noise alpha')
 g_noise.add_argument('--eps', type=float, default=0.25, help='Noise mixing epsilon')
 g_noise.add_argument('--noise_steps', type=int, default=0,
                       help='Steps to decay noise_eps to noise_eps_min (0=no decay)')
@@ -68,7 +68,7 @@ g_mlh.add_argument('--mlh_warmup_loss', type=float, default=0.0,
 # ── Self-play ─────────────────────────────────────────────────────────────────
 g_sp = parser.add_argument_group('Self-play')
 g_sp.add_argument('-t', '--temp', type=float, default=1, help='Self-play temperature')
-g_sp.add_argument('--temp_decay_moves', type=int, default=30,
+g_sp.add_argument('--temp_decay_moves', type=int, default=12,
                    help='Number of moves to linearly decay temperature to 0 (0=no decay)')
 g_sp.add_argument('--temp_endgame', type=float, default=0.3,
                    help='Temperature floor (minimum temperature after decay)')
@@ -77,7 +77,7 @@ g_sp.add_argument('--actor', type=str, default='best',
 
 # ── Training ──────────────────────────────────────────────────────────────────
 g_train = parser.add_argument_group('Training')
-g_train.add_argument('--lr', type=float, default=3e-3, help='Learning rate')
+g_train.add_argument('--lr', type=float, default=0.01, help='Learning rate')
 g_train.add_argument('-b', '--batch_size', type=int, default=512, help='Training batch size')
 g_train.add_argument('--buf', '--buffer_size', type=int, default=500000, help='Replay buffer size')
 g_train.add_argument('--q_size', type=int, default=100,
@@ -87,7 +87,7 @@ g_train.add_argument('--replay_ratio', type=float, default=0.1,
 g_train.add_argument('--n_epochs', type=int, default=5, help='Training epochs per update')
 g_train.add_argument('--policy_lr_scale', type=float, default=0.1,
                       help='Policy head LR multiplier')
-g_train.add_argument('--dropout', type=float, default=0.2, help='Dropout rate')
+g_train.add_argument('--dropout', type=float, default=0.0, help='Dropout rate')
 
 # ── Evaluation ────────────────────────────────────────────────────────────────
 g_eval = parser.add_argument_group('Evaluation')
