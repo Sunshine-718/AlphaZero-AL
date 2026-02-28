@@ -79,7 +79,8 @@ class Actor:
             noise_eps_min=self.cfg['noise_eps_min'],
             mlh_slope=self.cfg['mlh_slope'],
             mlh_cap=self.cfg['mlh_cap'],
-            mlh_threshold=self.cfg['mlh_threshold'])
+            mlh_threshold=self.cfg['mlh_threshold'],
+            value_decay=self.cfg.get('value_decay', 1.0))
         self.mtime = 0
 
     def fetch_config(self):

@@ -62,6 +62,7 @@ namespace AlphaZero
         float mlh_slope;                    ///< Moves Left Head 斜率
         float mlh_cap;                      ///< Moves Left Head 最大影响上限
         float mlh_threshold;                ///< MLH Q 阈值：|Q| 低于此值时 M utility 为 0
+        float value_decay;                  ///< Backprop 逐层衰减系数：每层将 WDL 向 uniform(⅓) 混合
 
         /**
          * 构造 MCTS 搜索树。
@@ -74,11 +75,12 @@ namespace AlphaZero
          * @param mlh_slope_ MLH 斜率
          * @param mlh_cap_   MLH 上限
          * @param mlh_threshold_ MLH Q 阈值
+         * @param value_decay_ Backprop 逐层衰减系数（1.0=禁用）
          */
         MCTS(float c_i, float c_b, float a, float noise_eps = 0.25f, float fpu_red = 0.4f, bool use_sym = true,
-             float mlh_slope_ = 0.0f, float mlh_cap_ = 0.2f, float mlh_threshold_ = 0.8f)
+             float mlh_slope_ = 0.0f, float mlh_cap_ = 0.2f, float mlh_threshold_ = 0.8f, float value_decay_ = 1.0f)
             : c_init(c_i), c_base(c_b), alpha(a), noise_epsilon(noise_eps), fpu_reduction(fpu_red), use_symmetry(use_sym),
-              mlh_slope(mlh_slope_), mlh_cap(mlh_cap_), mlh_threshold(mlh_threshold_)
+              mlh_slope(mlh_slope_), mlh_cap(mlh_cap_), mlh_threshold(mlh_threshold_), value_decay(value_decay_)
         {
             node_pool.resize(2000);
             reset();
@@ -387,6 +389,15 @@ namespace AlphaZero
                 ml += 1.0f;
                 turn = -turn;
                 idx = node.parent;
+
+                // 逐层衰减：向 uniform(⅓,⅓,⅓) 混合，使深层叶节点评估对根节点影响递减
+                if (value_decay < 1.0f)
+                {
+                    constexpr float u = 1.0f / 3.0f;
+                    d_val   = value_decay * d_val   + (1.0f - value_decay) * u;
+                    p1w_val = value_decay * p1w_val + (1.0f - value_decay) * u;
+                    p2w_val = value_decay * p2w_val + (1.0f - value_decay) * u;
+                }
             }
         }
 

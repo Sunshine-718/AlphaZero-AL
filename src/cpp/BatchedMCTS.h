@@ -46,17 +46,19 @@ namespace AlphaZero
          * @param mlh_slope      MLH 斜率
          * @param mlh_cap        MLH 上限
          * @param mlh_threshold  MLH Q 阈值
+         * @param value_decay    Backprop 逐层衰减系数（1.0=禁用）
          */
         BatchedMCTS(int num_envs, float c_init, float c_base, float alpha,
                     float noise_epsilon = 0.25f, float fpu_reduction = 0.4f, bool use_symmetry = true,
-                    float mlh_slope = 0.0f, float mlh_cap = 0.2f, float mlh_threshold = 0.8f)
+                    float mlh_slope = 0.0f, float mlh_cap = 0.2f, float mlh_threshold = 0.8f,
+                    float value_decay = 1.0f)
             : n_envs(num_envs)
         {
             mcts_envs.reserve(n_envs);
             for (int i = 0; i < n_envs; ++i)
             {
                 mcts_envs.push_back(std::make_unique<MCTS<Game>>(c_init, c_base, alpha, noise_epsilon, fpu_reduction, use_symmetry,
-                                                                  mlh_slope, mlh_cap, mlh_threshold));
+                                                                  mlh_slope, mlh_cap, mlh_threshold, value_decay));
             }
         }
 
@@ -151,6 +153,11 @@ namespace AlphaZero
         void set_use_symmetry(bool val)
         {
             for (auto &m : mcts_envs) m->use_symmetry = val;
+        }
+
+        void set_value_decay(float val)
+        {
+            for (auto &m : mcts_envs) m->value_decay = val;
         }
 
         /**

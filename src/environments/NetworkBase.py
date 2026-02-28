@@ -38,9 +38,11 @@ class Base(ABC, nn.Module):
                 print(f'Failed to load parameters.\n{e}')
         return self
 
-    def train_step(self, dataloader, augment, ddp_model=None, n_epochs=10, q_ratio=0.0):
+    def train_step(self, dataloader, augment, ddp_model=None, n_epochs=10,
+                   q_ratio=0.0, value_decay=1.0):
         model = ddp_model if ddp_model is not None else self
         p_l, v_l, s_l = [], [], []
+        use_soft = value_decay < 1.0 or q_ratio > 0
         for _ in range(n_epochs):
             self.train()
             for batch in dataloader:
@@ -54,14 +56,21 @@ class Base(ABC, nn.Module):
                 self.opt.zero_grad()
                 log_p_pred, value_pred, steps_pred = model(state)
 
-                # Q-ratio: blend root WDL with one-hot game result
-                if q_ratio > 0:
-                    z_onehot = F.one_hot(value_class, 3).float()  # (batch, 3)
-                    # root_wdl 已经是绝对视角 (draw, p1_win, p2_win)，与 value head class 顺序一致
-                    has_q = (root_wdl.sum(dim=1, keepdim=True) > 0).float()
-                    eff_q_ratio = q_ratio * has_q
-                    value_target = eff_q_ratio * root_wdl + (1 - eff_q_ratio) * z_onehot
-                    v_loss = -torch.sum(value_target * value_pred, dim=1).mean()
+                if use_soft:
+                    z_target = F.one_hot(value_class, 3).float()
+
+                    # Game-length discount: γ^steps × one_hot + (1-γ^steps) × uniform
+                    if value_decay < 1.0:
+                        discount = (value_decay ** steps_to_end.float().view(-1)).unsqueeze(1)
+                        z_target = discount * z_target + (1 - discount) * (1.0 / 3.0)
+
+                    # Q-ratio: blend with root WDL
+                    if q_ratio > 0:
+                        has_q = (root_wdl.sum(dim=1, keepdim=True) > 0).float()
+                        eff_q_ratio = q_ratio * has_q
+                        z_target = eff_q_ratio * root_wdl + (1 - eff_q_ratio) * z_target
+
+                    v_loss = -torch.sum(z_target * value_pred, dim=1).mean()
                 else:
                     v_loss = F.nll_loss(value_pred, value_class)
 

@@ -90,6 +90,9 @@ g_train.add_argument('--policy_lr_scale', type=float, default=0.1,
 g_train.add_argument('--dropout', type=float, default=0.0, help='Dropout rate')
 g_train.add_argument('--q_ratio', type=float, default=0.0,
                       help='Q-ratio: blend root WDL with game result for value target (0=pure z, 0.75=Lc0-style)')
+g_train.add_argument('--value_decay', type=float, default=1.0,
+                      help='Game-length discount γ for value targets: target = γ^steps × z + (1-γ^steps) × uniform '
+                           '(1.0=no scaling, 0.99=moderate, 0.97=aggressive)')
 
 # ── Evaluation ────────────────────────────────────────────────────────────────
 g_eval = parser.add_argument_group('Evaluation')
@@ -127,7 +130,8 @@ config = {"lr": args.lr,
           "mlh_cap": args.mlh_cap,
           "mlh_threshold": args.mlh_threshold,
           "mlh_warmup_loss": args.mlh_warmup_loss,
-          "q_ratio": args.q_ratio}
+          "q_ratio": args.q_ratio,
+          "value_decay": args.value_decay}
 
 
 def print_config():
@@ -183,6 +187,7 @@ def print_config():
             "policy_lr_scale": args.policy_lr_scale,
             "dropout": args.dropout,
             "q_ratio": args.q_ratio,
+            "value_decay": args.value_decay,
         }),
         ("Evaluation", {
             "interval": args.interval,
@@ -331,6 +336,7 @@ def get_config():
         'mlh_slope': getattr(pipeline, 'mlh_slope', 0.0),
         'mlh_cap': getattr(pipeline, 'mlh_cap', 0.2),
         'mlh_threshold': getattr(pipeline, 'mlh_threshold', 0.8),
+        'value_decay': getattr(pipeline, 'value_decay', 1.0),
         'temp': args.temp,
         'temp_decay_moves': args.temp_decay_moves,
         'temp_endgame': args.temp_endgame,

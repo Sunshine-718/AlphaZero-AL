@@ -102,6 +102,7 @@ class AlphaZeroPlayer(Player):
                  game_name='Connect4', board_converter=None,
                  noise_steps=0, noise_eps_min=0.1,
                  mlh_slope=0.0, mlh_cap=0.2, mlh_threshold=0.8,
+                 value_decay=1.0,
                  # 向后兼容：旧调用方用 eps= 而非 noise_epsilon=
                  eps=None):
         super().__init__()
@@ -124,6 +125,7 @@ class AlphaZeroPlayer(Player):
         self._mlh_slope = mlh_slope
         self._mlh_cap = mlh_cap
         self._mlh_threshold = mlh_threshold
+        self._value_decay = value_decay
 
         # 噪声衰减（批量自对弈用）
         self.noise_eps_init = self._noise_eps
@@ -147,6 +149,7 @@ class AlphaZeroPlayer(Player):
             fpu_reduction=self._fpu_reduction, use_symmetry=self._use_symmetry,
             mlh_slope=self._mlh_slope, mlh_cap=self._mlh_cap,
             mlh_threshold=self._mlh_threshold,
+            value_decay=self._value_decay,
         )
 
     def reload(self, policy_value_fn, c_puct=None, n_playout=None, alpha=None, is_self_play=None):

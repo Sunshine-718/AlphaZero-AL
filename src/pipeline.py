@@ -68,7 +68,8 @@ class TrainPipeline(ABC):
                                          use_symmetry=getattr(self, 'use_symmetry', True),
                                          mlh_slope=self.mlh_slope,
                                          mlh_cap=getattr(self, 'mlh_cap', 0.2),
-                                         mlh_threshold=getattr(self, 'mlh_threshold', 0.8))
+                                         mlh_threshold=getattr(self, 'mlh_threshold', 0.8),
+                                         value_decay=getattr(self, 'value_decay', 1.0))
         self.update_best_net()
         self.elo = Elo(self.init_elo, 1500)
         self.r_a = 0
@@ -132,7 +133,8 @@ class TrainPipeline(ABC):
         p_l, v_l, s_l, ent, g_n, f1 = self.net.train_step(
             dataloader, self.module.augment, ddp_model=model_for_training,
             n_epochs=getattr(self, 'n_epochs', 10),
-            q_ratio=getattr(self, 'q_ratio', 0.0))
+            q_ratio=getattr(self, 'q_ratio', 0.0),
+            value_decay=getattr(self, 'value_decay', 1.0))
 
         if self.is_ddp:
             dist.barrier()
@@ -149,7 +151,8 @@ class TrainPipeline(ABC):
                              use_symmetry=getattr(self, 'use_symmetry', True),
                              mlh_slope=getattr(self, 'mlh_slope', 0.0),
                              mlh_cap=getattr(self, 'mlh_cap', 0.2),
-                             mlh_threshold=getattr(self, 'mlh_threshold', 0.8))
+                             mlh_threshold=getattr(self, 'mlh_threshold', 0.8),
+                             value_decay=getattr(self, 'value_decay', 1.0))
         az.eval()
         mcts = MCTSPlayer(1, self.pure_mcts_n_playout)
 
@@ -200,16 +203,17 @@ class TrainPipeline(ABC):
         mlh_sl = getattr(self, 'mlh_slope', 0.0)
         mlh_cp = getattr(self, 'mlh_cap', 0.2)
         mlh_th = getattr(self, 'mlh_threshold', 0.8)
+        vd = getattr(self, 'value_decay', 1.0)
         mcts_p1 = PyBatchedMCTS(
             n_envs, c_init=self.c_puct, c_base=500,
             alpha=self.dirichlet_alpha, n_playout=n_playout, game_name=self.env_name,
             noise_epsilon=eval_noise_eps, use_symmetry=use_sym,
-            mlh_slope=mlh_sl, mlh_cap=mlh_cp, mlh_threshold=mlh_th)
+            mlh_slope=mlh_sl, mlh_cap=mlh_cp, mlh_threshold=mlh_th, value_decay=vd)
         mcts_p2 = PyBatchedMCTS(
             n_envs, c_init=self.c_puct, c_base=500,
             alpha=self.dirichlet_alpha, n_playout=n_playout, game_name=self.env_name,
             noise_epsilon=eval_noise_eps, use_symmetry=use_sym,
-            mlh_slope=mlh_sl, mlh_cap=mlh_cp, mlh_threshold=mlh_th)
+            mlh_slope=mlh_sl, mlh_cap=mlh_cp, mlh_threshold=mlh_th, value_decay=vd)
 
         envs = [self.env.copy() for _ in range(n_envs)]
         for e in envs:

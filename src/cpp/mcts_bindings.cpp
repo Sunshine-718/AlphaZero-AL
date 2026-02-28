@@ -36,12 +36,12 @@ void register_batched_mcts(py::module_ &m, const char *name)
 
     py::class_<BM>(m, name)
         // ── 构造 ─────────────────────────────────────────────────────────
-        .def(py::init<int, float, float, float, float, float, bool, float, float, float>(),
+        .def(py::init<int, float, float, float, float, float, bool, float, float, float, float>(),
              py::arg("n_envs"), py::arg("c_init"), py::arg("c_base"),
              py::arg("alpha"), py::arg("noise_epsilon") = 0.25f,
              py::arg("fpu_reduction") = 0.4f, py::arg("use_symmetry") = true,
              py::arg("mlh_slope") = 0.0f, py::arg("mlh_cap") = 0.2f,
-             py::arg("mlh_threshold") = 0.8f)
+             py::arg("mlh_threshold") = 0.8f, py::arg("value_decay") = 1.0f)
 
         // ── 参数设置 ─────────────────────────────────────────────────────
         .def("set_seed", &BM::set_seed,
@@ -65,6 +65,8 @@ void register_batched_mcts(py::module_ &m, const char *name)
              "Set FPU reduction for all environments")
         .def("set_use_symmetry", &BM::set_use_symmetry, py::arg("val"),
              "Set symmetry augmentation for all environments")
+        .def("set_value_decay", &BM::set_value_decay, py::arg("val"),
+             "Set backprop value decay for all environments (1.0=disabled)")
 
         // ── 树管理 ──────────────────────────────────────────────────────
         .def("reset_env", &BM::reset_env,
