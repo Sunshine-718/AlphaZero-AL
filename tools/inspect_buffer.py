@@ -487,8 +487,7 @@ def analyze_nn(model_path, device='cpu'):
     from src.environments.Connect4.Network import CNN
     from src.environments.Connect4.utils import board_to_state
 
-    net = CNN(lr=3e-3, in_dim=3, h_dim=128, out_dim=7,
-              dropout=0.2, device=device, num_res_blocks=3)
+    net = CNN(lr=0, device=device)
     net.load(model_path)
     net.eval()
 

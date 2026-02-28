@@ -5,6 +5,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
+from copy import deepcopy
 from torch.optim.lr_scheduler import LinearLR, SequentialLR
 from ..NetworkBase import Base
 
@@ -57,14 +58,7 @@ class CNN(Base):
             nn.Linear(2 * 8 * 9, out_dim),
             nn.LogSoftmax(dim=-1)
         )
-        self.policy_head_2 = nn.Sequential(
-            nn.Conv2d(h_dim, 2, kernel_size=1, bias=True),
-            nn.SiLU(inplace=True),
-            nn.Flatten(),
-            nn.LayerNorm(2 * 8 * 9),
-            nn.Linear(2 * 8 * 9, out_dim),
-            nn.LogSoftmax(dim=-1)
-        )
+        self.policy_head_2 = deepcopy(self.policy_head_1)
         self.value_head = nn.Sequential(
             nn.Conv2d(h_dim, 2, kernel_size=1, bias=True),
             nn.SiLU(inplace=True),

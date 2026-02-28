@@ -1,4 +1,4 @@
-"""AlphaZero Connect4 — Cyberpunk HUD GUI"""
+"""AlphaZero Connect4 — Frosted Glass GUI"""
 
 import os
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -50,71 +50,80 @@ class Def:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Theme — Cyberpunk / HUD
+# Theme — Frosted Glass / Glassmorphism
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class C:
     # Backgrounds
-    BG       = "#060a12"
-    SURFACE  = "#0c1220"
-    SURFACE2 = "#101828"
-    BORDER   = "#0d3a4a"
-    BORDER2  = "#1a5060"
+    BG       = "#0b0b1e"
+    SURFACE  = "rgba(255, 255, 255, 10)"
+    SURFACE2 = "rgba(255, 255, 255, 15)"
+    BORDER   = "rgba(255, 255, 255, 25)"
+    BORDER2  = "rgba(255, 255, 255, 40)"
 
     # Text
-    TEXT     = "#c0e8f8"
-    DIM      = "#4a8090"
-    MUTED    = "#1e4050"
-    GREEN_T  = "#00ff88"
+    TEXT     = "#e0e0f5"
+    DIM      = "#9090b0"
+    MUTED    = "#505070"
+    GREEN_T  = "#4ade80"
 
     # Accents
-    CYAN     = "#00e5ff"
-    CYAN2    = "#00b8d4"
-    MAGENTA  = "#e040fb"
-    GREEN    = "#00e676"
-    RED_HEX  = "#ff1744"
-    YEL_HEX  = "#ffab00"
+    ACCENT   = "#a78bfa"
+    ACCENT2  = "#c4b5fd"
+    CYAN     = "#38bdf8"
+    CYAN2    = "#0ea5e9"
+    MAGENTA  = "#c084fc"
+    GREEN    = "#4ade80"
+    RED_HEX  = "#fb7185"
+    YEL_HEX  = "#fbbf24"
 
-    # QColor objects
-    CYAN_CLR     = QColor(0, 229, 255)
-    CYAN_DIM     = QColor(0, 229, 255, 40)
-    CYAN_GLOW    = QColor(0, 229, 255, 80)
-    MAGENTA_CLR  = QColor(224, 64, 251)
+    # QColor objects — accent
+    ACCENT_CLR   = QColor(167, 139, 250)
+    ACCENT_DIM   = QColor(167, 139, 250, 40)
+    ACCENT_GLOW  = QColor(167, 139, 250, 80)
+    MAGENTA_CLR  = QColor(192, 132, 252)
 
-    RED          = QColor(255, 40, 60)
-    RED_LT       = QColor(255, 100, 110)
-    RED_GLOW     = QColor(255, 40, 60, 60)
-    YEL          = QColor(255, 180, 0)
-    YEL_LT       = QColor(255, 220, 80)
-    YEL_GLOW     = QColor(255, 180, 0, 60)
+    # Piece colors
+    RED          = QColor(251, 113, 133)
+    RED_LT       = QColor(253, 164, 175)
+    RED_GLOW     = QColor(251, 113, 133, 50)
+    YEL          = QColor(251, 191, 36)
+    YEL_LT       = QColor(252, 211, 77)
+    YEL_GLOW     = QColor(251, 191, 36, 50)
 
-    BOARD_BG     = QColor(8, 14, 24)
-    CELL_BG      = QColor(4, 8, 16)
-    GRID_CORE    = QColor(0, 180, 212, 90)
-    GRID_GLOW    = QColor(0, 229, 255, 25)
-    HOVER        = QColor(0, 229, 255, 20)
-    WIN_GLOW     = QColor(0, 229, 255, 150)
+    # Board
+    BOARD_BG     = QColor(12, 12, 35, 200)
+    CELL_BG      = QColor(8, 8, 25, 180)
+    GRID_CORE    = QColor(255, 255, 255, 18)
+    GRID_GLOW    = QColor(167, 139, 250, 12)
+    HOVER        = QColor(167, 139, 250, 25)
+    WIN_GLOW     = QColor(167, 139, 250, 150)
+
+    # Glass
+    GLASS_FILL   = QColor(255, 255, 255, 10)
+    GLASS_BORDER = QColor(255, 255, 255, 25)
+    GLASS_HL     = QColor(255, 255, 255, 15)
 
 
 STYLESHEET = """
 /* ── Base ── */
 QWidget {
-    background: #060a12;
-    color: #c0e8f8;
+    background: transparent;
+    color: #e0e0f5;
     font-family: "Consolas", "Cascadia Code", monospace;
     font-size: 13px;
 }
 /* ── Tabs ── */
 QTabWidget::pane {
-    border: 1px solid #0d3a4a;
-    border-radius: 4px;
-    background: #0c1220;
+    border: 1px solid rgba(255, 255, 255, 20);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 6);
     padding: 8px;
     top: -1px;
 }
 QTabBar::tab {
     background: transparent;
-    color: #4a8090;
+    color: #7070a0;
     padding: 7px 18px;
     border: none;
     border-bottom: 2px solid transparent;
@@ -123,48 +132,51 @@ QTabBar::tab {
     text-transform: uppercase;
     letter-spacing: 1px;
 }
-QTabBar::tab:selected { color: #00e5ff; border-bottom-color: #00e5ff; }
-QTabBar::tab:hover:!selected { color: #00b8d4; }
+QTabBar::tab:selected { color: #a78bfa; border-bottom-color: #a78bfa; }
+QTabBar::tab:hover:!selected { color: #c4b5fd; }
 /* ── Combo / Spin ── */
 QComboBox, QSpinBox {
-    background: #0a1018;
-    border: 1px solid #0d3a4a;
-    border-radius: 3px;
+    background: rgba(255, 255, 255, 8);
+    border: 1px solid rgba(255, 255, 255, 18);
+    border-radius: 6px;
     padding: 4px 8px;
     min-height: 26px;
-    color: #00e5ff;
+    color: #e0e0f5;
     font-family: "Consolas", monospace;
-    selection-background-color: #0d3a4a;
+    selection-background-color: rgba(167, 139, 250, 30);
 }
-QComboBox:hover, QSpinBox:hover { border-color: #00e5ff; }
-QComboBox:focus, QSpinBox:focus { border-color: #00e5ff; }
+QComboBox:hover, QSpinBox:hover {
+    border-color: rgba(255, 255, 255, 35);
+    background: rgba(255, 255, 255, 12);
+}
+QComboBox:focus, QSpinBox:focus { border-color: rgba(167, 139, 250, 60); }
 QComboBox::drop-down { border: none; width: 20px; }
 QComboBox QAbstractItemView {
-    background: #0a1018;
-    border: 1px solid #0d3a4a;
-    selection-background-color: #0d3a4a;
-    color: #00e5ff;
+    background: #16163a;
+    border: 1px solid rgba(255, 255, 255, 20);
+    selection-background-color: rgba(167, 139, 250, 30);
+    color: #e0e0f5;
     outline: none;
 }
 /* ── Slider ── */
 QSlider { min-height: 22px; }
-QSlider::groove:horizontal { height: 3px; background: #0d3a4a; border-radius: 1px; }
+QSlider::groove:horizontal { height: 3px; background: rgba(255, 255, 255, 15); border-radius: 1px; }
 QSlider::handle:horizontal {
     width: 12px; height: 12px; margin: -5px 0;
-    background: #00e5ff; border-radius: 6px;
+    background: #a78bfa; border-radius: 6px;
 }
-QSlider::handle:horizontal:hover { background: #40efff; }
+QSlider::handle:horizontal:hover { background: #c4b5fd; }
 QSlider::sub-page:horizontal {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-        stop:0 #004060, stop:1 #00e5ff);
+        stop:0 rgba(167, 139, 250, 80), stop:1 #a78bfa);
     border-radius: 1px;
 }
 /* ── Buttons ── */
 QPushButton {
-    background: #0a1018;
-    color: #00e5ff;
-    border: 1px solid #0d3a4a;
-    border-radius: 3px;
+    background: rgba(255, 255, 255, 6);
+    color: #c4b5fd;
+    border: 1px solid rgba(255, 255, 255, 18);
+    border-radius: 6px;
     padding: 6px 16px;
     font-family: "Consolas", monospace;
     font-weight: bold;
@@ -173,42 +185,52 @@ QPushButton {
     letter-spacing: 1px;
     text-transform: uppercase;
 }
-QPushButton:hover { background: #0d1828; border-color: #00e5ff; color: #40efff; }
-QPushButton:pressed { background: #002030; }
-QPushButton#primary { background: #003040; border-color: #00e5ff; }
-QPushButton#primary:hover { background: #004060; border-color: #40efff; }
-QPushButton#danger { border-color: #ff1744; color: #ff1744; }
-QPushButton#danger:hover { background: #1a0010; border-color: #ff4070; }
+QPushButton:hover {
+    background: rgba(167, 139, 250, 15);
+    border-color: rgba(167, 139, 250, 50);
+    color: #e0d4ff;
+}
+QPushButton:pressed { background: rgba(167, 139, 250, 25); }
+QPushButton#primary {
+    background: rgba(167, 139, 250, 18);
+    border-color: rgba(167, 139, 250, 50);
+}
+QPushButton#primary:hover {
+    background: rgba(167, 139, 250, 30);
+    border-color: rgba(167, 139, 250, 70);
+}
+QPushButton#danger { border-color: rgba(251, 113, 133, 60); color: #fb7185; }
+QPushButton#danger:hover { background: rgba(251, 113, 133, 12); border-color: rgba(251, 113, 133, 80); }
 /* ── Checkbox ── */
-QCheckBox { spacing: 6px; background: transparent; color: #4a8090; font-family: "Consolas"; }
+QCheckBox { spacing: 6px; background: transparent; color: #9090b0; font-family: "Consolas"; }
 QCheckBox::indicator {
     width: 14px; height: 14px;
-    border: 1px solid #0d3a4a; border-radius: 2px;
-    background: #0a1018;
+    border: 1px solid rgba(255, 255, 255, 20); border-radius: 3px;
+    background: rgba(255, 255, 255, 6);
 }
-QCheckBox::indicator:checked { background: #00e5ff; border-color: #00e5ff; }
-QCheckBox:hover { color: #00e5ff; }
+QCheckBox::indicator:checked { background: #a78bfa; border-color: #a78bfa; }
+QCheckBox:hover { color: #c4b5fd; }
 /* ── Scrollbar ── */
 QScrollBar:vertical { width: 5px; background: transparent; }
-QScrollBar::handle:vertical { background: #0d3a4a; border-radius: 2px; min-height: 20px; }
-QScrollBar::handle:vertical:hover { background: #00b8d4; }
+QScrollBar::handle:vertical { background: rgba(255, 255, 255, 20); border-radius: 2px; min-height: 20px; }
+QScrollBar::handle:vertical:hover { background: rgba(167, 139, 250, 60); }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
 /* ── TextEdit ── */
 QTextEdit {
-    background: #060a12;
-    border: 1px solid #0d3a4a;
-    border-radius: 3px;
+    background: rgba(255, 255, 255, 4);
+    border: 1px solid rgba(255, 255, 255, 12);
+    border-radius: 6px;
     padding: 6px;
-    color: #4a8090;
+    color: #9090b0;
     font-family: "Consolas", monospace;
     font-size: 11px;
-    selection-background-color: #0d3a4a;
+    selection-background-color: rgba(167, 139, 250, 30);
 }
 /* ── Labels ── */
 QLabel { background: transparent; }
 /* ── Separators ── */
-QFrame#sep { background: #0d3a4a; max-height: 1px; }
+QFrame#sep { background: rgba(255, 255, 255, 12); max-height: 1px; }
 """
 
 
@@ -257,37 +279,42 @@ def _sep():
     return f
 
 
-def _draw_glow_line(qp, x1, y1, x2, y2, color, core_w=1):
-    """Draw a line with neon glow effect (3-pass)."""
-    for w, alpha in [(core_w + 6, 15), (core_w + 3, 40), (core_w, 140)]:
+def _draw_glass(qp, rect, radius=10, fill_alpha=10, border_alpha=25):
+    """Draw a frosted glass card with highlight."""
+    r = QRectF(rect)
+    path = QPainterPath()
+    path.addRoundedRect(r, radius, radius)
+
+    # Glass fill
+    qp.fillPath(path, QColor(255, 255, 255, fill_alpha))
+
+    # Top highlight gradient (simulates light refraction)
+    qp.save()
+    qp.setClipPath(path)
+    hl_h = min(50, r.height() * 0.3)
+    highlight = QLinearGradient(r.x(), r.y(), r.x(), r.y() + hl_h)
+    highlight.setColorAt(0, QColor(255, 255, 255, 18))
+    highlight.setColorAt(1, QColor(255, 255, 255, 0))
+    qp.fillRect(QRectF(r.x(), r.y(), r.width(), hl_h), highlight)
+    qp.restore()
+
+    # Border
+    qp.setPen(QPen(QColor(255, 255, 255, border_alpha), 1))
+    qp.setBrush(Qt.NoBrush)
+    qp.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
+
+
+def _draw_soft_glow(qp, x1, y1, x2, y2, color, core_w=1):
+    """Draw a line with soft diffused glow."""
+    for w, alpha in [(core_w + 4, 10), (core_w + 2, 30), (core_w, 100)]:
         c = QColor(color)
         c.setAlpha(alpha)
         qp.setPen(QPen(c, w))
         qp.drawLine(int(x1), int(y1), int(x2), int(y2))
 
 
-def _draw_corner_brackets(qp, rect, size=18, color=None, width=2):
-    """Draw sci-fi corner bracket decorations."""
-    c = color or C.CYAN_CLR
-    pen = QPen(QColor(c.red(), c.green(), c.blue(), 120), width)
-    qp.setPen(pen)
-    x, y, w, h = rect.x(), rect.y(), rect.width(), rect.height()
-    # Top-left
-    qp.drawLine(int(x), int(y + size), int(x), int(y))
-    qp.drawLine(int(x), int(y), int(x + size), int(y))
-    # Top-right
-    qp.drawLine(int(x + w - size), int(y), int(x + w), int(y))
-    qp.drawLine(int(x + w), int(y), int(x + w), int(y + size))
-    # Bottom-left
-    qp.drawLine(int(x), int(y + h - size), int(x), int(y + h))
-    qp.drawLine(int(x), int(y + h), int(x + size), int(y + h))
-    # Bottom-right
-    qp.drawLine(int(x + w - size), int(y + h), int(x + w), int(y + h))
-    qp.drawLine(int(x + w), int(y + h - size), int(x + w), int(y + h))
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
-# Board Widget — HUD Battle Grid
+# Board Widget — Glass Grid
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class BoardWidget(QWidget):
@@ -318,8 +345,8 @@ class BoardWidget(QWidget):
         self.scanning = False
 
         # MCTS overlay on empty cells
-        self.overlay_data = None   # {'N': (7,), 'Q': (7,), 'W': (7,)} or None
-        self.overlay_best = -1     # column with highest visits
+        self.overlay_data = None
+        self.overlay_best = -1
 
     def _board(self):
         state = self.env.current_state()
@@ -330,9 +357,8 @@ class BoardWidget(QWidget):
         qp = QPainter(self)
         qp.setRenderHint(QPainter.Antialiasing)
         self._draw_bg(qp)
-        self._draw_microgrid(qp)
         self._draw_hover_col(qp)
-        self._draw_glow_grid(qp)
+        self._draw_grid(qp)
         self._draw_pieces(qp)
         self._draw_last_move(qp)
         self._draw_win_glow(qp)
@@ -340,27 +366,19 @@ class BoardWidget(QWidget):
         self._draw_ghost(qp)
         self._draw_anim(qp)
         self._draw_scan_line(qp)
-        self._draw_brackets(qp)
 
     def _draw_bg(self, qp):
-        path = QPainterPath()
-        path.addRoundedRect(QRectF(self.rect()), 6, 6)
-        qp.fillPath(path, C.BOARD_BG)
-        # Subtle border
-        qp.setPen(QPen(QColor(0, 229, 255, 30), 1))
-        qp.setBrush(Qt.NoBrush)
-        qp.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 6, 6)
+        # Glass card background
+        _draw_glass(qp, self.rect(), radius=12, fill_alpha=8, border_alpha=20)
 
-    def _draw_microgrid(self, qp):
-        """Subtle dot-grid background pattern."""
-        qp.setPen(Qt.NoPen)
+        # Subtle inner glow at center
         m = self.MARGIN
         bw, bh = self.CELL * 7, self.CELL * 6
-        dot_color = QColor(0, 229, 255, 12)
-        qp.setBrush(dot_color)
-        for x in range(m, m + bw + 1, 19):
-            for y in range(m, m + bh + 1, 19):
-                qp.drawEllipse(QPointF(x, y), 0.7, 0.7)
+        cx, cy = m + bw / 2, m + bh / 2
+        inner = QRadialGradient(cx, cy, max(bw, bh) * 0.6)
+        inner.setColorAt(0, QColor(167, 139, 250, 6))
+        inner.setColorAt(1, QColor(167, 139, 250, 0))
+        qp.fillRect(self.rect(), inner)
 
     def _draw_hover_col(self, qp):
         if self.hover_col < 0 or not self.interactive:
@@ -368,23 +386,22 @@ class BoardWidget(QWidget):
         x = self.MARGIN + self.hover_col * self.CELL
         m = self.MARGIN
         bh = self.CELL * 6
-        # Vertical scan-beam gradient
+        # Soft vertical gradient highlight
         grad = QLinearGradient(x, m, x, m + bh)
-        grad.setColorAt(0.0, QColor(0, 229, 255, 0))
-        grad.setColorAt(0.3, QColor(0, 229, 255, 30))
-        grad.setColorAt(0.7, QColor(0, 229, 255, 30))
-        grad.setColorAt(1.0, QColor(0, 229, 255, 0))
+        grad.setColorAt(0.0, QColor(167, 139, 250, 0))
+        grad.setColorAt(0.3, QColor(167, 139, 250, 20))
+        grad.setColorAt(0.7, QColor(167, 139, 250, 20))
+        grad.setColorAt(1.0, QColor(167, 139, 250, 0))
         qp.fillRect(int(x), m, self.CELL, bh, grad)
-        # Side beams
+        # Soft side lines
         for bx in [x, x + self.CELL]:
-            _draw_glow_line(qp, bx, m + 10, bx, m + bh - 10, C.CYAN_CLR, 1)
+            _draw_soft_glow(qp, bx, m + 10, bx, m + bh - 10, C.ACCENT_CLR, 1)
 
-    def _draw_glow_grid(self, qp):
-        """Grid lines with multi-pass neon glow."""
+    def _draw_grid(self, qp):
+        """Grid lines — subtle frosted glass dividers."""
         m, c = self.MARGIN, self.CELL
-        # Glow pass
-        glow_pen = QPen(C.GRID_GLOW, 3)
-        qp.setPen(glow_pen)
+        # Soft glow pass
+        qp.setPen(QPen(C.GRID_GLOW, 2))
         for col in range(1, 7):
             x = m + col * c
             qp.drawLine(x, m, x, m + 6 * c)
@@ -392,20 +409,19 @@ class BoardWidget(QWidget):
             y = m + row * c
             qp.drawLine(m, y, m + 7 * c, y)
         # Core pass
-        core_pen = QPen(C.GRID_CORE, 1)
-        qp.setPen(core_pen)
+        qp.setPen(QPen(C.GRID_CORE, 1))
         for col in range(1, 7):
             x = m + col * c
             qp.drawLine(x, m, x, m + 6 * c)
         for row in range(1, 6):
             y = m + row * c
             qp.drawLine(m, y, m + 7 * c, y)
-        # Outer border glow
+        # Outer border — glass edge
         border_rect = QRectF(m - 1, m - 1, 7 * c + 2, 6 * c + 2)
-        for w, alpha in [(5, 12), (3, 30), (1, 70)]:
-            qp.setPen(QPen(QColor(0, 229, 255, alpha), w))
+        for w, alpha in [(3, 6), (1, 25)]:
+            qp.setPen(QPen(QColor(255, 255, 255, alpha), w))
             qp.setBrush(Qt.NoBrush)
-            qp.drawRect(border_rect)
+            qp.drawRoundedRect(border_rect, 3, 3)
 
     def _draw_pieces(self, qp):
         board = self._board()
@@ -419,9 +435,9 @@ class BoardWidget(QWidget):
     def _draw_piece(self, qp, cx, cy, value, alpha=255):
         rad = self.CELL // 2 - 8
         if value == 0:
-            # Empty cell — dark pit with subtle ring
+            # Empty cell — dark glass pit
             qp.setBrush(C.CELL_BG)
-            qp.setPen(QPen(QColor(0, 229, 255, 20), 1))
+            qp.setPen(QPen(QColor(255, 255, 255, 10), 1))
             qp.drawEllipse(QPointF(cx, cy), rad, rad)
             return
 
@@ -430,15 +446,15 @@ class BoardWidget(QWidget):
         glow_c = QColor(C.RED_GLOW) if value == 1 else QColor(C.YEL_GLOW)
         dk.setAlpha(alpha); lt.setAlpha(alpha)
 
-        # Outer glow halo
+        # Outer glow halo — softer, more diffused
         for i in range(3):
             gc = QColor(glow_c)
-            gc.setAlpha(max(0, glow_c.alpha() - i * 18))
+            gc.setAlpha(max(0, glow_c.alpha() - i * 15))
             qp.setBrush(Qt.NoBrush)
             qp.setPen(QPen(gc, 2))
             qp.drawEllipse(QPointF(cx, cy), rad + 3 + i * 3, rad + 3 + i * 3)
 
-        # Core piece with gradient
+        # Core piece with glass-like gradient
         grad = QRadialGradient(cx - rad * 0.25, cy - rad * 0.25, rad * 1.1)
         grad.setColorAt(0, lt)
         grad.setColorAt(0.7, dk)
@@ -447,12 +463,13 @@ class BoardWidget(QWidget):
         qp.setPen(Qt.NoPen)
         qp.drawEllipse(QPointF(cx, cy), rad, rad)
 
-        # Specular highlight
-        spec = QRadialGradient(cx - rad * 0.2, cy - rad * 0.35, rad * 0.4)
-        spec.setColorAt(0, QColor(255, 255, 255, 70))
+        # Glass specular highlight
+        spec = QRadialGradient(cx - rad * 0.2, cy - rad * 0.35, rad * 0.45)
+        spec.setColorAt(0, QColor(255, 255, 255, 90))
+        spec.setColorAt(0.5, QColor(255, 255, 255, 30))
         spec.setColorAt(1, QColor(255, 255, 255, 0))
         qp.setBrush(spec)
-        qp.drawEllipse(QPointF(cx - rad * 0.2, cy - rad * 0.35), rad * 0.35, rad * 0.25)
+        qp.drawEllipse(QPointF(cx - rad * 0.2, cy - rad * 0.35), rad * 0.4, rad * 0.3)
 
     def _draw_last_move(self, qp):
         if self.last_move is None:
@@ -461,10 +478,10 @@ class BoardWidget(QWidget):
         cx = self.MARGIN + cc * self.CELL + self.CELL // 2
         cy = self.MARGIN + r * self.CELL + self.CELL // 2
         rad = self.CELL // 2 - 4
-        # Glow ring
-        for w, a in [(6, 20), (3, 60), (2, 140)]:
+        # Accent glow ring
+        for w, a in [(5, 15), (3, 40), (2, 100)]:
             qp.setBrush(Qt.NoBrush)
-            qp.setPen(QPen(QColor(0, 229, 255, a), w))
+            qp.setPen(QPen(QColor(167, 139, 250, a), w))
             qp.drawEllipse(QPointF(cx, cy), rad, rad)
 
     def _draw_win_glow(self, qp):
@@ -475,9 +492,9 @@ class BoardWidget(QWidget):
             cy = self.MARGIN + r * self.CELL + self.CELL // 2
             rad = self.CELL // 2 - 2
             # Strong pulsing glow
-            for w, a in [(10, 15), (6, 40), (3, 80), (2, 180)]:
+            for w, a in [(10, 10), (6, 30), (3, 60), (2, 140)]:
                 qp.setBrush(Qt.NoBrush)
-                qp.setPen(QPen(QColor(0, 229, 255, a), w))
+                qp.setPen(QPen(QColor(167, 139, 250, a), w))
                 qp.drawEllipse(QPointF(cx, cy), rad, rad)
 
     def _draw_overlay(self, qp):
@@ -498,18 +515,18 @@ class BoardWidget(QWidget):
             cy = self.MARGIN + row * self.CELL + self.CELL // 2
             is_best = (col == self.overlay_best)
 
-            # Semi-transparent circle
-            fill_a = 40 if is_best else 18
-            border_a = 80 if is_best else 35
-            qp.setBrush(QColor(0, 229, 255, fill_a))
-            qp.setPen(QPen(QColor(0, 229, 255, border_a), 1))
+            # Semi-transparent glass circle
+            fill_a = 35 if is_best else 15
+            border_a = 60 if is_best else 25
+            qp.setBrush(QColor(167, 139, 250, fill_a))
+            qp.setPen(QPen(QColor(167, 139, 250, border_a), 1))
             qp.drawEllipse(QPointF(cx, cy), rad, rad)
 
             # Text colors
-            main_clr = QColor(C.CYAN) if is_best else QColor(C.DIM)
-            sub_clr = QColor(0, 229, 255, 160) if is_best else QColor(C.MUTED)
+            main_clr = QColor(C.ACCENT) if is_best else QColor(C.DIM)
+            sub_clr = QColor(167, 139, 250, 160) if is_best else QColor(C.MUTED)
 
-            # Line 1: N% (visit share)
+            # Line 1: N%
             qp.setPen(main_clr)
             qp.setFont(QFont("Consolas", 9, QFont.Bold))
             n_text = f"{n_arr[col]:.0f}%" if n_arr[col] >= 10 else f"{n_arr[col]:.1f}%"
@@ -524,7 +541,7 @@ class BoardWidget(QWidget):
             qp.drawText(QRectF(cx - rad, cy - rad * 0.15, rad * 2, rad * 0.7),
                          Qt.AlignCenter, q_text)
 
-            # Line 3: W% (win rate)
+            # Line 3: W%
             qp.setPen(sub_clr)
             qp.setFont(QFont("Consolas", 8))
             w_text = f"W:{w_arr[col]:.0f}"
@@ -556,7 +573,7 @@ class BoardWidget(QWidget):
         self._draw_piece(qp, cx, cy, v)
 
     def _draw_scan_line(self, qp):
-        """Horizontal scanning line during AI thinking."""
+        """Horizontal sweep during AI thinking — soft violet."""
         if not self.scanning or self.scan_y < 0:
             return
         m = self.MARGIN
@@ -564,23 +581,17 @@ class BoardWidget(QWidget):
         y = m + self.scan_y
         # Glow beam
         grad = QLinearGradient(m, y, m + bw, y)
-        grad.setColorAt(0, QColor(0, 229, 255, 0))
-        grad.setColorAt(0.2, QColor(0, 229, 255, 60))
-        grad.setColorAt(0.5, QColor(0, 229, 255, 100))
-        grad.setColorAt(0.8, QColor(0, 229, 255, 60))
-        grad.setColorAt(1, QColor(0, 229, 255, 0))
+        grad.setColorAt(0, QColor(167, 139, 250, 0))
+        grad.setColorAt(0.2, QColor(167, 139, 250, 40))
+        grad.setColorAt(0.5, QColor(167, 139, 250, 70))
+        grad.setColorAt(0.8, QColor(167, 139, 250, 40))
+        grad.setColorAt(1, QColor(167, 139, 250, 0))
         qp.setPen(QPen(grad, 2))
         qp.drawLine(m, int(y), m + bw, int(y))
         # Wider soft glow
-        for dy, a in [(-2, 20), (-1, 40), (1, 40), (2, 20)]:
-            qp.setPen(QPen(QColor(0, 229, 255, a), 1))
+        for dy, a in [(-2, 12), (-1, 25), (1, 25), (2, 12)]:
+            qp.setPen(QPen(QColor(167, 139, 250, a), 1))
             qp.drawLine(m, int(y + dy), m + bw, int(y + dy))
-
-    def _draw_brackets(self, qp):
-        """Corner bracket decorations."""
-        m = self.MARGIN
-        r = QRectF(m - 8, m - 8, self.CELL * 7 + 16, self.CELL * 6 + 16)
-        _draw_corner_brackets(qp, r, size=14, color=C.CYAN_CLR, width=2)
 
     # ── Mouse ───────────────────────────────────────────────────────────────
     def mouseMoveEvent(self, event):
@@ -633,7 +644,7 @@ class BoardWidget(QWidget):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class PolicyChart(QWidget):
-    """HUD-style bar chart for column policy probabilities."""
+    """Glass-style bar chart for column policy probabilities."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(130)
@@ -657,7 +668,7 @@ class PolicyChart(QWidget):
         mx = max(self.probs) if max(self.probs) > 0 else 1.0
 
         # Background grid lines
-        qp.setPen(QPen(QColor(0, 229, 255, 10), 1))
+        qp.setPen(QPen(QColor(255, 255, 255, 6), 1))
         for gy in range(0, bar_zone, 15):
             qp.drawLine(int(gap), bar_zone - gy, int(w - gap), bar_zone - gy)
 
@@ -675,8 +686,8 @@ class PolicyChart(QWidget):
                 clr_top = QColor(C.MUTED)
                 clr_bot = QColor(C.MUTED)
             elif is_hl:
-                clr_top = QColor(0, 229, 255)
-                clr_bot = QColor(0, 100, 130)
+                clr_top = QColor(167, 139, 250)
+                clr_bot = QColor(80, 60, 140)
             else:
                 clr_top = QColor(C.DIM)
                 clr_bot = QColor(C.MUTED)
@@ -685,15 +696,15 @@ class PolicyChart(QWidget):
             grad.setColorAt(0, clr_top)
             grad.setColorAt(1, clr_bot)
             path = QPainterPath()
-            path.addRoundedRect(QRectF(x, y, bar_w, bh), 2, 2)
+            path.addRoundedRect(QRectF(x, y, bar_w, bh), 3, 3)
             qp.fillPath(path, grad)
 
             # Glow on highlighted bar
             if is_hl and is_valid:
-                for gw, ga in [(bar_w + 6, 15), (bar_w + 3, 25)]:
-                    gc = QColor(0, 229, 255, ga)
+                for gw, ga in [(bar_w + 6, 10), (bar_w + 3, 20)]:
+                    gc = QColor(167, 139, 250, ga)
                     gpath = QPainterPath()
-                    gpath.addRoundedRect(QRectF(x - (gw - bar_w) / 2, y, gw, bh), 3, 3)
+                    gpath.addRoundedRect(QRectF(x - (gw - bar_w) / 2, y, gw, bh), 4, 4)
                     qp.fillPath(gpath, gc)
 
             # Prob label
@@ -705,14 +716,14 @@ class PolicyChart(QWidget):
                             Qt.AlignCenter, text)
 
             # Column label
-            qp.setPen(QColor(C.CYAN) if is_hl else QColor(C.MUTED))
+            qp.setPen(QColor(C.ACCENT) if is_hl else QColor(C.MUTED))
             qp.setFont(QFont("Consolas", 9))
             qp.drawText(QRectF(x, bar_zone + 2, bar_w, 18),
                         Qt.AlignCenter, str(i + 1))
 
 
 class WinRateBar(QWidget):
-    """Three-section bar with neon glow edge."""
+    """Three-section bar with glass appearance."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(14)
@@ -729,13 +740,13 @@ class WinRateBar(QWidget):
 
         # Background
         path = QPainterPath()
-        path.addRoundedRect(QRectF(0, 0, w, h), 3, 3)
+        path.addRoundedRect(QRectF(0, 0, w, h), 4, 4)
         qp.setClipPath(path)
-        qp.fillRect(0, 0, w, h, QColor(10, 16, 24))
+        qp.fillRect(0, 0, w, h, QColor(255, 255, 255, 8))
 
         x = 0
         for ratio, clr in [
-            (self.w_rate, C.RED), (self.d_rate, QColor(30, 60, 80)),
+            (self.w_rate, C.RED), (self.d_rate, QColor(255, 255, 255, 20)),
             (self.l_rate, C.YEL)
         ]:
             pw = int(w * ratio)
@@ -746,14 +757,14 @@ class WinRateBar(QWidget):
                 qp.fillRect(int(x), 0, pw, h, grad)
             x += pw
 
-        # Top edge glow
+        # Top edge highlight
         qp.setClipping(False)
-        qp.setPen(QPen(QColor(0, 229, 255, 40), 1))
+        qp.setPen(QPen(QColor(255, 255, 255, 25), 1))
         qp.drawLine(0, 0, w, 0)
 
 
 class StepsBar(QWidget):
-    """Progress bar with gradient glow fill."""
+    """Progress bar with glass fill."""
     MAX_STEPS = 42
 
     def __init__(self, parent=None):
@@ -776,21 +787,21 @@ class StepsBar(QWidget):
 
         # Background
         path = QPainterPath()
-        path.addRoundedRect(QRectF(0, 0, bw, h), 3, 3)
+        path.addRoundedRect(QRectF(0, 0, bw, h), 4, 4)
         qp.setClipPath(path)
-        qp.fillRect(0, 0, bw, h, QColor(10, 16, 24))
+        qp.fillRect(0, 0, bw, h, QColor(255, 255, 255, 8))
 
         ratio = self.steps / self.MAX_STEPS if self.MAX_STEPS else 0
         fill_w = int(bw * ratio)
         if fill_w > 0:
             grad = QLinearGradient(0, 0, fill_w, 0)
-            grad.setColorAt(0, QColor(0, 80, 100))
-            grad.setColorAt(1, QColor(0, 229, 255))
+            grad.setColorAt(0, QColor(80, 60, 140))
+            grad.setColorAt(1, QColor(167, 139, 250))
             qp.fillRect(0, 0, fill_w, h, grad)
 
         # Value text
         qp.setClipping(False)
-        qp.setPen(QColor(C.CYAN))
+        qp.setPen(QColor(C.ACCENT))
         qp.setFont(QFont("Consolas", 10))
         qp.drawText(bw + 4, 0, tw, h, Qt.AlignVCenter | Qt.AlignLeft, text)
 
@@ -849,7 +860,6 @@ class RootStatsWidget(QWidget):
         self.update()
 
     def snapshot(self):
-        """Return a lightweight copy of current display state."""
         if self.visits is None:
             return None
         return dict(visits=self.visits.copy(), q_values=self.q_values.copy(),
@@ -862,7 +872,6 @@ class RootStatsWidget(QWidget):
                     ai_turn=self.ai_turn)
 
     def restore(self, snap):
-        """Restore from a snapshot (or clear if None)."""
         if snap is None:
             self.clear_data()
             return
@@ -905,7 +914,7 @@ class RootStatsWidget(QWidget):
         self._draw_summary(qp, w, summary_h)
 
         # Background grid
-        qp.setPen(QPen(QColor(224, 64, 251, 8), 1))
+        qp.setPen(QPen(QColor(167, 139, 250, 5), 1))
         for gy in range(0, int(bar_zone), 15):
             y0 = summary_h + bar_zone - gy
             qp.drawLine(int(gap), int(y0), int(w - gap), int(y0))
@@ -920,22 +929,22 @@ class RootStatsWidget(QWidget):
             if v <= 0:
                 ct, cb = QColor(C.MUTED), QColor(C.MUTED)
             elif is_ch:
-                ct, cb = QColor(0, 229, 255), QColor(0, 80, 110)
+                ct, cb = QColor(167, 139, 250), QColor(70, 50, 120)
             else:
-                ct, cb = QColor(180, 60, 220), QColor(60, 15, 80)
+                ct, cb = QColor(140, 100, 200), QColor(50, 30, 70)
 
             grad = QLinearGradient(x, y, x, summary_h + bar_zone)
             grad.setColorAt(0, ct)
             grad.setColorAt(1, cb)
             path = QPainterPath()
-            path.addRoundedRect(QRectF(x, y, bar_w, bh), 2, 2)
+            path.addRoundedRect(QRectF(x, y, bar_w, bh), 3, 3)
             qp.fillPath(path, grad)
 
             if is_ch and v > 0:
-                for gw, ga in [(bar_w + 6, 12), (bar_w + 3, 22)]:
+                for gw, ga in [(bar_w + 6, 8), (bar_w + 3, 16)]:
                     gp = QPainterPath()
-                    gp.addRoundedRect(QRectF(x - (gw - bar_w) / 2, y, gw, bh), 3, 3)
-                    qp.fillPath(gp, QColor(0, 229, 255, ga))
+                    gp.addRoundedRect(QRectF(x - (gw - bar_w) / 2, y, gw, bh), 4, 4)
+                    qp.fillPath(gp, QColor(167, 139, 250, ga))
 
             # Visit % above bar
             if v > 0 and total_v > 0:
@@ -946,7 +955,7 @@ class RootStatsWidget(QWidget):
                 qp.drawText(QRectF(x - 6, y - 12, bar_w + 12, 12),
                             Qt.AlignCenter, text)
 
-            # Q value row (negated → AI/parent perspective)
+            # Q value row
             q_y = summary_h + bar_zone + 2
             if v > 0:
                 q = -self.q_values[i]
@@ -962,13 +971,13 @@ class RootStatsWidget(QWidget):
 
             # Column label
             col_y = q_y + q_row_h
-            qp.setPen(QColor(C.CYAN) if is_ch else QColor(C.MUTED))
+            qp.setPen(QColor(C.ACCENT) if is_ch else QColor(C.MUTED))
             qp.setFont(QFont("Consolas", 9))
             qp.drawText(QRectF(x, col_y, bar_w, col_row_h),
                         Qt.AlignCenter, str(i + 1))
 
         if self.dimmed:
-            qp.fillRect(QRectF(0, 0, w, h), QColor(6, 10, 18, 190))
+            qp.fillRect(QRectF(0, 0, w, h), QColor(11, 11, 30, 190))
 
     def _draw_summary(self, qp, w, sh):
         d_pct = self.wdl[0] * 100
@@ -978,7 +987,7 @@ class RootStatsWidget(QWidget):
             w_pct, l_pct = self.wdl[2] * 100, self.wdl[1] * 100
 
         parts = [
-            (f"N:{int(self.root_n)}", C.CYAN),
+            (f"N:{int(self.root_n)}", C.ACCENT),
             (f"Q:{self.root_q:+.2f}", C.GREEN_T),
             (f"M:{self.root_m:.1f}", C.YEL_HEX),
             (f"W:{w_pct:.0f}", C.GREEN),
@@ -995,7 +1004,7 @@ class RootStatsWidget(QWidget):
 
 
 class ChildStatsTable(QWidget):
-    """HUD table showing per-action child node statistics."""
+    """Glass table showing per-action child node statistics."""
     ROW_H = 16
     HDR_H = 18
     COLS = ['Col', 'N', 'N%', 'Q', 'W%', 'D%', 'L%', 'M', 'P']
@@ -1003,15 +1012,13 @@ class ChildStatsTable(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.dimmed = False
-        self._stats = None   # reference to RootStatsWidget
+        self._stats = None
         self._update_height()
 
     def _update_height(self):
-        # header + 7 data rows + 2px padding
         self.setFixedHeight(self.HDR_H + self.ROW_H * 7 + 4)
 
     def set_source(self, root_stats_widget):
-        """Link to RootStatsWidget to read data from."""
         self._stats = root_stats_widget
 
     def paintEvent(self, _):
@@ -1020,10 +1027,8 @@ class ChildStatsTable(QWidget):
         w, h = self.width(), self.height()
         s = self._stats
 
-        # Background frame
-        qp.setPen(QPen(QColor(0, 229, 255, 30), 1))
-        qp.setBrush(QColor(8, 14, 24, 200))
-        qp.drawRoundedRect(QRectF(0, 0, w, h), 3, 3)
+        # Glass card background
+        _draw_glass(qp, self.rect(), radius=8, fill_alpha=8, border_alpha=18)
 
         if s is None or s.visits is None or s.root_n <= 0:
             qp.setPen(QColor(C.MUTED))
@@ -1035,8 +1040,6 @@ class ChildStatsTable(QWidget):
         n_actions = len(s.visits)
         total_v = s.visits.sum()
 
-        # Column widths — proportional to available width
-        #  Col  N     N%    Q      W%    D%    L%    M     P
         ratios = [0.06, 0.14, 0.09, 0.11, 0.11, 0.10, 0.11, 0.11, 0.10]
         pad = 6
         usable = w - pad * 2
@@ -1046,10 +1049,9 @@ class ChildStatsTable(QWidget):
             cw = int(usable * r)
             col_w.append(cw)
             col_x.append(col_x[-1] + cw)
-        # Give remainder to last column
         col_w[-1] = usable - sum(col_w[:-1])
 
-        # ── Header ──
+        # Header
         qp.setFont(QFont("Consolas", 8))
         qp.setPen(QColor(C.DIM))
         for ci, name in enumerate(self.COLS):
@@ -1057,27 +1059,24 @@ class ChildStatsTable(QWidget):
             qp.drawText(rect, Qt.AlignCenter, name)
         # Header underline
         y_line = self.HDR_H
-        qp.setPen(QPen(QColor(0, 229, 255, 30), 1))
+        qp.setPen(QPen(QColor(255, 255, 255, 15), 1))
         qp.drawLine(pad, int(y_line), int(w - pad), int(y_line))
 
-        # ── Sort rows by visits descending ──
+        # Sort rows by visits descending
         order = np.argsort(-s.visits)
 
-        # Determine AI-perspective WDL per action
         ai = s.ai_turn
         for rank, idx in enumerate(order):
             y = self.HDR_H + rank * self.ROW_H
             n = int(s.visits[idx])
             is_chosen = (idx == s.chosen)
 
-            # Row background highlight for chosen action
             if is_chosen:
                 qp.fillRect(QRectF(pad, y, usable, self.ROW_H),
-                             QColor(0, 229, 255, 18))
+                             QColor(167, 139, 250, 15))
 
             qp.setFont(QFont("Consolas", 8))
 
-            # Prepare cell values (Q negated → AI/parent perspective)
             n_pct = (n / total_v * 100) if total_v > 0 else 0.0
             q = -s.q_values[idx]
             d_pct = s.child_d[idx] * 100
@@ -1091,7 +1090,7 @@ class ChildStatsTable(QWidget):
             prior = s.prior[idx] * 100
 
             cells = [
-                (str(idx + 1),      C.CYAN if is_chosen else C.MUTED),
+                (str(idx + 1),      C.ACCENT if is_chosen else C.MUTED),
                 (str(n) if n > 0 else '-',
                     C.TEXT if n > 0 else C.MUTED),
                 (f"{n_pct:.1f}" if n > 0 else '-',
@@ -1117,11 +1116,11 @@ class ChildStatsTable(QWidget):
                 qp.drawText(rect, Qt.AlignCenter, txt)
 
         if self.dimmed:
-            qp.fillRect(QRectF(0, 0, w, h), QColor(6, 10, 18, 190))
+            qp.fillRect(QRectF(0, 0, w, h), QColor(11, 11, 30, 190))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Status Panel — HUD Readout
+# Status Panel — Glass Card
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class StatusPanel(QWidget):
@@ -1142,7 +1141,7 @@ class StatusPanel(QWidget):
         self.turn_lbl.setFont(f)
         left.addWidget(self.turn_lbl)
 
-        self.time_lbl = QLabel("▸ --")
+        self.time_lbl = QLabel("--")
         self.time_lbl.setAlignment(Qt.AlignCenter)
         self.time_lbl.setStyleSheet(f"color: {C.DIM}; font-size: 10px; font-family: Consolas;")
         left.addWidget(self.time_lbl)
@@ -1178,7 +1177,7 @@ class StatusPanel(QWidget):
         # ── Right: steps ──
         right = QVBoxLayout()
         right.setSpacing(2)
-        steps_title = QLabel(f"<font color='{C.DIM}' style='font-family:Consolas;font-size:10px;'>▸ REMAINING</font>")
+        steps_title = QLabel(f"<font color='{C.DIM}' style='font-family:Consolas;font-size:10px;'>REMAINING</font>")
         steps_title.setAlignment(Qt.AlignCenter)
         steps_title.setTextFormat(Qt.RichText)
         right.addWidget(steps_title)
@@ -1192,17 +1191,11 @@ class StatusPanel(QWidget):
         root.addLayout(right)
 
     def paintEvent(self, event):
-        """Draw HUD frame around the panel."""
+        """Draw glass card frame."""
         super().paintEvent(event)
         qp = QPainter(self)
         qp.setRenderHint(QPainter.Antialiasing)
-        r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
-        # Border
-        qp.setPen(QPen(QColor(0, 229, 255, 40), 1))
-        qp.setBrush(QColor(12, 18, 32, 200))
-        qp.drawRoundedRect(r, 4, 4)
-        # Corner brackets
-        _draw_corner_brackets(qp, r, size=10, color=C.CYAN_CLR, width=1)
+        _draw_glass(qp, self.rect(), radius=10, fill_alpha=10, border_alpha=22)
 
     @staticmethod
     def _rate_label(prefix, color):
@@ -1213,7 +1206,6 @@ class StatusPanel(QWidget):
         return lbl
 
     def set_mcts_rates(self, win, draw, lose):
-        """Primary WDL display from MCTS search statistics."""
         self.win_lbl.setText(
             f"<font color='{C.RED_HEX}' style='font-family:Consolas;font-size:10px;'>WIN</font>"
             f"<br><font color='{C.RED_HEX}'>{win:.1f}%</font>")
@@ -1226,23 +1218,19 @@ class StatusPanel(QWidget):
         self.wdl_bar.set_rates(win / 100, draw / 100, lose / 100)
 
     def set_nn_rates(self, win, draw, lose):
-        """Secondary NN WDL shown as dim subtitle below the bar."""
         self.nn_wdl_lbl.setText(
             f"<font color='{C.MUTED}' style='font-family:Consolas;font-size:9px;'>"
             f"nn {win:.1f} / {draw:.1f} / {lose:.1f}</font>")
 
     def set_mcts_steps(self, m):
-        """Primary remaining-steps display from MCTS M value."""
         self.steps_bar.set_steps(m)
 
     def set_nn_steps(self, s):
-        """Secondary NN steps shown as dim subtitle."""
         self.nn_steps_lbl.setText(
             f"<font color='{C.MUTED}' style='font-family:Consolas;font-size:9px;'>"
             f"nn {s:.0f}</font>")
 
     def clear_mcts(self):
-        """Reset MCTS displays to initial state."""
         for lbl, prefix, color in [(self.win_lbl, 'WIN', C.RED_HEX),
                                     (self.draw_lbl, 'DRAW', C.DIM),
                                     (self.lose_lbl, 'LOSE', C.YEL_HEX)]:
@@ -1255,7 +1243,7 @@ class StatusPanel(QWidget):
         self.nn_steps_lbl.setText("")
 
     def set_thinking(self, sec):
-        self.time_lbl.setText(f"▸ {sec:.2f}s" if sec >= 0 else "▸ --")
+        self.time_lbl.setText(f"{sec:.2f}s" if sec >= 0 else "--")
 
     def set_turn(self, text, color):
         self.turn_lbl.setText(f"<font color='{color}'>{text}</font>")
@@ -1268,7 +1256,7 @@ class StatusPanel(QWidget):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Parameter Console — Terminal Style
+# Parameter Console — Glass Tabs
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class ParameterConsole(QWidget):
@@ -1278,13 +1266,11 @@ class ParameterConsole(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(8)
 
-        # Title with HUD prefix
-        title = QLabel(f"<font color='{C.CYAN}' style='font-family:Consolas;"
-                       f"font-size:11px;letter-spacing:3px;'>▸ PARAMETER CONSOLE</font>")
+        title = QLabel(f"<font color='{C.ACCENT}' style='font-family:Consolas;"
+                       f"font-size:11px;letter-spacing:3px;'>PARAMETERS</font>")
         title.setTextFormat(Qt.RichText)
         root.addWidget(title)
 
-        # Tabs
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
         root.addWidget(self.tabs, stretch=1)
@@ -1432,23 +1418,14 @@ class MoveLog(QTextEdit):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class ContinuousSearchWorker(QThread):
-    """Runs MCTS playouts continuously in the background.
-
-    Signals
-    -------
-    progress(dict, object)
-        Emitted every CHUNK playouts with (stats_0, visits).
-    ai_ready(dict, object, float)
-        Emitted when root_N >= threshold during AI turn.
-    """
+    """Runs MCTS playouts continuously in the background."""
     CHUNK = 50
 
-    progress = pyqtSignal(dict, object)          # (stats_0, visits)
-    ai_ready = pyqtSignal(dict, object, float)   # (stats_0, visits, elapsed)
+    progress = pyqtSignal(dict, object)
+    ai_ready = pyqtSignal(dict, object, float)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        # search state (written only while paused)
         self._bmcts = None
         self._pv_fn = None
         self._board = None
@@ -1457,16 +1434,13 @@ class ContinuousSearchWorker(QThread):
         self._threshold = 500
         self._t0 = 0.0
         self._ai_acted = False
-        # synchronisation
         self._paused = True
         self._stop_flag = False
-        self._wake = threading.Event()      # wakes run-loop
-        self._idle = threading.Event()      # signalled when worker is idle
+        self._wake = threading.Event()
+        self._idle = threading.Event()
         self._idle.set()
 
-    # ── called from main thread ───────────────────────────────────────────
     def set_position(self, bmcts, pv_fn, board, turns, is_ai_turn, threshold):
-        """Set new search position.  **Must** be called while worker is paused."""
         self._bmcts = bmcts
         self._pv_fn = pv_fn
         self._board = np.ascontiguousarray(board, dtype=np.int8)
@@ -1482,20 +1456,17 @@ class ContinuousSearchWorker(QThread):
         self._wake.set()
 
     def pause_and_wait(self):
-        """Ask worker to pause and block until it is actually idle."""
         self._paused = True
-        self._wake.set()        # in case it's sleeping
-        self._idle.wait()       # block until idle
+        self._wake.set()
+        self._idle.wait()
 
     def stop(self):
         self._stop_flag = True
         self._paused = True
         self._wake.set()
 
-    # ── background thread ─────────────────────────────────────────────────
     def run(self):
         while not self._stop_flag:
-            # ── sleep until resumed ──
             if self._paused:
                 self._idle.set()
                 self._wake.wait()
@@ -1510,14 +1481,12 @@ class ContinuousSearchWorker(QThread):
                 self._paused = True
                 continue
 
-            # ── one chunk of playouts ──
             bm.batch_playout(pv, self._board, self._turns,
                              n_playout=self.CHUNK)
 
             if self._paused or self._stop_flag:
                 continue
 
-            # ── read & deep-copy stats ──
             raw = bm.get_root_stats()
             stats_0 = {}
             for k, v in raw.items():
@@ -1525,18 +1494,15 @@ class ContinuousSearchWorker(QThread):
                 stats_0[k] = val.copy() if hasattr(val, 'copy') else float(val)
             visits = bm.get_visits_count()[0].copy()
 
-            # ── emit progress ──
             self.progress.emit(stats_0, visits)
 
-            # ── check AI threshold ──
             if self._is_ai_turn and not self._ai_acted:
                 if stats_0['root_N'] >= self._threshold:
                     self._ai_acted = True
-                    self._paused = True          # auto-pause
+                    self._paused = True
                     elapsed = time.time() - self._t0
                     self.ai_ready.emit(stats_0, visits, elapsed)
 
-        # thread exits
         self._idle.set()
 
 
@@ -1547,7 +1513,7 @@ class ContinuousSearchWorker(QThread):
 class Connect4GUI(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("AlphaZero Connect4 — HUD")
+        self.setWindowTitle("AlphaZero Connect4 — Glass")
         self.setStyleSheet(STYLESHEET)
         self.setWindowFlags(Qt.Window)
 
@@ -1571,7 +1537,6 @@ class Connect4GUI(QWidget):
         self.status = StatusPanel()
         self.console = ParameterConsole()
 
-        # Dual analysis: AI last move + human hint
         self.ai_root_stats = RootStatsWidget()
         self.ai_child_table = ChildStatsTable()
         self.ai_child_table.set_source(self.ai_root_stats)
@@ -1597,7 +1562,7 @@ class Connect4GUI(QWidget):
         self.hint_btn = QPushButton("HINT")
         self.hint_btn.setToolTip("Toggle YOUR ANALYSIS visibility")
         self.hint_btn.setCheckable(True)
-        self.hint_btn.setChecked(True)       # on by default
+        self.hint_btn.setChecked(True)
         self._hint_visible = True
 
         # ── Layout ──────────────────────────────────────────────────────────
@@ -1605,7 +1570,7 @@ class Connect4GUI(QWidget):
         main_layout.setContentsMargins(16, 12, 16, 12)
         main_layout.setSpacing(8)
 
-        # ── Top row: board + console+buttons ────────────────────────────────
+        # Top row: board + console+buttons
         top_row = QHBoxLayout()
         top_row.setSpacing(16)
         top_row.addWidget(self.board)
@@ -1628,10 +1593,10 @@ class Connect4GUI(QWidget):
         top_row.addLayout(right_col)
         main_layout.addLayout(top_row)
 
-        # ── Status (full width) ─────────────────────────────────────────────
+        # Status (full width)
         main_layout.addWidget(self.status)
 
-        # ── Bottom row: AI panel | Hint panel (side by side) ────────────────
+        # Bottom row: AI panel | Hint panel
         bottom_row = QHBoxLayout()
         bottom_row.setSpacing(12)
 
@@ -1639,29 +1604,29 @@ class Connect4GUI(QWidget):
         ai_panel = QVBoxLayout()
         ai_panel.setSpacing(3)
         ai_title = QLabel(
-            f"<font color='{C.CYAN}' style='font-family:Consolas;"
-            f"font-size:11px;letter-spacing:2px;'>▸ AI LAST MOVE</font>")
+            f"<font color='{C.ACCENT}' style='font-family:Consolas;"
+            f"font-size:11px;letter-spacing:2px;'>AI LAST MOVE</font>")
         ai_title.setTextFormat(Qt.RichText)
         ai_panel.addWidget(ai_title)
         ai_panel.addWidget(self.ai_root_stats)
         ai_panel.addWidget(self.ai_child_table)
         bottom_row.addLayout(ai_panel)
 
-        # Vertical separator
+        # Vertical separator — glass divider
         vsep = QFrame()
         vsep.setFrameShape(QFrame.VLine)
-        vsep.setStyleSheet(f"color: {C.BORDER};")
+        vsep.setStyleSheet("color: rgba(255, 255, 255, 15);")
         vsep.setFixedWidth(1)
         bottom_row.addWidget(vsep)
 
-        # Hint panel (wrapped in container for blur effect)
+        # Hint panel
         self.hint_container = QWidget()
         hint_panel = QVBoxLayout(self.hint_container)
         hint_panel.setContentsMargins(0, 0, 0, 0)
         hint_panel.setSpacing(3)
         hint_title = QLabel(
             f"<font color='{C.GREEN_T}' style='font-family:Consolas;"
-            f"font-size:11px;letter-spacing:2px;'>▸ YOUR ANALYSIS</font>")
+            f"font-size:11px;letter-spacing:2px;'>YOUR ANALYSIS</font>")
         hint_title.setTextFormat(Qt.RichText)
         hint_panel.addWidget(hint_title)
         hint_panel.addWidget(self.hint_root_stats)
@@ -1674,11 +1639,11 @@ class Connect4GUI(QWidget):
 
         main_layout.addLayout(bottom_row)
 
-        # ── Window size ─────────────────────────────────────────────────────
+        # Window size
         total_w = self.board.width() + 320 + 48
         self.setFixedSize(total_w, 960)
 
-        # ── MoveLog overlay drawer ──────────────────────────────────────────
+        # MoveLog overlay drawer
         self._build_log_drawer()
 
         # ── Timers ──────────────────────────────────────────────────────────
@@ -1699,28 +1664,23 @@ class Connect4GUI(QWidget):
         self.param_timer.setSingleShot(True)
         self.param_timer.timeout.connect(self._update_search_params)
 
-        # Scan-line timer for AI thinking
         self.scan_timer = QTimer()
         self.scan_timer.timeout.connect(self._step_scan)
 
-        # Continuous background MCTS search worker
         self.worker = ContinuousSearchWorker()
         self.worker.progress.connect(self._on_progress)
         self.worker.ai_ready.connect(self._on_ai_ready)
-        self.worker.start()  # starts in paused state
+        self.worker.start()
 
         self._history = []
 
-        # ── Load model ──────────────────────────────────────────────────────
         self._reload_model()
 
         # ── Connect signals ─────────────────────────────────────────────────
-        # Model changes → full reload + restart
         _model_delayed = lambda _=None: self.settings_timer.start(400)
         self.console.network_cb.currentIndexChanged.connect(_model_delayed)
         self.console.model_type_cb.currentIndexChanged.connect(_model_delayed)
 
-        # Search params → live setter (no tree destruction)
         _param_delayed = lambda _=None: self.param_timer.start(150)
         self.console.n_playout_spin.valueChanged.connect(self._on_sims_changed)
         self.console.c_init_sl.valueChanged.connect(_param_delayed)
@@ -1750,30 +1710,57 @@ class Connect4GUI(QWidget):
         self.worker.wait()
         super().closeEvent(event)
 
-    # ── Window background with grid ─────────────────────────────────────────
+    # ── Window background — gradient + decorative orbs ───────────────────────
     def paintEvent(self, event):
         qp = QPainter(self)
-        qp.fillRect(self.rect(), QColor(C.BG))
-        # Subtle crosshair grid
-        qp.setPen(QPen(QColor(0, 229, 255, 6), 1))
-        for x in range(0, self.width(), 30):
-            qp.drawLine(x, 0, x, self.height())
-        for y in range(0, self.height(), 30):
-            qp.drawLine(0, y, self.width(), y)
-        # Window corner brackets
-        r = QRectF(self.rect()).adjusted(4, 4, -4, -4)
-        _draw_corner_brackets(qp, r, size=24, color=C.CYAN_CLR, width=1)
+        w, h = self.width(), self.height()
+
+        # Base gradient: deep navy → dark purple → deep navy
+        bg = QLinearGradient(0, 0, w, h)
+        bg.setColorAt(0.0, QColor(11, 11, 30))
+        bg.setColorAt(0.4, QColor(18, 14, 45))
+        bg.setColorAt(0.7, QColor(15, 12, 38))
+        bg.setColorAt(1.0, QColor(11, 11, 30))
+        qp.fillRect(self.rect(), bg)
+
+        # Decorative orbs — colored radial gradients
+        # Purple orb (top-left)
+        orb1 = QRadialGradient(w * 0.15, h * 0.2, w * 0.35)
+        orb1.setColorAt(0, QColor(124, 91, 245, 28))
+        orb1.setColorAt(0.5, QColor(124, 91, 245, 10))
+        orb1.setColorAt(1, QColor(124, 91, 245, 0))
+        qp.fillRect(self.rect(), orb1)
+
+        # Sky-blue orb (bottom-right)
+        orb2 = QRadialGradient(w * 0.85, h * 0.75, w * 0.3)
+        orb2.setColorAt(0, QColor(56, 189, 248, 22))
+        orb2.setColorAt(0.5, QColor(56, 189, 248, 8))
+        orb2.setColorAt(1, QColor(56, 189, 248, 0))
+        qp.fillRect(self.rect(), orb2)
+
+        # Pink orb (center-right)
+        orb3 = QRadialGradient(w * 0.7, h * 0.12, w * 0.2)
+        orb3.setColorAt(0, QColor(236, 72, 153, 18))
+        orb3.setColorAt(0.5, QColor(236, 72, 153, 6))
+        orb3.setColorAt(1, QColor(236, 72, 153, 0))
+        qp.fillRect(self.rect(), orb3)
+
+        # Subtle dot pattern
+        qp.setPen(Qt.NoPen)
+        qp.setBrush(QColor(255, 255, 255, 3))
+        for x in range(0, w, 50):
+            for y in range(0, h, 50):
+                qp.drawEllipse(QPointF(x, y), 0.5, 0.5)
 
     # ═══════════════════════════════════════════════════════════════════════
     # MoveLog Drawer (overlay)
     # ═══════════════════════════════════════════════════════════════════════
 
     def _build_log_drawer(self):
-        """Create an overlay panel for MoveLog, hidden by default."""
         d = QFrame(self)
         d.setStyleSheet(
-            f"QFrame {{ background: {C.SURFACE}; "
-            f"border-left: 1px solid {C.BORDER2}; }}")
+            "QFrame { background: rgba(16, 14, 40, 230); "
+            "border-left: 1px solid rgba(255, 255, 255, 15); }")
         d.setFixedWidth(260)
         lay = QVBoxLayout(d)
         lay.setContentsMargins(10, 10, 10, 10)
@@ -1781,16 +1768,16 @@ class Connect4GUI(QWidget):
 
         hdr = QHBoxLayout()
         title = QLabel(
-            f"<font color='{C.CYAN}' style='font-family:Consolas;"
-            f"font-size:11px;letter-spacing:2px;'>▸ MOVE LOG</font>")
+            f"<font color='{C.ACCENT}' style='font-family:Consolas;"
+            f"font-size:11px;letter-spacing:2px;'>MOVE LOG</font>")
         title.setTextFormat(Qt.RichText)
         hdr.addWidget(title)
         hdr.addStretch()
-        close_btn = QPushButton("✕")
+        close_btn = QPushButton("\u2715")
         close_btn.setFixedSize(24, 24)
         close_btn.setStyleSheet(
             f"QPushButton {{ border:none; color:{C.DIM}; font-size:14px; }}"
-            f"QPushButton:hover {{ color:{C.CYAN}; }}")
+            f"QPushButton:hover {{ color:{C.ACCENT}; }}")
         close_btn.clicked.connect(self._toggle_log)
         hdr.addWidget(close_btn)
         lay.addLayout(hdr)
@@ -1854,7 +1841,6 @@ class Connect4GUI(QWidget):
         self._start_game()
 
     def _update_search_params(self):
-        """Push search parameters to the live MCTS tree (no rebuild)."""
         self.worker.pause_and_wait()
         m = self.az_player.mcts
         m.set_c_init(_sv(self.console.c_init_sl))
@@ -1866,7 +1852,6 @@ class Connect4GUI(QWidget):
         m.set_mlh_params(_sv(self.console.mlh_slope_sl),
                          _sv(self.console.mlh_cap_sl),
                          _sv(self.console.mlh_thr_sl))
-        # Cache size — recreate Python-side cache only
         new_cache = int(_sv(self.console.cache_sl))
         old_cache = getattr(m, 'cache_size', 0) or 0
         if new_cache != old_cache:
@@ -1911,12 +1896,10 @@ class Connect4GUI(QWidget):
         self._update_analysis()
         self._update_turn_label()
 
-        # Reset pause state
         self._search_paused = False
         self.pause_btn.setChecked(False)
         self.pause_btn.setText("PAUSE")
 
-        # Start continuous search immediately
         is_ai_first = (self.env.turn != self.player_color)
         if is_ai_first:
             self._start_scan()
@@ -1930,11 +1913,10 @@ class Connect4GUI(QWidget):
             self.status.set_turn("YOUR TURN", color)
             self.board.interactive = True
         else:
-            self.status.set_turn("AI ACTIVE", C.CYAN)
+            self.status.set_turn("AI ACTIVE", C.ACCENT)
             self.board.interactive = False
 
     def _update_analysis(self):
-        """Update status panel NN WDL and steps from network forward pass."""
         with torch.no_grad():
             state = self.env.current_state()
             t = torch.from_numpy(state).float().to(self.net.device).unsqueeze(0)
@@ -1955,7 +1937,6 @@ class Connect4GUI(QWidget):
             self.status.set_nn_steps(expected)
 
     def _update_status_mcts(self, stats_0):
-        """Update status panel primary WDL/M from MCTS root stats."""
         d = float(stats_0['root_D'])
         p1w = float(stats_0['root_P1W'])
         p2w = float(stats_0['root_P2W'])
@@ -1988,7 +1969,6 @@ class Connect4GUI(QWidget):
 
     # ── Continuous search helpers ──────────────────────────────────────────
     def _resume_search(self, is_ai_turn):
-        """Set worker position from current env state and resume."""
         p = self.az_player
         board = self.env.board[np.newaxis, ...]
         turns = np.array([self.env.turn], dtype=np.int32)
@@ -2019,7 +1999,6 @@ class Connect4GUI(QWidget):
         if self._hint_visible:
             self.hint_blur.setBlurRadius(0)
             self.hint_blur.setEnabled(False)
-            # Restore overlay from current hint stats
             s = self.hint_root_stats
             if s.visits is not None and s.root_n > 0:
                 total = s.visits.sum()
@@ -2040,11 +2019,9 @@ class Connect4GUI(QWidget):
         self.hint_child_table.update()
 
     def _on_sims_changed(self, _=None):
-        """Handle user changing the sims threshold (no MCTS recreation)."""
         new_thr = self.console.n_playout_spin.value()
         self.worker.pause_and_wait()
         self.worker._threshold = new_thr
-        # If AI turn and already past new threshold → act immediately
         if self.worker._is_ai_turn and not self.worker._ai_acted:
             raw = self.az_player.mcts.get_root_stats()
             root_n = float(raw['root_N'][0])
@@ -2062,12 +2039,10 @@ class Connect4GUI(QWidget):
 
     # ── Continuous search callbacks ────────────────────────────────────────
     def _on_progress(self, stats_0, visits):
-        """Periodic update from worker — refresh the live stats panel."""
         if self.animating:
             return
         self._update_status_mcts(stats_0)
         if self.env.turn != self.player_color:
-            # AI thinking — update AI panel live
             self.board.overlay_data = None
             ai_turn = self.env.turn
             self.ai_root_stats.set_data(stats_0, chosen=-1, ai_turn=ai_turn)
@@ -2075,13 +2050,11 @@ class Connect4GUI(QWidget):
             elapsed = time.time() - self.worker._t0
             self.status.set_thinking(elapsed)
         else:
-            # Human turn — update hint panel live
             human_turn = self.env.turn
             best = int(np.argmax(visits))
             self.hint_root_stats.set_data(stats_0, chosen=best,
                                           ai_turn=human_turn)
             self.hint_child_table.update()
-            # Feed board overlay (only if hint visible)
             if self._hint_visible:
                 total = visits.sum()
                 if total > 0:
@@ -2097,22 +2070,18 @@ class Connect4GUI(QWidget):
         self.board.update()
 
     def _on_ai_ready(self, stats_0, visits, elapsed):
-        """Worker reached threshold — AI picks its action."""
-        self.worker.pause_and_wait()          # already auto-paused
+        self.worker.pause_and_wait()
         self.status.set_thinking(elapsed)
         self._stop_scan()
 
         ai_turn = self.env.turn
         action = int(np.argmax(visits))
 
-        # Final AI stats with chosen action highlighted
         self.ai_root_stats.set_data(stats_0, chosen=action, ai_turn=ai_turn)
         self.ai_child_table.update()
 
-        # Prune tree → root is now human's position
         self.az_player.mcts.prune_roots(np.array([action], dtype=np.int32))
 
-        # Extract hint from pruned tree
         hint_raw = self.az_player.mcts.get_root_stats()
         hint_s0 = {}
         for k, v in hint_raw.items():
@@ -2125,7 +2094,6 @@ class Connect4GUI(QWidget):
             self.hint_root_stats.set_data(hint_s0, chosen=best_hint,
                                           ai_turn=human_turn)
             self._update_status_mcts(hint_s0)
-            # Set board overlay from hint data (only if hint visible)
             if self._hint_visible:
                 total = hint_v.sum()
                 if total > 0:
@@ -2141,14 +2109,12 @@ class Connect4GUI(QWidget):
             self.board.overlay_data = None
         self.hint_child_table.update()
 
-        # Compute next board (env hasn't stepped yet, but tree already pruned)
         env_copy = self.env.copy()
         env_copy.step(action)
         next_board = env_copy.board[np.newaxis, ...]
         next_turns = np.array([env_copy.turn], dtype=np.int32)
         threshold = self.console.n_playout_spin.value()
 
-        # Resume worker on human's position during animation
         if not env_copy.done():
             self.worker.set_position(self.az_player.mcts, self.az_player.pv_fn,
                                      next_board, next_turns,
@@ -2156,7 +2122,6 @@ class Connect4GUI(QWidget):
             if not self._search_paused:
                 self.worker.resume()
 
-        # Animate piece drop
         row = self.board.find_drop_row(action)
         if row >= 0:
             self.board.last_move = (row, action)
@@ -2165,7 +2130,6 @@ class Connect4GUI(QWidget):
                              lambda a=action: self._after_ai_anim(a))
 
     def _after_ai_anim(self, action):
-        """Called after AI's drop animation finishes."""
         current_player = self.env.turn
         self.env.step(action)
         self.move_count += 1
@@ -2179,10 +2143,8 @@ class Connect4GUI(QWidget):
             return
 
         self._update_turn_label()
-        # Worker already running for hint since _on_ai_ready
 
     def _after_human_anim(self, col):
-        """Called after human's drop animation finishes."""
         current_player = self.env.turn
         self.az_player.mcts.prune_roots(np.array([col], dtype=np.int32))
         self.env.step(col)
@@ -2247,13 +2209,13 @@ class Connect4GUI(QWidget):
         if not self._history or self.animating:
             return
         if self.env.turn != self.player_color:
-            return                            # can't undo while AI is moving
+            return
         self.worker.pause_and_wait()
         self._stop_scan()
         saved_env, saved_last, saved_count, saved_ai, saved_hint, saved_log = self._history.pop()
         self.env = saved_env
         self.board.env = saved_env
-        self.az_player.mcts.reset_env(0)      # tree invalidated by undo
+        self.az_player.mcts.reset_env(0)
         self.board.last_move = saved_last
         self.board.win_cells = None
         self.board.anim_row = -1
@@ -2270,7 +2232,6 @@ class Connect4GUI(QWidget):
         self.undo_btn.setEnabled(bool(self._history))
         self._update_analysis()
         self._update_turn_label()
-        # Resume continuous search from restored position
         if not self.env.done():
             is_ai = (self.env.turn != self.player_color)
             if is_ai:
