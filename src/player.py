@@ -219,9 +219,9 @@ class AlphaZeroPlayer(Player):
 
         self.mcts.batch_playout(self.pv_fn, current_boards, turns)
         visits = self.mcts.get_visits_count()
-        # 获取根节点 WDL 分布（当前落子方视角）
+        # 获取根节点 WDL 分布（绝对视角：draw, p1_win, p2_win）
         root_stats = self.mcts.get_root_stats()
-        root_wdls = np.stack([root_stats['root_W'], root_stats['root_D'], root_stats['root_L']], axis=1)  # (n_envs, 3)
+        root_wdls = np.stack([root_stats['root_D'], root_stats['root_P1W'], root_stats['root_P2W']], axis=1)  # (n_envs, 3)
 
         batch_actions = []
         batch_probs = []

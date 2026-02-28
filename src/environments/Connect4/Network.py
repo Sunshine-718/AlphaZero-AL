@@ -149,18 +149,9 @@ class CNN(Base):
             t = t.pin_memory().to(self.device, dtype=torch.float32, non_blocking=True)
         else:
             t = t.float()
-        player = t[:, -1, 0, 0].view(-1)
         log_prob, value_log_prob, log_steps = self.forward(t)
-        # Value head outputs: [P(draw), P(p1_win), P(p2_win)]
-        v_prob = value_log_prob.exp()
-        # Convert to current-player perspective: (W, D, L)
-        # player==1:  W=P(p1_win), D=P(draw), L=P(p2_win)
-        # player==-1: W=P(p2_win), D=P(draw), L=P(p1_win)
-        is_p1 = (player > 0).float().unsqueeze(1)  # (batch, 1)
-        w = is_p1 * v_prob[:, 1:2] + (1 - is_p1) * v_prob[:, 2:3]
-        d = v_prob[:, 0:1]
-        l = is_p1 * v_prob[:, 2:3] + (1 - is_p1) * v_prob[:, 1:2]
-        wdl = torch.cat([w, d, l], dim=1)  # (batch, 3)
+        # Value head outputs: [P(draw), P(p1_win), P(p2_win)] — 绝对视角，直接传递
+        wdl = value_log_prob.exp()  # (batch, 3)
 
         steps_prob = log_steps.exp()
         idx = torch.arange(43, dtype=torch.float32, device=self.device)

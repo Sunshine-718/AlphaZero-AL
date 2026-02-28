@@ -43,12 +43,12 @@ class BatchedMCTS:
         turns = turns.astype(np.int32)
 
         for _ in range(self.n_playout):
-            leaf_boards, term_w, term_d, term_l, is_term, leaf_turns = self.mcts.search_batch(current_boards, turns)
+            leaf_boards, term_d, term_p1w, term_p2w, is_term, leaf_turns = self.mcts.search_batch(current_boards, turns)
 
             term_mask = is_term.astype(bool)
-            w_vals = term_w.copy()
             d_vals = term_d.copy()
-            l_vals = term_l.copy()
+            p1w_vals = term_p1w.copy()
+            p2w_vals = term_p2w.copy()
             moves_left = np.zeros(self.batch_size, dtype=np.float32)
 
             # 只对非终局 leaf 调用 NN（或查置换表）
@@ -63,9 +63,10 @@ class BatchedMCTS:
                     self._conv_buf[:n_non_term] = conv
                     non_term_probs, non_term_wdl, non_term_ml = pv_func.predict(self._conv_buf[:n_non_term])
                     probs[non_term_mask] = non_term_probs
-                    w_vals[non_term_mask] = non_term_wdl[:, 0]
-                    d_vals[non_term_mask] = non_term_wdl[:, 1]
-                    l_vals[non_term_mask] = non_term_wdl[:, 2]
+                    # predict() 返回绝对视角 (d, p1w, p2w)
+                    d_vals[non_term_mask] = non_term_wdl[:, 0]
+                    p1w_vals[non_term_mask] = non_term_wdl[:, 1]
+                    p2w_vals[non_term_mask] = non_term_wdl[:, 2]
                     moves_left[non_term_mask] = non_term_ml.flatten()
                 else:
                     # 置换表启用：先查缓存，cache miss 的再批量送 NN
@@ -75,9 +76,9 @@ class BatchedMCTS:
                         if key in self.cache:
                             p, wdl, ml = self.cache.get(key)
                             probs[i] = p
-                            w_vals[i] = wdl[0]
-                            d_vals[i] = wdl[1]
-                            l_vals[i] = wdl[2]
+                            d_vals[i] = wdl[0]
+                            p1w_vals[i] = wdl[1]
+                            p2w_vals[i] = wdl[2]
                             moves_left[i] = ml
                         else:
                             miss_indices.append(i)
@@ -92,9 +93,9 @@ class BatchedMCTS:
                         miss_ml = miss_ml.flatten()
                         for j, i in enumerate(miss_indices):
                             probs[i]  = miss_probs[j]
-                            w_vals[i] = miss_wdl[j, 0]
-                            d_vals[i] = miss_wdl[j, 1]
-                            l_vals[i] = miss_wdl[j, 2]
+                            d_vals[i] = miss_wdl[j, 0]
+                            p1w_vals[i] = miss_wdl[j, 1]
+                            p2w_vals[i] = miss_wdl[j, 2]
                             moves_left[i] = miss_ml[j]
                             key = leaf_boards[i].tobytes() + leaf_turns[i].item().to_bytes(1, 'little', signed=True)
                             self.cache.put(key, (miss_probs[j].copy(), miss_wdl[j].copy(), miss_ml[j].item()))
@@ -102,9 +103,9 @@ class BatchedMCTS:
 
             self.mcts.backprop_batch(
                 np.ascontiguousarray(probs, dtype=np.float32),
-                np.ascontiguousarray(w_vals, dtype=np.float32),
                 np.ascontiguousarray(d_vals, dtype=np.float32),
-                np.ascontiguousarray(l_vals, dtype=np.float32),
+                np.ascontiguousarray(p1w_vals, dtype=np.float32),
+                np.ascontiguousarray(p2w_vals, dtype=np.float32),
                 np.ascontiguousarray(moves_left, dtype=np.float32),
                 is_term
             )
@@ -157,24 +158,24 @@ class BatchedMCTS:
         return counts / counts.sum(axis=1, keepdims=True)
 
     def get_root_stats(self):
-        """返回所有 env 的 root 节点统计信息。
+        """返回所有 env 的 root 节点统计信息（绝对视角）。
 
         Returns:
             dict with keys:
                 'root_N':    (batch_size,)            root 访问次数
-                'root_Q':    (batch_size,)            root Q 值 (W-L)
+                'root_Q':    (batch_size,)            root Q 值（当前落子方视角）
                 'root_M':    (batch_size,)            root 预期剩余步数
-                'root_W':    (batch_size,)            root 胜率
-                'root_D':    (batch_size,)            root 和棋率
-                'root_L':    (batch_size,)            root 败率
+                'root_D':    (batch_size,)            root 和棋率（绝对）
+                'root_P1W':  (batch_size,)            root P1 胜率（绝对）
+                'root_P2W':  (batch_size,)            root P2 胜率（绝对）
                 'N':         (batch_size, action_size)  各 action 子节点访问次数
                 'Q':         (batch_size, action_size)  各 action 子节点 Q 值
                 'prior':     (batch_size, action_size)  各 action NN 先验概率
                 'noise':     (batch_size, action_size)  各 action Dirichlet 噪声
                 'M':         (batch_size, action_size)  各 action 预期剩余步数
-                'W':         (batch_size, action_size)  各 action 子节点胜率
-                'D':         (batch_size, action_size)  各 action 子节点和棋率
-                'L':         (batch_size, action_size)  各 action 子节点败率
+                'D':         (batch_size, action_size)  各 action 和棋率（绝对）
+                'P1W':       (batch_size, action_size)  各 action P1 胜率（绝对）
+                'P2W':       (batch_size, action_size)  各 action P2 胜率（绝对）
         """
         raw = self.mcts.get_all_root_stats()  # (batch_size, 6 + action_size*8)
         B, A = self.batch_size, self.action_size
@@ -183,18 +184,18 @@ class BatchedMCTS:
         children = raw[:, 6:].reshape(B, A, 8)
 
         return {
-            'root_N': root_info[:, 0],
-            'root_Q': root_info[:, 1],
-            'root_M': root_info[:, 2],
-            'root_W': root_info[:, 3],
-            'root_D': root_info[:, 4],
-            'root_L': root_info[:, 5],
-            'N':      children[:, :, 0],
-            'Q':      children[:, :, 1],
-            'prior':  children[:, :, 2],
-            'noise':  children[:, :, 3],
-            'M':      children[:, :, 4],
-            'W':      children[:, :, 5],
-            'D':      children[:, :, 6],
-            'L':      children[:, :, 7],
+            'root_N':   root_info[:, 0],
+            'root_Q':   root_info[:, 1],
+            'root_M':   root_info[:, 2],
+            'root_D':   root_info[:, 3],
+            'root_P1W': root_info[:, 4],
+            'root_P2W': root_info[:, 5],
+            'N':        children[:, :, 0],
+            'Q':        children[:, :, 1],
+            'prior':    children[:, :, 2],
+            'noise':    children[:, :, 3],
+            'M':        children[:, :, 4],
+            'D':        children[:, :, 5],
+            'P1W':      children[:, :, 6],
+            'P2W':      children[:, :, 7],
         }

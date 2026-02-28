@@ -57,18 +57,10 @@ class Base(ABC, nn.Module):
                 # Q-ratio: blend root WDL with one-hot game result
                 if q_ratio > 0:
                     z_onehot = F.one_hot(value_class, 3).float()  # (batch, 3)
-                    # root_wdl: (W_cur, D, L_cur) — 当前落子方视角
-                    # value head classes: 0=draw, 1=p1_win, 2=p2_win
-                    # 需要把 root_wdl 转为绝对视角 (draw, p1_win, p2_win)
-                    player = state[:, -1, 0, 0]  # 1 or -1
-                    is_p1 = (player > 0).float().unsqueeze(1)  # (batch, 1)
-                    p1_win = is_p1 * root_wdl[:, 0:1] + (1 - is_p1) * root_wdl[:, 2:3]
-                    draw   = root_wdl[:, 1:2]
-                    p2_win = is_p1 * root_wdl[:, 2:3] + (1 - is_p1) * root_wdl[:, 0:1]
-                    q_target = torch.cat([draw, p1_win, p2_win], dim=1)  # (batch, 3)
+                    # root_wdl 已经是绝对视角 (draw, p1_win, p2_win)，与 value head class 顺序一致
                     has_q = (root_wdl.sum(dim=1, keepdim=True) > 0).float()
                     eff_q_ratio = q_ratio * has_q
-                    value_target = eff_q_ratio * q_target + (1 - eff_q_ratio) * z_onehot
+                    value_target = eff_q_ratio * root_wdl + (1 - eff_q_ratio) * z_onehot
                     v_loss = -torch.sum(value_target * value_pred, dim=1).mean()
                 else:
                     v_loss = F.nll_loss(value_pred, value_class)
