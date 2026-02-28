@@ -34,12 +34,14 @@ def inspect(net, board=None):
                           [0, 0, 0, 0, 0, 0, 0]])
     with torch.no_grad():
         state0 = board_to_state(board, 1)
-        probs0, value0, _ = net.predict(state0)
-        probs0, value0 = probs0.flatten(), float(value0[0, 0])
+        probs0, wdl0, _ = net.predict(state0)
+        probs0 = probs0.flatten()
+        value0 = float(wdl0[0, 0] - wdl0[0, 2])  # W - L
         board[5, 3] = 1
         state1 = board_to_state(board, -1)
-        probs1, value1, _ = net.predict(state1)
-        probs1, value1 = probs1.flatten(), float(value1[0, 0])
+        probs1, wdl1, _ = net.predict(state1)
+        probs1 = probs1.flatten()
+        value1 = float(wdl1[0, 0] - wdl1[0, 2])  # W - L
     for (idx, pX), (_, pO) in zip(enumerate(probs0), enumerate(probs1)):
         print_row(idx, pX, pO, np.max(probs0), np.max(probs1))
     print(f'State-value X: {value0: .4f}\nState-value O: {value1: .4f}')
@@ -47,7 +49,7 @@ def inspect(net, board=None):
 
 
 def augment(batch):
-    state, prob, winner, steps_to_end = batch
+    state, prob, winner, steps_to_end, root_wdl = batch
 
     state_flipped = torch.flip(state, dims=[3])
     prob_flipped = torch.flip(prob, dims=[1])
@@ -56,8 +58,9 @@ def augment(batch):
     prob = torch.cat([prob, prob_flipped], dim=0)
     winner = torch.cat([winner, winner], dim=0)
     steps_to_end = torch.cat([steps_to_end, steps_to_end], dim=0)
+    root_wdl = torch.cat([root_wdl, root_wdl], dim=0)
 
-    return state, prob, winner, steps_to_end
+    return state, prob, winner, steps_to_end, root_wdl
 
 
 def print_row(action, probX, probO, max_X, max_O):

@@ -39,7 +39,7 @@ g_env.add_argument('-d', '--device', type=str,
 g_mcts = parser.add_argument_group('MCTS Search')
 g_mcts.add_argument('-n', type=int, default=100, help='Number of MCTS simulations per move')
 g_mcts.add_argument('-c', '--c_init', type=float, default=1.4, help='PUCT exploration constant')
-g_mcts.add_argument('--c_base_factor', type=float, default=1000,
+g_mcts.add_argument('--c_base_factor', type=float, default=5,
                      help='PUCT base factor (c_base = n * c_base_factor)')
 g_mcts.add_argument('--fpu_reduction', type=float, default=0.2, help='First-play urgency reduction')
 g_mcts.add_argument('--cache_size', type=int, default=10000, help='LRU transposition table max size')
@@ -88,6 +88,8 @@ g_train.add_argument('--n_epochs', type=int, default=5, help='Training epochs pe
 g_train.add_argument('--policy_lr_scale', type=float, default=0.1,
                       help='Policy head LR multiplier')
 g_train.add_argument('--dropout', type=float, default=0.0, help='Dropout rate')
+g_train.add_argument('--q_ratio', type=float, default=0.0,
+                      help='Q-ratio: blend root WDL with game result for value target (0=pure z, 0.75=Lc0-style)')
 
 # ── Evaluation ────────────────────────────────────────────────────────────────
 g_eval = parser.add_argument_group('Evaluation')
@@ -124,7 +126,8 @@ config = {"lr": args.lr,
           "mlh_slope": args.mlh_slope,
           "mlh_cap": args.mlh_cap,
           "mlh_threshold": args.mlh_threshold,
-          "mlh_warmup_loss": args.mlh_warmup_loss}
+          "mlh_warmup_loss": args.mlh_warmup_loss,
+          "q_ratio": args.q_ratio}
 
 
 def print_config():
@@ -179,6 +182,7 @@ def print_config():
             "n_epochs": args.n_epochs,
             "policy_lr_scale": args.policy_lr_scale,
             "dropout": args.dropout,
+            "q_ratio": args.q_ratio,
         }),
         ("Evaluation", {
             "interval": args.interval,

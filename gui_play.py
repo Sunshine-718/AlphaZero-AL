@@ -21,15 +21,15 @@ ANIMATION_MS        = 30
 # ── MCTS 超参数 ───────────────────────────────────────────────────────────────
 N_PLAYOUT_DEFAULT   = 500       # 每步模拟次数
 C_INIT              = 1.4       # PUCT 探索常数 (UCB = Q + c_puct * P * sqrt(N_parent) / (1+N_child))
-C_BASE              = 500       # PUCT 对数基底 (c_puct = c_init + log((N_parent + c_base + 1) / c_base))
+C_BASE              = 1000       # PUCT 对数基底 (c_puct = c_init + log((N_parent + c_base + 1) / c_base))
 FPU_REDUCTION       = 0.2       # First Play Urgency: 未访问节点的 Q 惩罚系数
-ALPHA               = 0.3       # Dirichlet 噪声 alpha (0=禁用噪声)
-NOISE_EPSILON       = 0.25      # 噪声混合权重 ε: prior = (1-ε)*P + ε*noise (eval 模式下强制为 0)
+ALPHA               = 0       # Dirichlet 噪声 alpha (0=禁用噪声)
+NOISE_EPSILON       = 0      # 噪声混合权重 ε: prior = (1-ε)*P + ε*noise (eval 模式下强制为 0)
 USE_SYMMETRY        = True      # 叶节点随机对称变换增强
 CACHE_SIZE          = 10000     # LRU 置换表大小 (0=禁用)
-MLH_SLOPE           = 0.2       # Moves Left Head 斜率 (0=禁用, LC0 风格: 按 child_M - parent_M 缩放)
-MLH_CAP             = 0.3       # MLH 最大效果上限
-MLH_THRESHOLD       = 0.8       # MLH Q 阈值: |Q| < threshold 时抑制 M_utility (0=无阈值)
+MLH_SLOPE           = 0.1       # Moves Left Head 斜率 (0=禁用, LC0 风格: 按 child_M - parent_M 缩放)
+MLH_CAP             = 0.15       # MLH 最大效果上限
+MLH_THRESHOLD       = 0.2       # MLH Q 阈值: |Q| < threshold 时抑制 M_utility (0=无阈值)
 
 PARAMS_PATH_FMT     = './params/{model_name}_{env_name}_{network}_{model_type}.pt'
 

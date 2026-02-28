@@ -34,7 +34,7 @@ class ResidualBlock(nn.Module):
 
 
 class CNN(Base):
-    def __init__(self, lr, in_dim=3, h_dim=128, out_dim=7, dropout=0.2, device='cpu', num_res_blocks=3, policy_lr_scale=0.3):
+    def __init__(self, lr, in_dim=3, h_dim=64, out_dim=7, dropout=0.2, device='cpu', num_res_blocks=3, policy_lr_scale=0.3):
         super().__init__()
         self.in_dim = in_dim
         self.device = device
@@ -50,36 +50,36 @@ class CNN(Base):
 
         # Dual Policy Heads (one per player)
         self.policy_head_1 = nn.Sequential(
-            nn.Conv2d(h_dim, 2, kernel_size=1, bias=False),
-            nn.BatchNorm2d(2),
+            nn.Conv2d(h_dim, 2, kernel_size=1, bias=True),
             nn.SiLU(inplace=True),
             nn.Flatten(),
+            nn.LayerNorm(2 * 8 * 9),
             nn.Linear(2 * 8 * 9, out_dim),
             nn.LogSoftmax(dim=-1)
         )
         self.policy_head_2 = nn.Sequential(
-            nn.Conv2d(h_dim, 2, kernel_size=1, bias=False),
-            nn.BatchNorm2d(2),
+            nn.Conv2d(h_dim, 2, kernel_size=1, bias=True),
             nn.SiLU(inplace=True),
             nn.Flatten(),
+            nn.LayerNorm(2 * 8 * 9),
             nn.Linear(2 * 8 * 9, out_dim),
             nn.LogSoftmax(dim=-1)
         )
         self.value_head = nn.Sequential(
-            nn.Conv2d(h_dim, 2, kernel_size=1, bias=False),
-            nn.BatchNorm2d(2),
+            nn.Conv2d(h_dim, 2, kernel_size=1, bias=True),
             nn.SiLU(inplace=True),
             nn.Flatten(),
             nn.Linear(2 * 8 * 9, 2 * 8 * 9),
             nn.SiLU(inplace=True),
+            nn.LayerNorm(2 * 8 * 9),
             nn.Linear(2 * 8 * 9, 3),
             nn.LogSoftmax(dim=-1)
         )
         self.steps_head = nn.Sequential(
-            nn.Conv2d(h_dim, 2, kernel_size=1, bias=False),
-            nn.BatchNorm2d(2),
+            nn.Conv2d(h_dim, 2, kernel_size=1, bias=True),
             nn.SiLU(inplace=True),
             nn.Flatten(),
+            nn.LayerNorm(2 * 8 * 9),
             nn.Linear(2 * 8 * 9, 43),
             nn.LogSoftmax(dim=-1)
         )
@@ -98,8 +98,8 @@ class CNN(Base):
             {'params': self.policy_head_2.parameters(), 'lr': lr * policy_lr_scale},
         ], lr=lr, momentum=0.9, weight_decay=1e-4)
         
-        scheduler_warmup = LinearLR(self.opt, start_factor=0.01, total_iters=100)
-        scheduler_train = LinearLR(self.opt, start_factor=1, end_factor=0.1, total_iters=1000)
+        scheduler_warmup = LinearLR(self.opt, start_factor=0.001, total_iters=100)
+        scheduler_train = LinearLR(self.opt, start_factor=1, end_factor=0.01, total_iters=1000)
         self.scheduler = SequentialLR(self.opt, schedulers=[scheduler_warmup, scheduler_train], milestones=[100])
         self.to(self.device)
 
@@ -151,13 +151,21 @@ class CNN(Base):
             t = t.float()
         player = t[:, -1, 0, 0].view(-1)
         log_prob, value_log_prob, log_steps = self.forward(t)
-        value_prob = value_log_prob.exp()
-        value_base = player * (value_prob[:, 1] - value_prob[:, 2])
+        # Value head outputs: [P(draw), P(p1_win), P(p2_win)]
+        v_prob = value_log_prob.exp()
+        # Convert to current-player perspective: (W, D, L)
+        # player==1:  W=P(p1_win), D=P(draw), L=P(p2_win)
+        # player==-1: W=P(p2_win), D=P(draw), L=P(p1_win)
+        is_p1 = (player > 0).float().unsqueeze(1)  # (batch, 1)
+        w = is_p1 * v_prob[:, 1:2] + (1 - is_p1) * v_prob[:, 2:3]
+        d = v_prob[:, 0:1]
+        l = is_p1 * v_prob[:, 2:3] + (1 - is_p1) * v_prob[:, 1:2]
+        wdl = torch.cat([w, d, l], dim=1)  # (batch, 3)
 
         steps_prob = log_steps.exp()
         idx = torch.arange(43, dtype=torch.float32, device=self.device)
         expected_steps = (steps_prob * idx).sum(dim=1)
 
         return (log_prob.exp().cpu().numpy(),
-                value_base.cpu().view(-1, 1).numpy(),
+                wdl.cpu().numpy(),
                 expected_steps.cpu().view(-1, 1).numpy())

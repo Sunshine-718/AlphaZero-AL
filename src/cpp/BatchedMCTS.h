@@ -155,7 +155,9 @@ namespace AlphaZero
             const int8_t *input_boards,
             const int *turns,
             int8_t *output_boards,
-            float *output_term_values,
+            float *output_term_w,
+            float *output_term_d,
+            float *output_term_l,
             uint8_t *output_is_term,
             int *output_turns)
         {
@@ -171,7 +173,9 @@ namespace AlphaZero
                 auto result = mcts_envs[i]->simulate(current_game);
 
                 output_is_term[i] = result.is_terminal ? 1 : 0;
-                output_term_values[i] = result.terminal_value;
+                output_term_w[i] = result.terminal_w;
+                output_term_d[i] = result.terminal_d;
+                output_term_l[i] = result.terminal_l;
                 output_turns[i] = result.board.get_turn();
 
                 std::memcpy(output_boards + offset, result.board.board_data(), BOARD_SIZE);
@@ -188,23 +192,23 @@ namespace AlphaZero
          */
         void backprop_batch(
             const float *policy_logits,
-            const float *values,
+            const float *w_vals,
+            const float *d_vals,
+            const float *l_vals,
             const float *moves_left,
             const uint8_t *is_term)
         {
 #pragma omp parallel for schedule(static)
             for (int i = 0; i < n_envs; ++i)
             {
-                float val = values[i];
-                float ml = moves_left[i];
-
                 std::array<float, ACTION_SIZE> policy;
                 int offset = i * ACTION_SIZE;
                 for (int a = 0; a < ACTION_SIZE; ++a)
                 {
                     policy[a] = policy_logits[offset + a];
                 }
-                mcts_envs[i]->backprop(policy, val, ml, is_term[i] != 0);
+                mcts_envs[i]->backprop(policy, w_vals[i], d_vals[i], l_vals[i],
+                                       moves_left[i], is_term[i] != 0);
             }
         }
 
@@ -255,13 +259,13 @@ namespace AlphaZero
             return all_counts;
         }
 
-        /// 每个环境的 root stats flat 长度：3 (root_N, root_Q, root_M) + ACTION_SIZE × 5
-        static constexpr int STATS_PER_ENV = 3 + ACTION_SIZE * 5;
+        /// 每个环境的 root stats flat 长度：6 (root_N, root_Q, root_M, root_W, root_D, root_L) + ACTION_SIZE × 8
+        static constexpr int STATS_PER_ENV = 6 + ACTION_SIZE * 8;
 
         /**
          * 获取所有环境的根节点统计量，写入 flat 缓冲区。
          *
-         * 每个环境布局：[root_N, root_Q, root_M, a0_N, a0_Q, a0_prior, a0_noise, a0_M, ...]
+         * 每个环境布局：[root_N, root_Q, root_M, root_W, root_D, root_L, a0_N, a0_Q, a0_prior, a0_noise, a0_M, a0_W, a0_D, a0_L, ...]
          *
          * @param out 预分配缓冲区，大小 = n_envs × STATS_PER_ENV
          */

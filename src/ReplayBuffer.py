@@ -13,6 +13,7 @@ class ReplayBuffer:
         self.prob = torch.empty((capacity, action_dim), dtype=torch.float32, device=device)
         self.winner = torch.full((capacity, 1), 0, dtype=torch.int8, device=device)
         self.steps_to_end = torch.full((capacity, 1), 0, dtype=torch.int16, device=device)
+        self.root_wdl = torch.zeros((capacity, 3), dtype=torch.float32, device=device)
         self.replay_ratio = replay_ratio
         self.device = device
         self.current_capacity = capacity
@@ -24,6 +25,7 @@ class ReplayBuffer:
             'prob': self.prob,
             'winner': self.winner,
             'steps_to_end': self.steps_to_end,
+            'root_wdl': self.root_wdl,
             '_ptr': self._ptr,
             'current_capacity': self.current_capacity
         }
@@ -38,6 +40,9 @@ class ReplayBuffer:
             self.winner[:capacity].copy_(state_dict['winner'][:capacity])
             if 'steps_to_end' in state_dict:
                 self.steps_to_end[:capacity].copy_(state_dict['steps_to_end'][:capacity])
+            if 'root_wdl' in state_dict:
+                self.root_wdl[:capacity].copy_(state_dict['root_wdl'][:capacity])
+            # else: root_wdl stays zeros (backward compatible with old data)
             self._ptr = state_dict['_ptr']
         except Exception as e:
             print(e)
@@ -54,6 +59,7 @@ class ReplayBuffer:
         self.prob = torch.empty_like(self.prob)
         self.winner = torch.empty_like(self.winner)
         self.steps_to_end = torch.empty_like(self.steps_to_end)
+        self.root_wdl = torch.zeros_like(self.root_wdl)
         self._ptr = 0
 
     def to(self, device='cpu'):
@@ -61,9 +67,10 @@ class ReplayBuffer:
         self.prob = self.prob.to(device)
         self.winner = self.winner.to(device)
         self.steps_to_end = self.steps_to_end.to(device)
+        self.root_wdl = self.root_wdl.to(device)
         self.device = device
 
-    def store(self, state, prob, winner, steps_to_end=0):
+    def store(self, state, prob, winner, steps_to_end=0, root_wdl=None):
         idx = self._ptr % self.current_capacity
         self._ptr += 1
         if isinstance(state, np.ndarray):
@@ -74,10 +81,16 @@ class ReplayBuffer:
         self.prob[idx] = prob
         self.winner[idx] = int(winner)
         self.steps_to_end[idx] = int(steps_to_end)
+        if root_wdl is not None:
+            if isinstance(root_wdl, np.ndarray):
+                root_wdl = torch.from_numpy(root_wdl).float().to(self.device)
+            self.root_wdl[idx] = root_wdl
+        else:
+            self.root_wdl[idx] = 0
         return idx
 
     def get(self, indices):
-        return self.state[indices].float(), self.prob[indices], self.winner[indices], self.steps_to_end[indices]
+        return self.state[indices].float(), self.prob[indices], self.winner[indices], self.steps_to_end[indices], self.root_wdl[indices]
 
     def sample(self, batch_size):
         total_samples = len(self)

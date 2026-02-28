@@ -92,6 +92,7 @@ class TrainPipeline(ABC):
             prob = dataset.tensors[1].to(self.device).contiguous()
             winner = dataset.tensors[2].to(self.device).contiguous().float()
             steps_to_end = dataset.tensors[3].to(self.device).contiguous().float()
+            root_wdl = dataset.tensors[4].to(self.device).contiguous()
             meta = torch.tensor([state.shape[0], state.shape[1], state.shape[2],
                                  state.shape[3], prob.shape[1]],
                                 dtype=torch.long, device=self.device)
@@ -107,15 +108,17 @@ class TrainPipeline(ABC):
             prob = torch.empty((N, A), dtype=torch.float32, device=self.device)
             winner = torch.empty((N, 1), dtype=torch.float32, device=self.device)
             steps_to_end = torch.empty((N, 1), dtype=torch.float32, device=self.device)
+            root_wdl = torch.empty((N, 3), dtype=torch.float32, device=self.device)
 
         dist.broadcast(state, src=0)
         dist.broadcast(prob, src=0)
         dist.broadcast(winner, src=0)
         dist.broadcast(steps_to_end, src=0)
+        dist.broadcast(root_wdl, src=0)
 
         winner = winner.to(torch.int8)
         steps_to_end = steps_to_end.to(torch.int16)
-        dataset = TensorDataset(state, prob, winner, steps_to_end)
+        dataset = TensorDataset(state, prob, winner, steps_to_end, root_wdl)
         return DataLoader(dataset, self.batch_size, shuffle=True)
 
     def policy_update(self):
@@ -128,7 +131,8 @@ class TrainPipeline(ABC):
         model_for_training = self.ddp_net if self.is_ddp else None
         p_l, v_l, s_l, ent, g_n, f1 = self.net.train_step(
             dataloader, self.module.augment, ddp_model=model_for_training,
-            n_epochs=getattr(self, 'n_epochs', 10))
+            n_epochs=getattr(self, 'n_epochs', 10),
+            q_ratio=getattr(self, 'q_ratio', 0.0))
 
         if self.is_ddp:
             dist.barrier()

@@ -49,7 +49,7 @@ class Game:
         for env in envs:
             env.reset()
             player.mcts.reset_env(envs.index(env))
-        trajectories = [{'states': [], 'actions': [], 'probs': [], 'players': [], 'steps': 0}
+        trajectories = [{'states': [], 'actions': [], 'probs': [], 'players': [], 'root_wdls': [], 'steps': 0}
                         for _ in range(n_games)]
         active_indices = list(range(n_games))
         completed_data = [None] * n_games
@@ -64,7 +64,7 @@ class Game:
                 decay = max(0.0, 1.0 - step / player.noise_steps)
                 eps = player.noise_eps_min + (player.noise_eps_init - player.noise_eps_min) * decay
                 player.mcts.set_noise_epsilon(eps)
-            actions, probs = player.get_batch_action(current_boards, turns, temps)
+            actions, probs, root_wdls = player.get_batch_action(current_boards, turns, temps)
             next_active_indices = []
             for i in active_indices:
                 action = actions[i]
@@ -73,10 +73,11 @@ class Game:
                 traj = trajectories[i]
 
                 state_feature = env.current_state()[0].astype(np.int8)
-                
+
                 traj['states'].append(state_feature)
                 traj['actions'].append(action)
                 traj['probs'].append(prob)
+                traj['root_wdls'].append(root_wdls[i])
                 traj['players'].append(env.turn)
                 traj['steps'] += 1
 
@@ -95,10 +96,11 @@ class Game:
                     steps_to_end = np.arange(T, 0, -1, dtype=np.int32)
 
                     # 此时 states 的 list 元素形状为 (3, 6, 7)，符合 dataset 预期
-                    play_data = list(zip(states, traj['probs'], winner_z, steps_to_end))
-                    # 追加终局状态: steps_to_end=0, prob 全零
+                    play_data = list(zip(states, traj['probs'], winner_z, steps_to_end, traj['root_wdls']))
+                    # 追加终局状态: steps_to_end=0, prob 全零, root_wdl 全零
                     zero_prob = np.zeros_like(traj['probs'][0])
-                    play_data.append((end_state_feature, zero_prob, winner, 0))
+                    zero_wdl = np.zeros(3, dtype=np.float32)
+                    play_data.append((end_state_feature, zero_prob, winner, 0, zero_wdl))
                     completed_data[i] = (winner, tuple(play_data))
                     
                     # 游戏结束，重置该环境的 MCTS 树

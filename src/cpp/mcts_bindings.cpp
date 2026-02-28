@@ -78,7 +78,7 @@ void register_batched_mcts(py::module_ &m, const char *name)
 
         /**
          * Selection 阶段：并行选择叶节点。
-         * 输入当前棋盘状态，返回 (leaf_boards, term_values, is_terminal, leaf_turns)。
+         * 输入当前棋盘状态，返回 (leaf_boards, term_w, term_d, term_l, is_terminal, leaf_turns)。
          * Python 端用返回的叶节点状态调用 NN，再调 backprop_batch() 反向传播。
          */
         .def("search_batch", [](BM &self,
@@ -99,7 +99,9 @@ void register_batched_mcts(py::module_ &m, const char *name)
             for (auto d : Game::Traits::BOARD_SHAPE) out_shape.push_back(d);
 
             py::array_t<int8_t> out_boards(out_shape);
-            py::array_t<float> out_vals(batch_size);
+            py::array_t<float> out_term_w(batch_size);
+            py::array_t<float> out_term_d(batch_size);
+            py::array_t<float> out_term_l(batch_size);
             py::array_t<uint8_t> out_term(batch_size);
             py::array_t<int> out_turns(batch_size);
 
@@ -107,29 +109,37 @@ void register_batched_mcts(py::module_ &m, const char *name)
             int* ptr_turns = static_cast<int*>(buf_turns.ptr);
 
             int8_t* ptr_out_boards = static_cast<int8_t*>(out_boards.request().ptr);
-            float* ptr_out_vals = static_cast<float*>(out_vals.request().ptr);
+            float* ptr_out_tw = static_cast<float*>(out_term_w.request().ptr);
+            float* ptr_out_td = static_cast<float*>(out_term_d.request().ptr);
+            float* ptr_out_tl = static_cast<float*>(out_term_l.request().ptr);
             uint8_t* ptr_out_term = static_cast<uint8_t*>(out_term.request().ptr);
             int* ptr_out_turns = static_cast<int*>(out_turns.request().ptr);
 
             {
                 py::gil_scoped_release release;
-                self.search_batch(ptr_in, ptr_turns, ptr_out_boards, ptr_out_vals, ptr_out_term, ptr_out_turns);
+                self.search_batch(ptr_in, ptr_turns, ptr_out_boards,
+                                  ptr_out_tw, ptr_out_td, ptr_out_tl,
+                                  ptr_out_term, ptr_out_turns);
             }
 
-            return py::make_tuple(out_boards, out_vals, out_term, out_turns); })
+            return py::make_tuple(out_boards, out_term_w, out_term_d, out_term_l, out_term, out_turns); })
 
         /**
          * Backpropagation 阶段：用 NN 评估结果展开叶节点并反向传播。
-         * 接收 policy_logits, values, moves_left, is_terminal 四个批量数组。
+         * 接收 policy_logits, w, d, l, moves_left, is_terminal 六个批量数组。
          */
         .def("backprop_batch", [](BM &self,
                                   py::array_t<float, py::array::c_style | py::array::forcecast> policy_logits,
-                                  py::array_t<float, py::array::c_style | py::array::forcecast> values,
+                                  py::array_t<float, py::array::c_style | py::array::forcecast> w_vals,
+                                  py::array_t<float, py::array::c_style | py::array::forcecast> d_vals,
+                                  py::array_t<float, py::array::c_style | py::array::forcecast> l_vals,
                                   py::array_t<float, py::array::c_style | py::array::forcecast> moves_left,
                                   py::array_t<uint8_t, py::array::c_style | py::array::forcecast> is_term)
              {
             auto buf_pol = policy_logits.request();
-            auto buf_val = values.request();
+            auto buf_w = w_vals.request();
+            auto buf_d = d_vals.request();
+            auto buf_l = l_vals.request();
             auto buf_ml = moves_left.request();
             auto buf_term = is_term.request();
 
@@ -137,9 +147,8 @@ void register_batched_mcts(py::module_ &m, const char *name)
             if (buf_pol.shape[0] != n)
                 throw std::runtime_error("backprop_batch: policy_logits batch size (" + std::to_string(buf_pol.shape[0]) +
                                          ") must match n_envs (" + std::to_string(n) + ")");
-            if (buf_val.size != n)
-                throw std::runtime_error("backprop_batch: values size (" + std::to_string(buf_val.size) +
-                                         ") must match n_envs (" + std::to_string(n) + ")");
+            if (buf_w.size != n || buf_d.size != n || buf_l.size != n)
+                throw std::runtime_error("backprop_batch: w/d/l size must match n_envs (" + std::to_string(n) + ")");
             if (buf_ml.size != n)
                 throw std::runtime_error("backprop_batch: moves_left size (" + std::to_string(buf_ml.size) +
                                          ") must match n_envs (" + std::to_string(n) + ")");
@@ -148,13 +157,15 @@ void register_batched_mcts(py::module_ &m, const char *name)
                                          ") must match n_envs (" + std::to_string(n) + ")");
 
             float* ptr_pol = static_cast<float*>(buf_pol.ptr);
-            float* ptr_val = static_cast<float*>(buf_val.ptr);
+            float* ptr_w = static_cast<float*>(buf_w.ptr);
+            float* ptr_d = static_cast<float*>(buf_d.ptr);
+            float* ptr_l = static_cast<float*>(buf_l.ptr);
             float* ptr_ml = static_cast<float*>(buf_ml.ptr);
             uint8_t* ptr_term = static_cast<uint8_t*>(buf_term.ptr);
 
             {
                 py::gil_scoped_release release;
-                self.backprop_batch(ptr_pol, ptr_val, ptr_ml, ptr_term);
+                self.backprop_batch(ptr_pol, ptr_w, ptr_d, ptr_l, ptr_ml, ptr_term);
             } })
 
         // ── 纯 MCTS（Random Rollout）─────────────────────────────────
@@ -195,8 +206,9 @@ void register_batched_mcts(py::module_ &m, const char *name)
 
         /**
          * 获取所有环境的根节点统计量。
-         * 返回 shape (n_envs, 3 + action_size*5) 的 float32 数组。
-         * 每行布局：[root_N, root_Q, root_M, a0_N, a0_Q, a0_prior, a0_noise, a0_M, ...]
+         * 返回 shape (n_envs, 6 + action_size*8) 的 float32 数组。
+         * 每行布局：[root_N, root_Q, root_M, root_W, root_D, root_L,
+         *            a0_N, a0_Q, a0_prior, a0_noise, a0_M, a0_W, a0_D, a0_L, ...]
          */
         .def("get_all_root_stats", [](BM &self)
              {
@@ -206,7 +218,7 @@ void register_batched_mcts(py::module_ &m, const char *name)
             float* ptr = static_cast<float*>(out.request().ptr);
             self.get_all_root_stats(ptr);
             return out; },
-             "Returns root node stats: shape (n_envs, 3 + action_size*5)")
+             "Returns root node stats: shape (n_envs, 6 + action_size*8)")
 
         // ── 游戏维度常量（class-level 只读属性）──────────────────────────
         .def_property_readonly_static("action_size",

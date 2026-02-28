@@ -22,7 +22,10 @@ namespace AlphaZero
         std::array<int32_t, ACTION_SIZE> children;  ///< 子节点索引数组，-1 表示未创建
 
         int n_visits = 0;       ///< 访问次数 N
-        float Q = 0.0f;         ///< 状态价值的运行均值（当前落子方视角）
+        float Q = 0.0f;         ///< 状态价值的运行均值 W-L（当前落子方视角）
+        float W = 0.0f;         ///< 胜率运行均值（当前落子方视角）
+        float D = 0.0f;         ///< 和棋率运行均值
+        float L = 0.0f;         ///< 败率运行均值（当前落子方视角）
         float M = 0.0f;         ///< 预期剩余步数的运行均值（Moves Left Head）
         float prior = 0.0f;     ///< 神经网络策略先验概率 P(a)
         float noise = 0.0f;     ///< Dirichlet 噪声（仅根节点的子节点有效）
@@ -43,6 +46,9 @@ namespace AlphaZero
             children.fill(-1);
             n_visits = 0;
             Q = 0.0f;
+            W = 0.0f;
+            D = 0.0f;
+            L = 0.0f;
             M = 0.0f;
             noise = 0.0f;
             is_expanded = false;
