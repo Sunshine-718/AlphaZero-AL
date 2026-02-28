@@ -36,13 +36,15 @@ class BatchedMCTS:
         # 预分配 board 转换 buffer，避免 MCTS 热循环里频繁 malloc
         self._conv_buf = np.zeros((batch_size, 3, *self.board_shape), dtype=np.float32)
 
-    def batch_playout(self, pv_func, current_boards, turns):
+    def batch_playout(self, pv_func, current_boards, turns, n_playout=None):
         """ current_boards: shape [batch_size, *board_shape], X: 1, O: -1
-            turns: shape [batch_size, ], 1, -1"""
+            turns: shape [batch_size, ], 1, -1
+            n_playout: override self.n_playout if provided"""
         current_boards = current_boards.astype(np.int8)
         turns = turns.astype(np.int32)
+        n = n_playout if n_playout is not None else self.n_playout
 
-        for _ in range(self.n_playout):
+        for _ in range(n):
             leaf_boards, term_d, term_p1w, term_p2w, is_term, leaf_turns = self.mcts.search_batch(current_boards, turns)
 
             term_mask = is_term.astype(bool)
@@ -136,6 +138,21 @@ class BatchedMCTS:
 
     def set_mlh_params(self, slope, cap, threshold):
         self.mcts.set_mlh_params(slope, cap, threshold)
+
+    def set_c_init(self, val):
+        self.mcts.set_c_init(val)
+
+    def set_c_base(self, val):
+        self.mcts.set_c_base(val)
+
+    def set_alpha(self, val):
+        self.mcts.set_alpha(val)
+
+    def set_fpu_reduction(self, val):
+        self.mcts.set_fpu_reduction(val)
+
+    def set_use_symmetry(self, val):
+        self.mcts.set_use_symmetry(val)
 
     def reset_env(self, index):
         self.mcts.reset_env(index)

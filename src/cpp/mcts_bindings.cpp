@@ -55,6 +55,17 @@ void register_batched_mcts(py::module_ &m, const char *name)
              py::arg("slope"), py::arg("cap"), py::arg("threshold"),
              "Set Moves Left Head parameters (slope, cap, threshold)")
 
+        .def("set_c_init", &BM::set_c_init, py::arg("val"),
+             "Set PUCT c_init for all environments")
+        .def("set_c_base", &BM::set_c_base, py::arg("val"),
+             "Set PUCT c_base for all environments")
+        .def("set_alpha", &BM::set_alpha, py::arg("val"),
+             "Set Dirichlet alpha for all environments")
+        .def("set_fpu_reduction", &BM::set_fpu_reduction, py::arg("val"),
+             "Set FPU reduction for all environments")
+        .def("set_use_symmetry", &BM::set_use_symmetry, py::arg("val"),
+             "Set symmetry augmentation for all environments")
+
         // ── 树管理 ──────────────────────────────────────────────────────
         .def("reset_env", &BM::reset_env,
              "Reset MCTS tree for specified environment index")

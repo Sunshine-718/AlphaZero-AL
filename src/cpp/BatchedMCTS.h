@@ -126,6 +126,33 @@ namespace AlphaZero
             }
         }
 
+        /* ── 运行时参数 setter（不销毁搜索树） ──────────────────── */
+
+        void set_c_init(float val)
+        {
+            for (auto &m : mcts_envs) m->c_init = val;
+        }
+
+        void set_c_base(float val)
+        {
+            for (auto &m : mcts_envs) m->c_base = val;
+        }
+
+        void set_alpha(float val)
+        {
+            for (auto &m : mcts_envs) m->alpha = val;
+        }
+
+        void set_fpu_reduction(float val)
+        {
+            for (auto &m : mcts_envs) m->fpu_reduction = val;
+        }
+
+        void set_use_symmetry(bool val)
+        {
+            for (auto &m : mcts_envs) m->use_symmetry = val;
+        }
+
         /**
          * 批量树剪枝：每局选择实际落子的动作，将对应子树提升为新根节点。
          * @param actions 每局的落子动作，长度 n_envs
