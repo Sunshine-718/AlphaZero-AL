@@ -36,7 +36,7 @@ parser.add_argument('-B', '--batch_size', type=int, default=100,
 parser.add_argument('--cache_size', type=int, default=0,
                     help='Transposition table size (0=disabled)')
 parser.add_argument('--retry', type=int, default=3, help='Max connection retries')
-parser.add_argument('--actor', type=str, default='best',
+parser.add_argument('--actor', type=str, default='current',
                     help='Which weight to load (best/current)')
 
 args = parser.parse_args()

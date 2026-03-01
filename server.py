@@ -56,13 +56,13 @@ g_noise.add_argument('--noise_eps_min', type=float, default=0.1, help='Minimum n
 
 # ── Moves Left Head (MLH) ────────────────────────────────────────────────────
 g_mlh = parser.add_argument_group('Moves Left Head (MLH)')
-g_mlh.add_argument('--mlh_slope', type=float, default=0.0,
+g_mlh.add_argument('--mlh_slope', type=float, default=0.1,
                     help='MLH slope for MCTS (0=disabled, LC0-style: scales child_M - parent_M)')
 g_mlh.add_argument('--mlh_cap', type=float, default=0.2,
                     help='MLH max effect cap: clamp M_utility to [-cap, cap]')
 g_mlh.add_argument('--mlh_threshold', type=float, default=0.,
                     help='MLH Q threshold: suppress M_utility when |Q| < threshold (0=no threshold)')
-g_mlh.add_argument('--mlh_warmup_loss', type=float, default=0.0,
+g_mlh.add_argument('--mlh_warmup_loss', type=float, default=2.5,
                     help='Steps-head loss threshold to activate MLH (0=disabled, MLH active from start)')
 
 # ── Self-play ─────────────────────────────────────────────────────────────────
@@ -85,12 +85,12 @@ g_train.add_argument('--q_size', type=int, default=100,
 g_train.add_argument('--replay_ratio', type=float, default=0.1,
                       help='Fraction of buffer sampled per training step')
 g_train.add_argument('--n_epochs', type=int, default=5, help='Training epochs per update')
-g_train.add_argument('--policy_lr_scale', type=float, default=0.1,
+g_train.add_argument('--policy_lr_scale', type=float, default=0.3,
                       help='Policy head LR multiplier')
-g_train.add_argument('--dropout', type=float, default=0.0, help='Dropout rate')
-g_train.add_argument('--q_ratio', type=float, default=0.0,
+g_train.add_argument('--dropout', type=float, default=0.1, help='Dropout rate')
+g_train.add_argument('--q_ratio', type=float, default=0.75,
                       help='Q-ratio: blend root WDL with game result for value target (0=pure z, 0.75=Lc0-style)')
-g_train.add_argument('--value_decay', type=float, default=1.0,
+g_train.add_argument('--value_decay', type=float, default=0.99,
                       help='Game-length discount γ for value targets: target = γ^steps × z + (1-γ^steps) × uniform '
                            '(1.0=no scaling, 0.99=moderate, 0.97=aggressive)')
 
