@@ -80,8 +80,8 @@ def augment(batch):
 
     state = torch.cat(states_all, dim=0)
     prob = torch.cat(probs_all, dim=0)
-    winner = winner.repeat(8)
-    steps_to_end = steps_to_end.repeat(8)
+    winner = winner.repeat(8, 1)
+    steps_to_end = steps_to_end.repeat(8, 1)
     root_wdl = root_wdl.repeat(8, 1)
 
     return state, prob, winner, steps_to_end, root_wdl

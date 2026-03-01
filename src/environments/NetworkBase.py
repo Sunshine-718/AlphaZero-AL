@@ -55,6 +55,7 @@ class Base(ABC, nn.Module):
                 mask = (steps_target != 0).float()
                 self.opt.zero_grad()
                 log_p_pred, value_pred, steps_pred = model(state)
+                steps_target = steps_target.clamp(0, steps_pred.shape[-1] - 1)
 
                 if use_soft:
                     z_target = F.one_hot(value_class, 3).float()
