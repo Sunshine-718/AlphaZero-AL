@@ -998,7 +998,7 @@ class ChildStatsTable(QWidget):
     """HUD table showing per-action child node statistics."""
     ROW_H = 16
     HDR_H = 18
-    COLS = ['Col', 'N', 'N%', 'Q', 'W%', 'D%', 'L%', 'M', 'P']
+    COLS = ['Col', 'N', 'N%', 'Q', 'W%', 'D%', 'L%', 'M', 'P', 'N/P']
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1036,8 +1036,8 @@ class ChildStatsTable(QWidget):
         total_v = s.visits.sum()
 
         # Column widths — proportional to available width
-        #  Col  N     N%    Q      W%    D%    L%    M     P
-        ratios = [0.06, 0.14, 0.09, 0.11, 0.11, 0.10, 0.11, 0.11, 0.10]
+        #  Col  N     N%    Q      W%    D%    L%    M     P     N/P
+        ratios = [0.05, 0.12, 0.08, 0.10, 0.10, 0.09, 0.10, 0.10, 0.09, 0.10]
         pad = 6
         usable = w - pad * 2
         col_x = [pad]
@@ -1109,6 +1109,8 @@ class ChildStatsTable(QWidget):
                     C.YEL_HEX if n > 0 else C.MUTED),
                 (f"{prior:.1f}" if prior > 0.05 else '<.1',
                     C.MAGENTA if prior > 5 else C.DIM),
+                (f"{n / (s.prior[idx] * 100):.0f}" if (n > 0 and s.prior[idx] > 1e-6) else '-',
+                    C.TEXT if n > 0 else C.MUTED),
             ]
 
             for ci, (txt, color) in enumerate(cells):
