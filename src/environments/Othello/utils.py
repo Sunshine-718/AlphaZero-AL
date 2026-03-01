@@ -68,21 +68,25 @@ def _apply_sym_policy(policy, sym_id):
 
 
 def augment(batch):
-    """对训练数据应用全部 8 种 D4 对称变换进行数据增强"""
+    """对训练数据应用保持初始局面不变的 4 种对称变换进行数据增强。
+
+    Othello 初始局面只在 Klein 四元群 {恒等, 180°旋转, 主对角线翻转, 副对角线翻转} 下不变。
+    90°/270° 旋转和水平/垂直翻转会交换初始黑白子位置，不是合法对称。
+    """
     state, prob, winner, steps_to_end, root_wdl = batch
 
     states_all = [state]
     probs_all = [prob]
 
-    for sym_id in range(1, 8):
+    for sym_id in (2, 6, 7):  # 180°旋转, 主对角线翻转, 副对角线翻转
         states_all.append(_apply_sym_state(state, sym_id))
         probs_all.append(_apply_sym_policy(prob, sym_id))
 
     state = torch.cat(states_all, dim=0)
     prob = torch.cat(probs_all, dim=0)
-    winner = winner.repeat(8, 1)
-    steps_to_end = steps_to_end.repeat(8, 1)
-    root_wdl = root_wdl.repeat(8, 1)
+    winner = winner.repeat(4, 1)
+    steps_to_end = steps_to_end.repeat(4, 1)
+    root_wdl = root_wdl.repeat(4, 1)
 
     return state, prob, winner, steps_to_end, root_wdl
 
