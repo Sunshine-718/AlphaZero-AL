@@ -16,7 +16,7 @@ import swanlab
 class TrainPipeline(ABC):
     def __init__(self, env_name='Connect4', model='CNN', name='AZ', config=None,
                  rank=0, world_size=1, local_rank=0):
-        collection = ('Connect4', )
+        collection = ('Connect4', 'Othello')
         if env_name not in collection:
             raise ValueError(f'Environment does not exist, available env: {collection}')
         self.rank = rank
@@ -66,6 +66,7 @@ class TrainPipeline(ABC):
                                          alpha=self.dirichlet_alpha, is_selfplay=1,
                                          cache_size=self.cache_size, eps=self.eps,
                                          use_symmetry=getattr(self, 'use_symmetry', True),
+                                         game_name=self.env_name,
                                          mlh_slope=self.mlh_slope,
                                          mlh_cap=getattr(self, 'mlh_cap', 0.2),
                                          mlh_threshold=getattr(self, 'mlh_threshold', 0.8),
@@ -149,12 +150,13 @@ class TrainPipeline(ABC):
         az = AlphaZeroPlayer(self.net, c_init=self.c_puct, n_playout=self.n_playout,
                              alpha=None, is_selfplay=False,
                              use_symmetry=getattr(self, 'use_symmetry', True),
+                             game_name=self.env_name,
                              mlh_slope=getattr(self, 'mlh_slope', 0.0),
                              mlh_cap=getattr(self, 'mlh_cap', 0.2),
                              mlh_threshold=getattr(self, 'mlh_threshold', 0.8),
                              value_decay=getattr(self, 'value_decay', 1.0))
         az.eval()
-        mcts = MCTSPlayer(1, self.pure_mcts_n_playout)
+        mcts = MCTSPlayer(1, self.pure_mcts_n_playout, game_name=self.env_name)
 
         w1 = self.game.play(player1=az, player2=mcts, show=0)
         self.elo.update(1 if w1 == 1 else 0.5 if w1 == 0 else 0)

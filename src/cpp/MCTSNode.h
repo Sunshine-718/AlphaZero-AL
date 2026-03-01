@@ -1,5 +1,3 @@
-#ifndef F7A41D12_1F96_492F_AB14_DA76ADFB91E6
-#define F7A41D12_1F96_492F_AB14_DA76ADFB91E6
 #pragma once
 #include <array>
 #include <cmath>
@@ -31,9 +29,7 @@ namespace AlphaZero
         float noise = 0.0f;     ///< Dirichlet 噪声（仅根节点的子节点有效）
         bool is_expanded = false;   ///< 是否已展开（子节点已创建）
 
-        MCTSNode() {
-            children.fill(-1);
-        }
+        MCTSNode() { reset(-1, 0.0f); }
 
         /**
          * 重置节点状态，以便在节点池中复用。
@@ -112,4 +108,3 @@ namespace AlphaZero
         }
     };
 }
-#endif

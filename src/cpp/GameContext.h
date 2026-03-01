@@ -1,5 +1,3 @@
-#ifndef A586E0F0_FE06_4A91_9BC8_B232FAB0344A
-#define A586E0F0_FE06_4A91_9BC8_B232FAB0344A
 #pragma once
 #include <array>
 #include <concepts>
@@ -8,6 +6,9 @@
 
 namespace AlphaZero
 {
+    using PlayerSign  = int;   ///< 玩家标识：+1 (P1) 或 -1 (P2)
+    using PlayerIndex = int;   ///< 玩家索引：0 (P1) 或 1 (P2)
+
     /**
      * 栈上固定大小的合法动作列表，避免 std::vector 堆分配。
      * 在 MCTS 热循环中频繁调用 get_valid_moves()，使用栈数组比堆 vector 快。
@@ -70,5 +71,3 @@ namespace AlphaZero
         { G::inverse_symmetry_policy(0, policy) } -> std::same_as<void>;
     };
 }
-
-#endif /* A586E0F0_FE06_4A91_9BC8_B232FAB0344A */

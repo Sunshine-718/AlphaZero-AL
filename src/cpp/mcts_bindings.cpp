@@ -13,8 +13,7 @@
 
 #include "BatchedMCTS.h"
 #include "Connect4.h"
-// 添加新游戏时在这里 include，例如:
-// #include "TicTacToe.h"
+#include "Othello.h"
 
 namespace py = pybind11;
 using namespace AlphaZero;
@@ -253,8 +252,5 @@ PYBIND11_MODULE(mcts_cpp, m)
 
     // === 注册各游戏的 BatchedMCTS ===
     register_batched_mcts<Connect4>(m, "BatchedMCTS_Connect4");
-
-    // 添加新游戏只需一行:
-    // register_batched_mcts<TicTacToe>(m, "BatchedMCTS_TicTacToe");
-    // register_batched_mcts<Gomoku>(m, "BatchedMCTS_Gomoku");
+    register_batched_mcts<Othello>(m, "BatchedMCTS_Othello");
 }

@@ -1,5 +1,3 @@
-#ifndef B5E525A8_D630_47C2_BA60_1A8D4D970BF6
-#define B5E525A8_D630_47C2_BA60_1A8D4D970BF6
 #pragma once
 #include "GameContext.h"
 #include <array>
@@ -48,12 +46,12 @@ namespace AlphaZero
         static constexpr uint64_t col_mask(int col) { return 0x7FULL << (col * Traits::BITS_PER_COL); }
 
         int8_t board[Traits::ROWS][Traits::COLS]; ///< 显示用棋盘（-1/0/1 = P2/空/P1）
-        int turn;                                  ///< 当前落子方（1 或 -1）
+        PlayerSign turn;                           ///< 当前落子方（+1 或 -1）
 
         uint64_t bb[2];                 ///< 两个玩家的 bitboard
         int height[Traits::COLS];       ///< 每列下一个可用 bit 的索引
         int n_pieces;                   ///< 棋盘上的总棋子数
-        int last_player_idx;            ///< 上一步落子的玩家索引（0 或 1），-1 表示无
+        PlayerIndex last_player_idx;    ///< 上一步落子的玩家索引（0 或 1），-1 表示无
 
         Connect4() { reset(); }
 
@@ -109,7 +107,7 @@ namespace AlphaZero
                 {
                     if (board[r][c] != 0)
                     {
-                        int player_idx = board[r][c] == 1 ? 0 : 1;
+                        PlayerIndex player_idx = board[r][c] == 1 ? 0 : 1;
                         bb[player_idx] |= (1ULL << height[c]);
                         height[c]++;
                         n_pieces++;
@@ -157,7 +155,7 @@ namespace AlphaZero
          */
         void step(int col)
         {
-            int player_idx = turn == 1 ? 0 : 1;
+            PlayerIndex player_idx = turn == 1 ? 0 : 1;
             uint64_t move = 1ULL << height[col];
             bb[player_idx] |= move;
 
@@ -278,5 +276,3 @@ namespace AlphaZero
         }
     };
 }
-
-#endif /* B5E525A8_D630_47C2_BA60_1A8D4D970BF6 */

@@ -75,6 +75,7 @@ class Actor:
             noise_epsilon=self.cfg['noise_eps'],
             fpu_reduction=self.cfg['fpu_reduction'],
             use_symmetry=self.cfg['use_symmetry'],
+            game_name=env_name,
             noise_steps=self.cfg['noise_steps'],
             noise_eps_min=self.cfg['noise_eps_min'],
             mlh_slope=self.cfg['mlh_slope'],

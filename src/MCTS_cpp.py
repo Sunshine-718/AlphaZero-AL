@@ -6,8 +6,7 @@ from src.Cache import LRUCache
 # 游戏名 → C++ 后端类的映射
 _BACKENDS = {
     'Connect4': mcts_cpp.BatchedMCTS_Connect4,
-    # 添加新游戏:
-    # 'TicTacToe': mcts_cpp.BatchedMCTS_TicTacToe,
+    'Othello': mcts_cpp.BatchedMCTS_Othello,
 }
 
 

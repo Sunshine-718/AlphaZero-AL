@@ -1,5 +1,3 @@
-#ifndef CD4397BA_1EEC_4275_BB07_6481002E649E
-#define CD4397BA_1EEC_4275_BB07_6481002E649E
 #pragma once
 #include "MCTS.h"
 #include <array>
@@ -312,5 +310,3 @@ namespace AlphaZero
         }
     };
 }
-
-#endif /* CD4397BA_1EEC_4275_BB07_6481002E649E */

@@ -69,11 +69,11 @@ class Human(Player):
 
 class MCTSPlayer(Player):
     """Pure MCTS baseline (uniform prior + random rollout) — wraps C++ BatchedMCTS."""
-    def __init__(self, c_puct=4, n_playout=1000, eps=0.0):
+    def __init__(self, c_puct=4, n_playout=1000, eps=0.0, game_name='Connect4'):
         super().__init__()
         self.mcts = BatchedMCTS(
             batch_size=1, c_init=c_puct, c_base=500,
-            alpha=0, n_playout=n_playout,
+            alpha=0, n_playout=n_playout, game_name=game_name,
             noise_epsilon=0.0, fpu_reduction=0.0, use_symmetry=False,
         )
 

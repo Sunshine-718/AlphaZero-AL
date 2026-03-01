@@ -1,5 +1,3 @@
-#ifndef D77F1FBF_0C41_461C_8809_93FD96ACA0C5
-#define D77F1FBF_0C41_461C_8809_93FD96ACA0C5
 #pragma once
 #include "GameContext.h"
 #include "MCTSNode.h"
@@ -160,7 +158,7 @@ namespace AlphaZero
                 sum += noise_arr[i];
             }
             for (int i = 0; i < n_valid; ++i)
-                node_pool[valid_children[i]].noise = noise_arr[i] / sum;
+                node_pool[valid_children[i]].noise = noise_arr[i] / (sum + 1e-8f);
         }
 
         // ======== Selection 辅助函数 ========
@@ -263,6 +261,9 @@ namespace AlphaZero
             int32_t curr_idx = root_idx;
             current_sym_id = 0;
 
+            int winner = 0;
+            bool board_full = false;
+
             // Selection：沿已展开路径选择最优动作
             while (node_pool[curr_idx].is_expanded)
             {
@@ -276,22 +277,32 @@ namespace AlphaZero
                 sim_env.step(action);
                 curr_idx = node_pool[curr_idx].children[action];
 
-                if (sim_env.check_winner() != 0 || sim_env.is_full()) break;
+                winner = sim_env.check_winner();
+                board_full = sim_env.is_full();
+                if (winner != 0 || board_full) break;
             }
             current_leaf_idx = curr_idx;
             current_leaf_turn = sim_env.get_turn();
 
+            // 如果循环未进入或因非终局条件退出，重新检测终局
+            if (winner == 0 && !board_full)
+            {
+                winner = sim_env.check_winner();
+                board_full = sim_env.is_full();
+            }
+
             // 终局状态：有人赢或平局（绝对视角）
             // check_winner() != 0 表示「上一手」赢了
             // get_turn() 返回下一个落子方（即输家），另一方是赢家
-            int winner = sim_env.check_winner();
             if (winner != 0)
             {
-                float p1w = (current_leaf_turn == -1) ? 1.0f : 0.0f;  // P2 的回合 → P1 赢
-                float p2w = (current_leaf_turn == 1)  ? 1.0f : 0.0f;  // P1 的回合 → P2 赢
+                // 直接使用 check_winner() 返回值：+1 = P1 赢, -1 = P2 赢
+                // 兼容 Connect4（赢家=最后落子方）和 Othello（赢家=棋子多的一方）
+                float p1w = (winner == 1)  ? 1.0f : 0.0f;
+                float p2w = (winner == -1) ? 1.0f : 0.0f;
                 return {sim_env, 0.0f, p1w, p2w, true};
             }
-            if (sim_env.is_full())
+            if (board_full)
                 return {sim_env, 1.0f, 0.0f, 0.0f, true};
 
             // 非终局叶节点：保存原始状态，可选应用随机对称变换
@@ -342,7 +353,7 @@ namespace AlphaZero
                     sum += noise_arr[i];
                 }
                 for (int i = 0; i < valids.size(); ++i)
-                    noise_arr[i] /= sum;
+                    noise_arr[i] /= (sum + 1e-8f);
             }
 
             // 展开：为每个合法动作创建子节点
@@ -435,15 +446,17 @@ namespace AlphaZero
         float random_rollout(Game state) const
         {
             std::mt19937 &rng = get_rng();
-            float sign = 1.0f;  // 追踪相对于叶节点玩家的视角翻转
+            int leaf_turn = state.get_turn();  // 叶节点落子方
             while (true)
             {
-                if (state.check_winner() != 0) return sign * -1.0f;
+                int w = state.check_winner();
+                // 直接用 check_winner() 返回值判断：+1=P1赢, -1=P2赢
+                // 转换为叶节点视角：赢家==叶节点方 → +1, 否则 → -1
+                if (w != 0) return (w == leaf_turn) ? 1.0f : -1.0f;
                 if (state.is_full()) return 0.0f;
                 auto valids = state.get_valid_moves();
                 std::uniform_int_distribution<int> dist(0, valids.size() - 1);
                 state.step(valids.moves[dist(rng)]);
-                sign = -sign;
             }
         }
 
@@ -545,5 +558,3 @@ namespace AlphaZero
         }
     };
 }
-
-#endif /* D77F1FBF_0C41_461C_8809_93FD96ACA0C5 */
