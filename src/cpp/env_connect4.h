@@ -154,14 +154,15 @@ inline void register_connect4(py::module_ &m)
                 py::array_t<float> state({1, 3, R, C});
                 auto buf = state.mutable_unchecked<4>();
                 std::memset(buf.mutable_data(0, 0, 0, 0), 0, sizeof(float) * 3 * R * C);
-                float turn_f = static_cast<float>(self.get_turn());
+                int turn = self.get_turn();
+                float turn_f = static_cast<float>(turn);
                 for (int r = 0; r < R; ++r)
                     for (int c = 0; c < C; ++c)
                     {
                         int8_t v = self.board[r][c];
-                        if (v == 1)
+                        if (v == turn)
                             buf(0, 0, r, c) = 1.0f;
-                        else if (v == -1)
+                        else if (v == -turn)
                             buf(0, 1, r, c) = 1.0f;
                         buf(0, 2, r, c) = turn_f;
                     }

@@ -11,11 +11,21 @@ _BACKENDS = {
 
 
 def _default_convert_board(board, turns):
-    """默认 3 通道转换: player1 平面, player2 平面, turn 平面"""
-    plane_x = (board == 1).astype(np.float32)
-    plane_o = (board == -1).astype(np.float32)
+    """Default 3-plane conversion in relative perspective."""
+    plane_x = (board == turns[:, None, None]).astype(np.float32)
+    plane_o = (board == -turns[:, None, None]).astype(np.float32)
     plane_turn = np.ones_like(board, dtype=np.float32) * turns[:, None, None]
     return np.stack([plane_x, plane_o, plane_turn], axis=1)
+
+
+def _relative_wdl_to_absolute(wdl_rel, turns):
+    """Convert relative WDL [draw, win(to-move), loss(to-move)] to absolute [draw, p1w, p2w]."""
+    d = wdl_rel[:, 0]
+    w = wdl_rel[:, 1]
+    l = wdl_rel[:, 2]
+    p1w = np.where(turns == 1, w, l)
+    p2w = np.where(turns == 1, l, w)
+    return d, p1w, p2w
 
 
 class BatchedMCTS:
@@ -64,10 +74,13 @@ class BatchedMCTS:
                     self._conv_buf[:n_non_term] = conv
                     non_term_probs, non_term_wdl, non_term_ml = pv_func.predict(self._conv_buf[:n_non_term])
                     probs[non_term_mask] = non_term_probs
-                    # predict() 返回绝对视角 (d, p1w, p2w)
-                    d_vals[non_term_mask] = non_term_wdl[:, 0]
-                    p1w_vals[non_term_mask] = non_term_wdl[:, 1]
-                    p2w_vals[non_term_mask] = non_term_wdl[:, 2]
+                    # predict() returns relative WDL and is converted to absolute before backprop
+                    d_abs, p1w_abs, p2w_abs = _relative_wdl_to_absolute(
+                        non_term_wdl, leaf_turns[non_term_mask]
+                    )
+                    d_vals[non_term_mask] = d_abs
+                    p1w_vals[non_term_mask] = p1w_abs
+                    p2w_vals[non_term_mask] = p2w_abs
                     moves_left[non_term_mask] = non_term_ml.flatten()
                 else:
                     # 置换表启用：先查缓存，cache miss 的再批量送 NN
@@ -78,8 +91,12 @@ class BatchedMCTS:
                             p, wdl, ml = self.cache.get(key)
                             probs[i] = p
                             d_vals[i] = wdl[0]
-                            p1w_vals[i] = wdl[1]
-                            p2w_vals[i] = wdl[2]
+                            if leaf_turns[i] == 1:
+                                p1w_vals[i] = wdl[1]
+                                p2w_vals[i] = wdl[2]
+                            else:
+                                p1w_vals[i] = wdl[2]
+                                p2w_vals[i] = wdl[1]
                             moves_left[i] = ml
                         else:
                             miss_indices.append(i)
@@ -95,8 +112,12 @@ class BatchedMCTS:
                         for j, i in enumerate(miss_indices):
                             probs[i]  = miss_probs[j]
                             d_vals[i] = miss_wdl[j, 0]
-                            p1w_vals[i] = miss_wdl[j, 1]
-                            p2w_vals[i] = miss_wdl[j, 2]
+                            if miss_turns[j] == 1:
+                                p1w_vals[i] = miss_wdl[j, 1]
+                                p2w_vals[i] = miss_wdl[j, 2]
+                            else:
+                                p1w_vals[i] = miss_wdl[j, 2]
+                                p2w_vals[i] = miss_wdl[j, 1]
                             moves_left[i] = miss_ml[j]
                             key = leaf_boards[i].tobytes() + leaf_turns[i].item().to_bytes(1, 'little', signed=True)
                             self.cache.put(key, (miss_probs[j].copy(), miss_wdl[j].copy(), miss_ml[j].item()))

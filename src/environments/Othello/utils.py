@@ -6,12 +6,11 @@ from numba import njit
 @njit(fastmath=True)
 def board_to_state(board, turn):
     temp = np.zeros((1, 3, board.shape[0], board.shape[1]), dtype=np.float32)
-    temp[:, 0] = board == 1
-    temp[:, 1] = board == -1
-    if turn == 1:
-        temp[:, 2] = np.ones((board.shape[0], board.shape[1]), dtype=np.float32)
-    else:
-        temp[:, 2] = -np.ones((board.shape[0], board.shape[1]), dtype=np.float32)
+    # Relative perspective:
+    #   ch0 = side-to-move stones, ch1 = opponent stones
+    temp[:, 0] = board == turn
+    temp[:, 1] = board == -turn
+    temp[:, 2] = np.ones((board.shape[0], board.shape[1]), dtype=np.float32) * turn
     return temp
 
 
@@ -100,7 +99,7 @@ def inspect(net, board=None):
         state0 = board_to_state(board, 1)
         probs0, wdl0, _ = net.predict(state0)
         probs0 = probs0.flatten()
-        value0 = float(wdl0[0, 1] - wdl0[0, 2])  # P1W - P2W
+        value0 = float(wdl0[0, 1] - wdl0[0, 2])  # W - L (to-move)
 
         # 标准开局第一手 (2,3)
         board[2, 3] = 1

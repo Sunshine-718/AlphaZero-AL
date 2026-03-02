@@ -144,7 +144,7 @@ class CNN(Base):
         else:
             t = t.float()
         log_prob, value_log_prob, log_steps = self.forward(t)
-        # Value head outputs: [P(draw), P(p1_win), P(p2_win)] — 绝对视角，直接传递
+        # Value head outputs: [P(draw), P(win to-move), P(loss to-move)]
         wdl = value_log_prob.exp()  # (batch, 3)
 
         steps_prob = log_steps.exp()

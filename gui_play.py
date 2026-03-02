@@ -350,7 +350,8 @@ class BoardWidget(QWidget):
 
     def _board(self):
         state = self.env.current_state()
-        return (state[0, 0] - state[0, 1]).astype(int)
+        turn = 1 if state[0, 2, 0, 0] >= 0 else -1
+        return ((state[0, 0] - state[0, 1]) * turn).astype(int)
 
     # ── Paint ───────────────────────────────────────────────────────────────
     def paintEvent(self, _):
@@ -1929,7 +1930,7 @@ class Connect4GUI(QWidget):
 
             vp = vl[0].exp().cpu().tolist()
             draw_pct = vp[0] * 100
-            if self.player_color == 1:
+            if self.player_color == self.env.turn:
                 win_pct, lose_pct = vp[1] * 100, vp[2] * 100
             else:
                 win_pct, lose_pct = vp[2] * 100, vp[1] * 100

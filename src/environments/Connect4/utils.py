@@ -10,12 +10,11 @@ from numba import njit
 @njit(fastmath=True)
 def board_to_state(board, turn):
     temp = np.zeros((1, 3, board.shape[0], board.shape[1]), dtype=np.float32)
-    temp[:, 0] = board == 1
-    temp[:, 1] = board == -1
-    if turn == 1:
-        temp[:, 2] = np.ones((board.shape[0], board.shape[1]), dtype=np.float32)
-    else:
-        temp[:, 2] = -np.ones((board.shape[0], board.shape[1]), dtype=np.float32)
+    # Relative perspective:
+    #   ch0 = side-to-move stones, ch1 = opponent stones
+    temp[:, 0] = board == turn
+    temp[:, 1] = board == -turn
+    temp[:, 2] = np.ones((board.shape[0], board.shape[1]), dtype=np.float32) * turn
     return temp
 
 
@@ -36,12 +35,12 @@ def inspect(net, board=None):
         state0 = board_to_state(board, 1)
         probs0, wdl0, _ = net.predict(state0)
         probs0 = probs0.flatten()
-        value0 = float(wdl0[0, 0] - wdl0[0, 2])  # W - L
+        value0 = float(wdl0[0, 1] - wdl0[0, 2])  # W - L (to-move)
         board[5, 3] = 1
         state1 = board_to_state(board, -1)
         probs1, wdl1, _ = net.predict(state1)
         probs1 = probs1.flatten()
-        value1 = float(wdl1[0, 0] - wdl1[0, 2])  # W - L
+        value1 = float(wdl1[0, 1] - wdl1[0, 2])  # W - L (to-move)
     for (idx, pX), (_, pO) in zip(enumerate(probs0), enumerate(probs1)):
         print_row(idx, pX, pO, np.max(probs0), np.max(probs1))
     print(f'State-value X: {value0: .4f}\nState-value O: {value1: .4f}')

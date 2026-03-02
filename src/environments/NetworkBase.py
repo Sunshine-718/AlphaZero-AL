@@ -8,7 +8,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from abc import ABC
-from copy import deepcopy
 from sklearn.metrics import f1_score
 
 
@@ -47,10 +46,18 @@ class Base(ABC, nn.Module):
             self.train()
             for batch in dataloader:
                 state, prob, winner, steps_to_end, root_wdl = augment(batch)
-                # Value target: map winner {0,1,-1} → class {0=draw, 1=win, 2=loss}
-                value_class = deepcopy(winner)
-                value_class[value_class == -1] = 2
-                value_class = value_class.view(-1,).long()
+                # Value target in relative perspective:
+                # class 0=draw, 1=win(to-move), 2=loss(to-move)
+                winner_flat = winner.view(-1).long()
+                turn_sign = torch.where(
+                    state[:, 2, 0, 0] >= 0,
+                    torch.ones_like(winner_flat),
+                    -torch.ones_like(winner_flat),
+                )
+                value_class = torch.zeros_like(winner_flat)
+                non_draw = winner_flat != 0
+                value_class[non_draw & (winner_flat == turn_sign)] = 1
+                value_class[non_draw & (winner_flat != turn_sign)] = 2
                 steps_target = steps_to_end.view(-1,).long()
                 mask = (steps_target != 0).float()
                 self.opt.zero_grad()
@@ -67,9 +74,16 @@ class Base(ABC, nn.Module):
 
                     # Q-ratio: blend with root WDL
                     if q_ratio > 0:
-                        has_q = (root_wdl.sum(dim=1, keepdim=True) > 0).float()
+                        # root_wdl is absolute [draw, p1w, p2w]; convert to relative [draw, win, loss]
+                        turn_pos = (turn_sign > 0).view(-1, 1)
+                        root_draw = root_wdl[:, 0:1]
+                        root_win = torch.where(turn_pos, root_wdl[:, 1:2], root_wdl[:, 2:3])
+                        root_loss = torch.where(turn_pos, root_wdl[:, 2:3], root_wdl[:, 1:2])
+                        root_wdl_rel = torch.cat([root_draw, root_win, root_loss], dim=1)
+
+                        has_q = (root_wdl_rel.sum(dim=1, keepdim=True) > 0).float()
                         eff_q_ratio = q_ratio * has_q
-                        z_target = eff_q_ratio * root_wdl + (1 - eff_q_ratio) * z_target
+                        z_target = eff_q_ratio * root_wdl_rel + (1 - eff_q_ratio) * z_target
 
                     v_loss = -torch.sum(z_target * value_pred, dim=1).mean()
                 else:
