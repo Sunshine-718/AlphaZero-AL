@@ -1815,9 +1815,11 @@ class OthelloGUI(QWidget):
         self.pass_btn.setEnabled(64 in valid and len(valid) == 1)
 
     def _update_analysis(self):
-        # Disc count
-        board = self.board._board()
-        self.status.set_disc_count(int(np.sum(board == 1)), int(np.sum(board == -1)))
+        # Disc count (use absolute state, not relative _board())
+        state = self.env.current_state()
+        black_count = int(np.sum(state[0, 0] > 0))
+        white_count = int(np.sum(state[0, 1] > 0))
+        self.status.set_disc_count(black_count, white_count)
 
         with torch.no_grad():
             state = self.env.current_state()

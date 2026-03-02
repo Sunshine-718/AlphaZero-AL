@@ -9,6 +9,7 @@
 #include <pybind11/pybind11.h>
 
 #include "env_connect4.h"
+#include "env_gomoku.h"
 #include "env_othello.h"
 
 namespace py = pybind11;
@@ -20,4 +21,5 @@ PYBIND11_MODULE(env_cpp, m)
     // === 注册各游戏的 Env ===
     env_bind::register_connect4(m);
     env_bind::register_othello(m);
+    env_bind::register_gomoku(m);
 }
