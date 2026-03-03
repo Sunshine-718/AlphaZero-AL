@@ -49,9 +49,9 @@ class CNN(Base):
         )
 
         # Policy head: conv → flatten → linear → log_softmax
-        policy_conv_flat = 2 * 10 * 10
+        policy_conv_flat = 5 * 10 * 10
         self.policy_head_1 = nn.Sequential(
-            nn.Conv2d(h_dim, 2, kernel_size=1, bias=True),
+            nn.Conv2d(h_dim, 5, kernel_size=1, bias=True),
             nn.SiLU(inplace=True),
             nn.Flatten(),
             nn.LayerNorm(policy_conv_flat),
@@ -62,7 +62,7 @@ class CNN(Base):
 
         # Value head: WDL (draw, p1_win, p2_win)
         self.value_head = nn.Sequential(
-            nn.Conv2d(h_dim, 2, kernel_size=1, bias=True),
+            nn.Conv2d(h_dim, 5, kernel_size=1, bias=True),
             nn.SiLU(inplace=True),
             nn.Flatten(),
             nn.Linear(policy_conv_flat, policy_conv_flat),
@@ -74,7 +74,7 @@ class CNN(Base):
 
         # Steps-to-end head: max 60 placements possible (64-4=60) → 61 classes (0-60)
         self.steps_head = nn.Sequential(
-            nn.Conv2d(h_dim, 2, kernel_size=1, bias=True),
+            nn.Conv2d(h_dim, 5, kernel_size=1, bias=True),
             nn.SiLU(inplace=True),
             nn.Flatten(),
             nn.LayerNorm(policy_conv_flat),

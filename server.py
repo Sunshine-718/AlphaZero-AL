@@ -88,8 +88,10 @@ g_train.add_argument('--n_epochs', type=int, default=5, help='Training epochs pe
 g_train.add_argument('--policy_lr_scale', type=float, default=0.3,
                       help='Policy head LR multiplier')
 g_train.add_argument('--dropout', type=float, default=0.1, help='Dropout rate')
-g_train.add_argument('--q_ratio', type=float, default=0.75,
-                      help='Q-ratio: blend root WDL with game result for value target (0=pure z, 0.75=Lc0-style)')
+g_train.add_argument('--distill_alpha', type=float, default=0.75,
+                      help='Distillation weight α: loss = (1-α)×CE(z) + α×KL(root_wdl||student) (0=pure z, 0.75=Lc0-style)')
+g_train.add_argument('--distill_temp', type=float, default=1.0,
+                      help='Distillation temperature T: softens teacher/student distributions (1.0=no scaling, >1=softer)')
 g_train.add_argument('--value_decay', type=float, default=0.99,
                       help='Game-length discount γ for value targets: target = γ^steps × z + (1-γ^steps) × uniform '
                            '(1.0=no scaling, 0.99=moderate, 0.97=aggressive)')
@@ -130,7 +132,8 @@ config = {"lr": args.lr,
           "mlh_cap": args.mlh_cap,
           "mlh_threshold": args.mlh_threshold,
           "mlh_warmup_loss": args.mlh_warmup_loss,
-          "q_ratio": args.q_ratio,
+          "distill_alpha": args.distill_alpha,
+          "distill_temp": args.distill_temp,
           "value_decay": args.value_decay}
 
 
@@ -186,7 +189,8 @@ def print_config():
             "n_epochs": args.n_epochs,
             "policy_lr_scale": args.policy_lr_scale,
             "dropout": args.dropout,
-            "q_ratio": args.q_ratio,
+            "distill_alpha": args.distill_alpha,
+            "distill_temp": args.distill_temp,
             "value_decay": args.value_decay,
         }),
         ("Evaluation", {

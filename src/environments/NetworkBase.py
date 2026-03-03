@@ -38,10 +38,10 @@ class Base(ABC, nn.Module):
         return self
 
     def train_step(self, dataloader, augment, ddp_model=None, n_epochs=10,
-                   q_ratio=0.0, value_decay=1.0):
+                   distill_alpha=0.0, value_decay=1.0, distill_temp=1.0):
         model = ddp_model if ddp_model is not None else self
         p_l, v_l, s_l = [], [], []
-        use_soft = value_decay < 1.0 or q_ratio > 0
+        use_soft = value_decay < 1.0 or distill_alpha > 0
         for _ in range(n_epochs):
             self.train()
             for batch in dataloader:
@@ -72,8 +72,11 @@ class Base(ABC, nn.Module):
                         discount = (value_decay ** steps_to_end.float().view(-1)).unsqueeze(1)
                         z_target = discount * z_target + (1 - discount) * (1.0 / 3.0)
 
-                    # Q-ratio: blend with root WDL
-                    if q_ratio > 0:
+                    # Hard label loss: CE(student, z_target)
+                    v_loss = -torch.sum(z_target * value_pred, dim=1).mean()
+
+                    # Knowledge distillation from MCTS root WDL
+                    if distill_alpha > 0:
                         # root_wdl is absolute [draw, p1w, p2w]; convert to relative [draw, win, loss]
                         turn_pos = (turn_sign > 0).view(-1, 1)
                         root_draw = root_wdl[:, 0:1]
@@ -82,10 +85,17 @@ class Base(ABC, nn.Module):
                         root_wdl_rel = torch.cat([root_draw, root_win, root_loss], dim=1)
 
                         has_q = (root_wdl_rel.sum(dim=1, keepdim=True) > 0).float()
-                        eff_q_ratio = q_ratio * has_q
-                        z_target = eff_q_ratio * root_wdl_rel + (1 - eff_q_ratio) * z_target
 
-                    v_loss = -torch.sum(z_target * value_pred, dim=1).mean()
+                        # Teacher: softmax(log(root_wdl) / T)
+                        teacher_log = torch.log(root_wdl_rel.clamp(min=1e-8))
+                        teacher_soft = F.softmax(teacher_log / distill_temp, dim=1)
+                        # Student: softmax(logits / T)  (value_pred is log_softmax)
+                        student_log_soft = F.log_softmax(value_pred / distill_temp, dim=1)
+                        # KL(teacher || student) per sample, masked by has_q
+                        kl = F.kl_div(student_log_soft, teacher_soft, reduction='none').sum(dim=1)
+                        distill_loss = (kl * has_q.squeeze(1)).mean() * (distill_temp ** 2)
+
+                        v_loss = (1 - distill_alpha) * v_loss + distill_alpha * distill_loss
                 else:
                     v_loss = F.nll_loss(value_pred, value_class)
 

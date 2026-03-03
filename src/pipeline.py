@@ -134,8 +134,9 @@ class TrainPipeline(ABC):
         p_l, v_l, s_l, ent, g_n, f1 = self.net.train_step(
             dataloader, self.module.augment, ddp_model=model_for_training,
             n_epochs=getattr(self, 'n_epochs', 10),
-            q_ratio=getattr(self, 'q_ratio', 0.0),
-            value_decay=getattr(self, 'value_decay', 1.0))
+            distill_alpha=getattr(self, 'distill_alpha', 0.0),
+            value_decay=getattr(self, 'value_decay', 1.0),
+            distill_temp=getattr(self, 'distill_temp', 1.0))
 
         if self.is_ddp:
             dist.barrier()
