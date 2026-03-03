@@ -44,6 +44,8 @@ class BatchedMCTS:
         self.cache = LRUCache(cache_size) if cache_size > 0 else None
         # 预分配 board 转换 buffer，避免 MCTS 热循环里频繁 malloc
         self._conv_buf = np.zeros((batch_size, 3, *self.board_shape), dtype=np.float32)
+        self._game_name = game_name
+        self._rollout_eval = None
 
     def batch_playout(self, pv_func, current_boards, turns, n_playout=None):
         """ current_boards: shape [batch_size, *board_shape], X: 1, O: -1
@@ -146,11 +148,19 @@ class BatchedMCTS:
             od[k]['value'] = (new_probs[j].copy(), new_wdl[j].copy(), new_ml[j].item())
         return self
 
+    def _get_rollout_evaluator(self):
+        """懒加载 C++ RolloutEvaluator 实例"""
+        if self._rollout_eval is None:
+            re_cls_name = f'RolloutEvaluator_{self._game_name}'
+            self._rollout_eval = getattr(mcts_cpp, re_cls_name)()
+        return self._rollout_eval
+
     def rollout_playout(self, current_boards, turns):
-        """纯 MCTS：整个 playout 循环在 C++ 内完成（random rollout + uniform prior）"""
+        """纯 MCTS：使用 RolloutEvaluator 在 C++ 内完成整个搜索"""
         current_boards = current_boards.astype(np.int8)
         turns = turns.astype(np.int32)
-        self.mcts.rollout_playout(current_boards, turns, self.n_playout)
+        evaluator = self._get_rollout_evaluator()
+        self.mcts.search(evaluator, current_boards, turns, self.n_playout)
         return self
 
     def set_noise_epsilon(self, eps):

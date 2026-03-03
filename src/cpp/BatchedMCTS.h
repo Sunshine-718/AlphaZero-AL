@@ -1,5 +1,6 @@
 #pragma once
 #include "MCTS.h"
+#include "IEvaluator.h"
 #include <array>
 #include <omp.h>
 #include <span>
@@ -30,6 +31,8 @@ namespace AlphaZero
 
         int n_envs;                                             ///< 并行环境数量
         std::vector<std::unique_ptr<MCTS<Game>>> mcts_envs;     ///< 每局独立的 MCTS 搜索树
+        bool use_symmetry;                                      ///< 是否启用随机对称增强
+        std::vector<int> pending_sym_ids_;                      ///< 每个 env 的待处理对称 ID
 
     public:
         /**
@@ -47,15 +50,15 @@ namespace AlphaZero
          * @param value_decay    Backprop 逐层衰减系数（1.0=禁用）
          */
         BatchedMCTS(int num_envs, float c_init, float c_base, float alpha,
-                    float noise_epsilon = 0.25f, float fpu_reduction = 0.4f, bool use_symmetry = true,
+                    float noise_epsilon = 0.25f, float fpu_reduction = 0.4f, bool use_symmetry_ = true,
                     float mlh_slope = 0.0f, float mlh_cap = 0.2f, float mlh_threshold = 0.8f,
                     float value_decay = 1.0f)
-            : n_envs(num_envs)
+            : n_envs(num_envs), use_symmetry(use_symmetry_), pending_sym_ids_(num_envs, 0)
         {
             mcts_envs.reserve(n_envs);
             for (int i = 0; i < n_envs; ++i)
             {
-                mcts_envs.push_back(std::make_unique<MCTS<Game>>(c_init, c_base, alpha, noise_epsilon, fpu_reduction, use_symmetry,
+                mcts_envs.push_back(std::make_unique<MCTS<Game>>(c_init, c_base, alpha, noise_epsilon, fpu_reduction,
                                                                   mlh_slope, mlh_cap, mlh_threshold, value_decay));
             }
         }
@@ -150,7 +153,7 @@ namespace AlphaZero
 
         void set_use_symmetry(bool val)
         {
-            for (auto &m : mcts_envs) m->use_symmetry = val;
+            use_symmetry = val;
         }
 
         void set_value_decay(float val)
@@ -205,10 +208,23 @@ namespace AlphaZero
                 auto result = mcts_envs[i]->simulate(current_game);
 
                 output_is_term[i] = result.is_terminal ? 1 : 0;
-                output_term_d[i] = result.terminal_d;
-                output_term_p1w[i] = result.terminal_p1w;
-                output_term_p2w[i] = result.terminal_p2w;
+                output_term_d[i] = result.terminal_wdl.d;
+                output_term_p1w[i] = result.terminal_wdl.p1w;
+                output_term_p2w[i] = result.terminal_wdl.p2w;
                 output_turns[i] = result.board.get_turn();
+
+                // 对非终局叶节点应用随机对称变换（增加 NN 输入多样性）
+                if (!result.is_terminal && use_symmetry && Game::Traits::NUM_SYMMETRIES > 1)
+                {
+                    std::mt19937 &rng = get_rng();
+                    int sym_id = std::uniform_int_distribution<int>(0, Game::Traits::NUM_SYMMETRIES - 1)(rng);
+                    pending_sym_ids_[i] = sym_id;
+                    if (sym_id != 0) result.board.apply_symmetry(sym_id);
+                }
+                else
+                {
+                    pending_sym_ids_[i] = 0;
+                }
 
                 std::memcpy(output_boards + offset, result.board.board_data(), BOARD_SIZE);
             }
@@ -239,34 +255,93 @@ namespace AlphaZero
                 {
                     policy[a] = policy_logits[offset + a];
                 }
-                mcts_envs[i]->backprop(policy, d_vals[i], p1w_vals[i], p2w_vals[i],
-                                       moves_left[i], is_term[i] != 0);
+                // 对称逆变换：恢复 search_batch 中的随机对称
+                if (pending_sym_ids_[i] != 0)
+                    Game::inverse_symmetry_policy(pending_sym_ids_[i], policy);
+                WDLValue wdl{d_vals[i], p1w_vals[i], p2w_vals[i]};
+                mcts_envs[i]->backprop(policy, wdl, moves_left[i], is_term[i] != 0);
             }
         }
 
-        // ========== Random Rollout（纯 MCTS 基线）==========
+        // ========== 通用搜索入口（IEvaluator）==========
 
         /**
-         * 纯 MCTS playout：整个 n_playout 循环在 C++ 内完成，无需 Python 回调。
+         * 通用搜索入口：用 IEvaluator 完成整个 playout 循环。
          *
-         * 每次 playout 对所有环境并行执行 simulate + random_rollout + backprop。
-         * 叶节点用 uniform prior 展开，价值由随机模拟到终局得到。
+         * 替代旧的 rollout_playout()：对于纯 MCTS 基线，传入 RolloutEvaluator 即可。
+         * 工作流：并行 selection → 批量评估（IEvaluator）→ 并行 backprop → 重复 n_playout 次。
          *
+         * @param evaluator    叶节点评估器（RolloutEvaluator、NNUE 等）
          * @param input_boards 输入棋盘 (n_envs × BOARD_SIZE)，int8
          * @param turns        当前落子方 (n_envs,)
          * @param n_playout    模拟次数
          */
-        void rollout_playout(const int8_t *input_boards, const int *turns, int n_playout)
+        void search(IEvaluator<Game> &evaluator,
+                    const int8_t *input_boards, const int *turns, int n_playout)
         {
+            // 预分配 batch buffers
+            std::vector<Game> leaf_states(n_envs);
+            std::vector<int> leaf_turns(n_envs);
+            std::vector<typename IEvaluator<Game>::Result> eval_results(n_envs);
+            std::vector<bool> is_terminal(n_envs);
+
             for (int p = 0; p < n_playout; ++p)
             {
+                // Phase 1: 并行 selection
 #pragma omp parallel for schedule(static)
                 for (int i = 0; i < n_envs; ++i)
                 {
                     Game current_game;
                     current_game.import_board(input_boards + i * BOARD_SIZE);
                     current_game.set_turn(turns[i]);
-                    mcts_envs[i]->simulate_with_rollout(current_game);
+                    auto result = mcts_envs[i]->simulate(current_game);
+
+                    is_terminal[i] = result.is_terminal;
+                    if (result.is_terminal)
+                    {
+                        eval_results[i].policy.fill(0.0f);
+                        eval_results[i].wdl = result.terminal_wdl;
+                        eval_results[i].moves_left = 0.0f;
+                    }
+                    else
+                    {
+                        leaf_states[i] = result.board;
+                        leaf_turns[i] = result.board.get_turn();
+                    }
+                }
+
+                // Phase 2: 收集非终局叶节点，批量评估
+                std::vector<int> non_term_indices;
+                non_term_indices.reserve(n_envs);
+                for (int i = 0; i < n_envs; ++i)
+                    if (!is_terminal[i])
+                        non_term_indices.push_back(i);
+
+                if (!non_term_indices.empty())
+                {
+                    int n_eval = static_cast<int>(non_term_indices.size());
+                    std::vector<Game> eval_states(n_eval);
+                    std::vector<int> eval_turns(n_eval);
+                    std::vector<typename IEvaluator<Game>::Result> batch_results(n_eval);
+
+                    for (int j = 0; j < n_eval; ++j)
+                    {
+                        eval_states[j] = leaf_states[non_term_indices[j]];
+                        eval_turns[j] = leaf_turns[non_term_indices[j]];
+                    }
+
+                    evaluator.evaluate_batch(eval_states, eval_turns, batch_results);
+
+                    for (int j = 0; j < n_eval; ++j)
+                        eval_results[non_term_indices[j]] = batch_results[j];
+                }
+
+                // Phase 3: 并行 backprop
+#pragma omp parallel for schedule(static)
+                for (int i = 0; i < n_envs; ++i)
+                {
+                    auto &r = eval_results[i];
+                    mcts_envs[i]->backprop(r.policy, r.wdl, r.moves_left, is_terminal[i]);
                 }
             }
         }

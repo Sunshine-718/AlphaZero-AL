@@ -4,7 +4,7 @@
  * 通过模板函数 register_batched_mcts<Game>() 实现多游戏支持：
  * 添加新游戏只需 #include 对应头文件并调用 register_batched_mcts<NewGame>()。
  *
- * 所有 C++ 计算阶段（search_batch, backprop_batch, rollout_playout）
+ * 所有 C++ 计算阶段（search_batch, backprop_batch, search）
  * 在执行前释放 GIL，允许 Python 线程并行运行。
  */
 #include <pybind11/numpy.h>
@@ -12,6 +12,8 @@
 #include <pybind11/stl.h>
 
 #include "BatchedMCTS.h"
+#include "IEvaluator.h"
+#include "RolloutEvaluator.h"
 #include "Connect4.h"
 #include "Othello.h"
 
@@ -30,8 +32,20 @@ template <MCTSGame Game>
 void register_batched_mcts(py::module_ &m, const char *name)
 {
     using BM = BatchedMCTS<Game>;
+    using IE = IEvaluator<Game>;
+    using RE = RolloutEvaluator<Game>;
     constexpr int ACTION_SIZE = Game::Traits::ACTION_SIZE;
     constexpr int BOARD_SIZE = Game::Traits::BOARD_SIZE;
+
+    // ── 注册 IEvaluator 基类和 RolloutEvaluator 子类 ──────────────
+    std::string ie_name = std::string(name);
+    ie_name.replace(0, 11, "IEvaluator");  // "BatchedMCTS_X" → "IEvaluator_X"
+    std::string re_name = std::string(name);
+    re_name.replace(0, 11, "RolloutEvaluator");  // "BatchedMCTS_X" → "RolloutEvaluator_X"
+
+    py::class_<IE>(m, ie_name.c_str());
+    py::class_<RE, IE>(m, re_name.c_str())
+        .def(py::init<>());
 
     py::class_<BM>(m, name)
         // ── 构造 ─────────────────────────────────────────────────────────
@@ -180,36 +194,37 @@ void register_batched_mcts(py::module_ &m, const char *name)
                 self.backprop_batch(ptr_pol, ptr_d, ptr_p1w, ptr_p2w, ptr_ml, ptr_term);
             } })
 
-        // ── 纯 MCTS（Random Rollout）─────────────────────────────────
+        // ── 通用搜索入口（IEvaluator）─────────────────────────────────
 
         /**
-         * 纯 MCTS playout：整个 n_playout 循环在 C++ 内完成。
-         * 叶节点用 uniform prior 展开，价值由随机模拟到终局得到，无需 Python 回调。
+         * 通用搜索：用 C++ IEvaluator 完成整个 playout 循环。
+         * 对于纯 MCTS 基线，传入 RolloutEvaluator 即可。
          */
-        .def("rollout_playout", [](BM &self,
-                                   py::array_t<int8_t, py::array::c_style | py::array::forcecast> input_boards,
-                                   py::array_t<int, py::array::c_style | py::array::forcecast> turns,
-                                   int n_playout)
+        .def("search", [](BM &self,
+                          IEvaluator<Game> &evaluator,
+                          py::array_t<int8_t, py::array::c_style | py::array::forcecast> input_boards,
+                          py::array_t<int, py::array::c_style | py::array::forcecast> turns,
+                          int n_playout)
              {
             auto buf_in = input_boards.request();
             auto buf_turns = turns.request();
             py::ssize_t batch_size = buf_in.shape[0];
 
             if (batch_size != self.get_num_envs())
-                throw std::runtime_error("rollout_playout: input_boards batch size (" + std::to_string(batch_size) +
+                throw std::runtime_error("search: input_boards batch size (" + std::to_string(batch_size) +
                                          ") must match n_envs (" + std::to_string(self.get_num_envs()) + ")");
             if (buf_turns.size != batch_size)
-                throw std::runtime_error("rollout_playout: turns size must match batch size");
+                throw std::runtime_error("search: turns size must match batch size");
 
             int8_t* ptr_in = static_cast<int8_t*>(buf_in.ptr);
             int* ptr_turns = static_cast<int*>(buf_turns.ptr);
 
             {
                 py::gil_scoped_release release;
-                self.rollout_playout(ptr_in, ptr_turns, n_playout);
+                self.search(evaluator, ptr_in, ptr_turns, n_playout);
             } },
-             py::arg("input_boards"), py::arg("turns"), py::arg("n_playout"),
-             "Run pure MCTS with random rollout evaluation entirely in C++")
+             py::arg("evaluator"), py::arg("input_boards"), py::arg("turns"), py::arg("n_playout"),
+             "Run MCTS search with a C++ evaluator (e.g., RolloutEvaluator)")
 
         // ── 统计查询 ─────────────────────────────────────────────────────
 

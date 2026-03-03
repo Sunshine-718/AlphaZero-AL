@@ -6,6 +6,46 @@
 namespace AlphaZero
 {
     /**
+     * WDL 三元组封装：(draw, player1_win, player2_win)，绝对视角。
+     * 消除手动操作散落的 d/p1w/p2w 三变量。
+     */
+    struct WDLValue
+    {
+        float d = 0.0f, p1w = 0.0f, p2w = 0.0f;
+
+        static constexpr WDLValue draw()     { return {1, 0, 0}; }
+        static constexpr WDLValue p1_wins()  { return {0, 1, 0}; }
+        static constexpr WDLValue p2_wins()  { return {0, 0, 1}; }
+        static constexpr WDLValue uniform()  { return {1.f/3, 1.f/3, 1.f/3}; }
+
+        /// 计算当前落子方视角的 Q 值
+        float q(int turn) const {
+            return (turn == 1) ? (p1w - p2w) : (p2w - p1w);
+        }
+
+        /// 增量更新运行均值（第 n 次采样）
+        void update_mean(WDLValue sample, int n) {
+            float inv = 1.0f / static_cast<float>(n);
+            d   += (sample.d   - d)   * inv;
+            p1w += (sample.p1w - p1w) * inv;
+            p2w += (sample.p2w - p2w) * inv;
+        }
+
+        /// 逐层衰减：向 uniform(⅓,⅓,⅓) 混合
+        WDLValue decayed(float gamma) const {
+            constexpr float u = 1.0f / 3.0f;
+            return {gamma*d + (1-gamma)*u, gamma*p1w + (1-gamma)*u, gamma*p2w + (1-gamma)*u};
+        }
+    };
+
+    /// 将 check_winner() 返回值转换为 WDLValue
+    inline constexpr WDLValue winner_to_wdl(int winner) {
+        if (winner == 1)  return WDLValue::p1_wins();
+        if (winner == -1) return WDLValue::p2_wins();
+        return WDLValue::draw();
+    }
+
+    /**
      * MCTS 搜索树节点。
      *
      * 存储于 MCTS::node_pool（线性数组），通过 int32_t 索引相互引用。
@@ -21,13 +61,13 @@ namespace AlphaZero
 
         int n_visits = 0;       ///< 访问次数 N
         float Q = 0.0f;         ///< 状态价值 (当前落子方视角，由 propagate 计算)
-        float d = 0.0f;         ///< 和棋率运行均值（绝对视角）
-        float p1w = 0.0f;       ///< P1 胜率运行均值（绝对视角）
-        float p2w = 0.0f;       ///< P2 胜率运行均值（绝对视角）
+        WDLValue wdl;           ///< WDL 运行均值（绝对视角）
         float M = 0.0f;         ///< 预期剩余步数的运行均值（Moves Left Head）
         float prior = 0.0f;     ///< 神经网络策略先验概率 P(a)
         float noise = 0.0f;     ///< Dirichlet 噪声（仅根节点的子节点有效）
         bool is_expanded = false;   ///< 是否已展开（子节点已创建）
+        bool is_terminal = false;   ///< 是否已确认为终局状态（避免重复 check_winner）
+        WDLValue terminal_wdl;      ///< 终局 WDL 缓存（仅 is_terminal==true 时有效）
 
         MCTSNode() { reset(-1, 0.0f); }
 
@@ -42,12 +82,12 @@ namespace AlphaZero
             children.fill(-1);
             n_visits = 0;
             Q = 0.0f;
-            d = 0.0f;
-            p1w = 0.0f;
-            p2w = 0.0f;
+            wdl = WDLValue{};
             M = 0.0f;
             noise = 0.0f;
             is_expanded = false;
+            is_terminal = false;
+            terminal_wdl = WDLValue{};
         }
 
         /**

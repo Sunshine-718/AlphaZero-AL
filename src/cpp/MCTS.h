@@ -22,9 +22,7 @@ namespace AlphaZero
     struct SimResult
     {
         Game board;             ///< 叶节点棋盘（可能经过对称变换）
-        float terminal_d;       ///< 终局和棋率（绝对视角），仅终局有效
-        float terminal_p1w;     ///< 终局 P1 胜率（绝对视角），仅终局有效
-        float terminal_p2w;     ///< 终局 P2 胜率（绝对视角），仅终局有效
+        WDLValue terminal_wdl;  ///< 终局 WDL（绝对视角），仅终局有效
         bool is_terminal;       ///< 是否为终局状态
     };
 
@@ -48,15 +46,12 @@ namespace AlphaZero
         int32_t next_free_node = 0;         ///< 下一个可分配的节点索引
 
         Game sim_env;                       ///< simulate() 中用于模拟走步的临时游戏状态
-        Game leaf_state;                    ///< 最近一次 simulate() 到达的叶节点状态（未应用对称变换）
         int32_t current_leaf_idx = -1;      ///< 最近一次 simulate() 到达的叶节点索引
         int current_leaf_turn = 1;          ///< 最近一次 simulate() 叶节点的落子方（1 或 -1）
-        int current_sym_id = 0;             ///< 最近一次 simulate() 使用的对称变换 ID
 
         float c_init, c_base, alpha;        ///< PUCT 常数、Dirichlet alpha
         float noise_epsilon;                ///< Dirichlet 噪声混合权重 ε
         float fpu_reduction;                ///< First Play Urgency 衰减系数
-        bool use_symmetry;                  ///< 是否对叶节点随机应用对称变换
         float mlh_slope;                    ///< Moves Left Head 斜率
         float mlh_cap;                      ///< Moves Left Head 最大影响上限
         float mlh_threshold;                ///< MLH Q 阈值：|Q| 低于此值时 M utility 为 0
@@ -69,15 +64,14 @@ namespace AlphaZero
          * @param a         Dirichlet 噪声 alpha（≤0 时禁用噪声）
          * @param noise_eps 噪声混合权重 ε
          * @param fpu_red   FPU 衰减系数
-         * @param use_sym   是否启用随机对称增强
          * @param mlh_slope_ MLH 斜率
          * @param mlh_cap_   MLH 上限
          * @param mlh_threshold_ MLH Q 阈值
          * @param value_decay_ Backprop 逐层衰减系数（1.0=禁用）
          */
-        MCTS(float c_i, float c_b, float a, float noise_eps = 0.25f, float fpu_red = 0.4f, bool use_sym = true,
+        MCTS(float c_i, float c_b, float a, float noise_eps = 0.25f, float fpu_red = 0.4f,
              float mlh_slope_ = 0.0f, float mlh_cap_ = 0.2f, float mlh_threshold_ = 0.8f, float value_decay_ = 1.0f)
-            : c_init(c_i), c_base(c_b), alpha(a), noise_epsilon(noise_eps), fpu_reduction(fpu_red), use_symmetry(use_sym),
+            : c_init(c_i), c_base(c_b), alpha(a), noise_epsilon(noise_eps), fpu_reduction(fpu_red),
               mlh_slope(mlh_slope_), mlh_cap(mlh_cap_), mlh_threshold(mlh_threshold_), value_decay(value_decay_)
         {
             node_pool.resize(2000);
@@ -223,26 +217,6 @@ namespace AlphaZero
             return best_action;
         }
 
-        /**
-         * 对叶节点状态随机应用对称变换（若启用）。
-         * 增加 NN 输入多样性，逆变换在 backprop 中恢复。
-         *
-         * @param state [in/out] 叶节点状态
-         * @return 应用的对称变换 ID（0=恒等）
-         */
-        int apply_random_symmetry(Game &state)
-        {
-            if (use_symmetry && Game::Traits::NUM_SYMMETRIES > 1)
-            {
-                std::mt19937 &rng = get_rng();
-                std::uniform_int_distribution<int> dist(0, Game::Traits::NUM_SYMMETRIES - 1);
-                int sym_id = dist(rng);
-                state.apply_symmetry(sym_id);
-                return sym_id;
-            }
-            return 0;
-        }
-
         // ======== 核心搜索流程 ========
 
         /**
@@ -259,7 +233,6 @@ namespace AlphaZero
         {
             sim_env = start_state;
             int32_t curr_idx = root_idx;
-            current_sym_id = 0;
 
             int winner = 0;
             bool board_full = false;
@@ -267,6 +240,10 @@ namespace AlphaZero
             // Selection：沿已展开路径选择最优动作
             while (node_pool[curr_idx].is_expanded)
             {
+                // 快速路径：已标记的终局节点，跳过 check_winner/is_full
+                if (node_pool[curr_idx].is_terminal)
+                    break;
+
                 auto valids = sim_env.get_valid_moves();
                 if (valids.empty()) break;
 
@@ -279,37 +256,45 @@ namespace AlphaZero
 
                 winner = sim_env.check_winner();
                 board_full = sim_env.is_full();
-                if (winner != 0 || board_full) break;
+                if (winner != 0 || board_full)
+                {
+                    // 标记终局节点
+                    WDLValue tw = (winner != 0) ? winner_to_wdl(winner) : WDLValue::draw();
+                    node_pool[curr_idx].is_terminal = true;
+                    node_pool[curr_idx].terminal_wdl = tw;
+                    break;
+                }
             }
             current_leaf_idx = curr_idx;
             current_leaf_turn = sim_env.get_turn();
 
-            // 如果循环未进入或因非终局条件退出，重新检测终局
+            // 快速路径：已标记的终局节点
+            if (node_pool[curr_idx].is_terminal)
+                return {sim_env, node_pool[curr_idx].terminal_wdl, true};
+
+            // 首次终局检测（循环未进入或因非终局条件退出）
             if (winner == 0 && !board_full)
             {
                 winner = sim_env.check_winner();
                 board_full = sim_env.is_full();
             }
 
-            // 终局状态：有人赢或平局（绝对视角）
-            // check_winner() != 0 表示「上一手」赢了
-            // get_turn() 返回下一个落子方（即输家），另一方是赢家
             if (winner != 0)
             {
-                // 直接使用 check_winner() 返回值：+1 = P1 赢, -1 = P2 赢
-                // 兼容 Connect4（赢家=最后落子方）和 Othello（赢家=棋子多的一方）
-                float p1w = (winner == 1)  ? 1.0f : 0.0f;
-                float p2w = (winner == -1) ? 1.0f : 0.0f;
-                return {sim_env, 0.0f, p1w, p2w, true};
+                WDLValue tw = winner_to_wdl(winner);
+                node_pool[curr_idx].is_terminal = true;
+                node_pool[curr_idx].terminal_wdl = tw;
+                return {sim_env, tw, true};
             }
             if (board_full)
-                return {sim_env, 1.0f, 0.0f, 0.0f, true};
+            {
+                node_pool[curr_idx].is_terminal = true;
+                node_pool[curr_idx].terminal_wdl = WDLValue::draw();
+                return {sim_env, WDLValue::draw(), true};
+            }
 
-            // 非终局叶节点：保存原始状态，可选应用随机对称变换
-            leaf_state = sim_env;
-            current_sym_id = apply_random_symmetry(sim_env);
-
-            return {sim_env, 0.0f, 0.0f, 0.0f, false};
+            // 非终局叶节点：返回未变换的状态（对称变换由 BatchedMCTS 层处理）
+            return {sim_env, WDLValue{}, false};
         }
 
         // ======== Backpropagation 辅助函数 ========
@@ -327,12 +312,11 @@ namespace AlphaZero
          */
         void expand_leaf(std::span<const float> policy_logits)
         {
-            // 对称逆变换：恢复 simulate 中的随机对称
+            // policy 拷贝（对称逆变换已上提到 BatchedMCTS 层）
             std::array<float, ACTION_SIZE> policy;
             std::copy(policy_logits.begin(), policy_logits.end(), policy.begin());
-            Game::inverse_symmetry_policy(current_sym_id, policy);
 
-            auto valids = leaf_state.get_valid_moves();
+            auto valids = sim_env.get_valid_moves();
 
             // 策略归一化：只对合法动作的 logits 求和
             float policy_sum = 0.0f;
@@ -374,16 +358,14 @@ namespace AlphaZero
         }
 
         /**
-         * 从叶节点沿 parent 链向上更新统计量（绝对视角：d, p1w, p2w 不交换）。
-         * Q 在每层根据该节点的落子方计算：turn==1 时 Q=p1w-p2w，turn==-1 时 Q=p2w-p1w。
+         * 从叶节点沿 parent 链向上更新统计量（绝对视角 WDL 不交换）。
+         * Q 在每层根据该节点的落子方计算。
          * moves_left 递增 1（父节点比子节点多一步）。
          *
-         * @param d_val      和棋率（绝对视角）
-         * @param p1w_val    P1 胜率（绝对视角）
-         * @param p2w_val    P2 胜率（绝对视角）
+         * @param leaf_wdl   叶节点评估的 WDL（绝对视角）
          * @param moves_left 预期剩余步数
          */
-        void propagate(float d_val, float p1w_val, float p2w_val, float moves_left)
+        void propagate(WDLValue leaf_wdl, float moves_left)
         {
             int32_t idx = current_leaf_idx;
             float ml = moves_left;
@@ -392,23 +374,15 @@ namespace AlphaZero
             {
                 Node &node = node_pool[idx];
                 node.n_visits++;
-                node.d += (d_val - node.d) / node.n_visits;
-                node.p1w += (p1w_val - node.p1w) / node.n_visits;
-                node.p2w += (p2w_val - node.p2w) / node.n_visits;
-                node.Q = (turn == 1) ? (node.p1w - node.p2w) : (node.p2w - node.p1w);
+                node.wdl.update_mean(leaf_wdl, node.n_visits);
+                node.Q = node.wdl.q(turn);
                 node.M += (ml - node.M) / node.n_visits;
                 ml += 1.0f;
                 turn = -turn;
                 idx = node.parent;
 
-                // 逐层衰减：向 uniform(⅓,⅓,⅓) 混合，使深层叶节点评估对根节点影响递减
                 if (value_decay < 1.0f)
-                {
-                    constexpr float u = 1.0f / 3.0f;
-                    d_val   = value_decay * d_val   + (1.0f - value_decay) * u;
-                    p1w_val = value_decay * p1w_val + (1.0f - value_decay) * u;
-                    p2w_val = value_decay * p2w_val + (1.0f - value_decay) * u;
-                }
+                    leaf_wdl = leaf_wdl.decayed(value_decay);
             }
         }
 
@@ -418,82 +392,18 @@ namespace AlphaZero
          * 反向传播阶段：用评估结果展开叶节点并更新路径上的统计量。
          *
          * @param policy_logits NN 输出的策略 logits（或 uniform），长度 ACTION_SIZE
-         * @param d_val         和棋率（绝对视角）
-         * @param p1w_val       P1 胜率（绝对视角）
-         * @param p2w_val       P2 胜率（绝对视角）
+         * @param wdl           WDL 评估值（绝对视角）
          * @param moves_left    预期剩余步数（NN 输出，纯 MCTS 时为 0）
          * @param is_terminal   是否为终局状态（终局不展开，仅传播）
          */
-        void backprop(std::span<const float> policy_logits, float d_val, float p1w_val, float p2w_val, float moves_left, bool is_terminal)
+        void backprop(std::span<const float> policy_logits, WDLValue wdl, float moves_left, bool is_terminal)
         {
             if (current_leaf_idx == -1) return;
 
             if (!is_terminal)
                 expand_leaf(policy_logits);
 
-            propagate(d_val, p1w_val, p2w_val, is_terminal ? 0.0f : moves_left);
-        }
-
-        // ========== Random Rollout（纯 MCTS 基线）==========
-
-        /**
-         * 随机模拟（rollout）：从给定状态随机落子直到终局。
-         * 用于纯 MCTS 基线的叶节点评估，替代神经网络。
-         *
-         * @param state 起始游戏状态（按值传递，内部修改不影响外部）
-         * @return 终局价值：-1（上一手赢了）或 0（平局），相对于「即将落子方」
-         */
-        float random_rollout(Game state) const
-        {
-            std::mt19937 &rng = get_rng();
-            int leaf_turn = state.get_turn();  // 叶节点落子方
-            while (true)
-            {
-                int w = state.check_winner();
-                // 直接用 check_winner() 返回值判断：+1=P1赢, -1=P2赢
-                // 转换为叶节点视角：赢家==叶节点方 → +1, 否则 → -1
-                if (w != 0) return (w == leaf_turn) ? 1.0f : -1.0f;
-                if (state.is_full()) return 0.0f;
-                auto valids = state.get_valid_moves();
-                std::uniform_int_distribution<int> dist(0, valids.size() - 1);
-                state.step(valids.moves[dist(rng)]);
-            }
-        }
-
-        /**
-         * 一步完成 simulate + rollout + backprop，无需 Python 回调。
-         * 用于纯 MCTS 基线：对叶节点用 random_rollout 评估，用 uniform prior 展开。
-         * @param start_state 当前棋盘状态
-         */
-        void simulate_with_rollout(const Game &start_state)
-        {
-            auto result = simulate(start_state);
-
-            if (result.is_terminal)
-            {
-                std::array<float, ACTION_SIZE> dummy{};
-                backprop(dummy, result.terminal_d, result.terminal_p1w, result.terminal_p2w, 0.0f, true);
-            }
-            else
-            {
-                float val = random_rollout(leaf_state);
-                // rollout 返回标量：-1=叶节点方输, +1=叶节点方赢, 0=平局
-                // 转为绝对视角 (d, p1w, p2w)
-                float rd = (std::abs(val) < 0.5f) ? 1.0f : 0.0f;
-                float rp1w = 0.0f, rp2w = 0.0f;
-                if (val > 0.5f) {
-                    // 叶节点方赢
-                    rp1w = (current_leaf_turn == 1)  ? 1.0f : 0.0f;
-                    rp2w = (current_leaf_turn == -1) ? 1.0f : 0.0f;
-                } else if (val < -0.5f) {
-                    // 叶节点方输
-                    rp1w = (current_leaf_turn == -1) ? 1.0f : 0.0f;
-                    rp2w = (current_leaf_turn == 1)  ? 1.0f : 0.0f;
-                }
-                std::array<float, ACTION_SIZE> uniform;
-                uniform.fill(1.0f);
-                backprop(uniform, rd, rp1w, rp2w, 0.0f, false);
-            }
+            propagate(wdl, is_terminal ? 0.0f : moves_left);
         }
 
         /**
@@ -529,9 +439,9 @@ namespace AlphaZero
             out[0] = static_cast<float>(root.n_visits);
             out[1] = root.Q;
             out[2] = root.M;
-            out[3] = root.d;
-            out[4] = root.p1w;
-            out[5] = root.p2w;
+            out[3] = root.wdl.d;
+            out[4] = root.wdl.p1w;
+            out[5] = root.wdl.p2w;
 
             float *p = out + 6;
             for (int a = 0; a < ACTION_SIZE; ++a)
@@ -545,9 +455,9 @@ namespace AlphaZero
                     p[2] = child.prior;
                     p[3] = child.noise;
                     p[4] = child.M;
-                    p[5] = child.d;
-                    p[6] = child.p1w;
-                    p[7] = child.p2w;
+                    p[5] = child.wdl.d;
+                    p[6] = child.wdl.p1w;
+                    p[7] = child.wdl.p2w;
                 }
                 else
                 {
