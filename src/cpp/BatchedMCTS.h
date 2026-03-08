@@ -18,7 +18,8 @@ namespace AlphaZero
      *   3. backprop_batch() — 并行反向传播评估结果
      *   4. 重复 n_playout 次
      *
-     * 对于纯 MCTS 基线，rollout_playout() 将整个循环留在 C++ 内。
+     * 对于纯 MCTS 基线，search() 将整个循环留在 C++ 内。
+     * SearchConfig 由 BatchedMCTS 拥有，所有子树通过 const 指针共享。
      *
      * @tparam Game 满足 MCTSGame concept 的游戏类型
      */
@@ -30,38 +31,26 @@ namespace AlphaZero
         static constexpr int BOARD_SIZE = Game::Traits::BOARD_SIZE;
 
         int n_envs;                                             ///< 并行环境数量
+        SearchConfig config_;                                   ///< 搜索配置（本类拥有）
         std::vector<std::unique_ptr<MCTS<Game>>> mcts_envs;     ///< 每局独立的 MCTS 搜索树
-        bool use_symmetry;                                      ///< 是否启用随机对称增强
         std::vector<int> pending_sym_ids_;                      ///< 每个 env 的待处理对称 ID
 
     public:
         /**
          * 构造批量 MCTS。
-         * @param num_envs       并行环境数量
-         * @param c_init         PUCT 初始常数
-         * @param c_base         PUCT 对数基数
-         * @param alpha          Dirichlet 噪声 alpha（≤0 禁用）
-         * @param noise_epsilon  噪声混合权重
-         * @param fpu_reduction  FPU 衰减系数
-         * @param use_symmetry   是否启用随机对称增强
-         * @param mlh_slope      MLH 斜率
-         * @param mlh_cap        MLH 上限
-         * @param mlh_threshold  MLH Q 阈值
-         * @param value_decay    Backprop 逐层衰减系数（1.0=禁用）
+         * @param num_envs 并行环境数量
          */
-        BatchedMCTS(int num_envs, float c_init, float c_base, float alpha,
-                    float noise_epsilon = 0.25f, float fpu_reduction = 0.4f, bool use_symmetry_ = true,
-                    float mlh_slope = 0.0f, float mlh_cap = 0.2f, float mlh_threshold = 0.8f,
-                    float value_decay = 1.0f)
-            : n_envs(num_envs), use_symmetry(use_symmetry_), pending_sym_ids_(num_envs, 0)
+        explicit BatchedMCTS(int num_envs)
+            : n_envs(num_envs), pending_sym_ids_(num_envs, 0)
         {
             mcts_envs.reserve(n_envs);
             for (int i = 0; i < n_envs; ++i)
-            {
-                mcts_envs.push_back(std::make_unique<MCTS<Game>>(c_init, c_base, alpha, noise_epsilon, fpu_reduction,
-                                                                  mlh_slope, mlh_cap, mlh_threshold, value_decay));
-            }
+                mcts_envs.push_back(std::make_unique<MCTS<Game>>(config_));
         }
+
+        /// 获取搜索配置（可修改）
+        SearchConfig& config() { return config_; }
+        const SearchConfig& config() const { return config_; }
 
         /**
          * 设置所有 OpenMP 线程的随机种子。
@@ -101,67 +90,6 @@ namespace AlphaZero
         }
 
         /**
-         * 批量设置噪声混合权重 ε。
-         * 训练时使用正值（如 0.25）增加探索；评估时设为 0 关闭噪声。
-         * @param eps 噪声权重
-         */
-        void set_noise_epsilon(float eps)
-        {
-            for (auto &m : mcts_envs)
-            {
-                m->noise_epsilon = eps;
-            }
-        }
-
-        /**
-         * 批量设置 Moves Left Head 参数。
-         * @param slope     MLH 斜率（0 = 禁用）
-         * @param cap       MLH 最大影响上限
-         * @param threshold MLH Q 阈值
-         */
-        void set_mlh_params(float slope, float cap, float threshold)
-        {
-            for (auto &m : mcts_envs)
-            {
-                m->mlh_slope = slope;
-                m->mlh_cap = cap;
-                m->mlh_threshold = threshold;
-            }
-        }
-
-        /* ── 运行时参数 setter（不销毁搜索树） ──────────────────── */
-
-        void set_c_init(float val)
-        {
-            for (auto &m : mcts_envs) m->c_init = val;
-        }
-
-        void set_c_base(float val)
-        {
-            for (auto &m : mcts_envs) m->c_base = val;
-        }
-
-        void set_alpha(float val)
-        {
-            for (auto &m : mcts_envs) m->alpha = val;
-        }
-
-        void set_fpu_reduction(float val)
-        {
-            for (auto &m : mcts_envs) m->fpu_reduction = val;
-        }
-
-        void set_use_symmetry(bool val)
-        {
-            use_symmetry = val;
-        }
-
-        void set_value_decay(float val)
-        {
-            for (auto &m : mcts_envs) m->value_decay = val;
-        }
-
-        /**
          * 批量树剪枝：每局选择实际落子的动作，将对应子树提升为新根节点。
          * @param actions 每局的落子动作，长度 n_envs
          */
@@ -178,13 +106,6 @@ namespace AlphaZero
          * 批量 Selection 阶段：并行选择叶节点。
          *
          * 每局独立执行 MCTS::simulate()，返回叶节点状态供外部 NN 评估。
-         *
-         * @param input_boards       输入棋盘 (n_envs × BOARD_SIZE)，int8
-         * @param turns              当前落子方 (n_envs,)，1 或 -1
-         * @param output_boards      [输出] 叶节点棋盘 (n_envs × BOARD_SIZE)
-         * @param output_term_values [输出] 终局价值 (n_envs,)
-         * @param output_is_term     [输出] 是否终局 (n_envs,)
-         * @param output_turns       [输出] 叶节点落子方 (n_envs,)
          */
         void search_batch(
             const int8_t *input_boards,
@@ -214,7 +135,7 @@ namespace AlphaZero
                 output_turns[i] = result.board.get_turn();
 
                 // 对非终局叶节点应用随机对称变换（增加 NN 输入多样性）
-                if (!result.is_terminal && use_symmetry && Game::Traits::NUM_SYMMETRIES > 1)
+                if (!result.is_terminal && config_.use_symmetry && Game::Traits::NUM_SYMMETRIES > 1)
                 {
                     std::mt19937 &rng = get_rng();
                     int sym_id = std::uniform_int_distribution<int>(0, Game::Traits::NUM_SYMMETRIES - 1)(rng);
@@ -232,11 +153,6 @@ namespace AlphaZero
 
         /**
          * 批量 Backpropagation 阶段：并行反向传播 NN 评估结果。
-         *
-         * @param policy_logits NN 策略输出 (n_envs × ACTION_SIZE)
-         * @param values        NN 价值输出 (n_envs,)
-         * @param moves_left    NN 剩余步数输出 (n_envs,)
-         * @param is_term       是否终局 (n_envs,)
          */
         void backprop_batch(
             const float *policy_logits,
@@ -263,18 +179,119 @@ namespace AlphaZero
             }
         }
 
+        // ========== Virtual Loss 批量方法 ==========
+
+        /**
+         * VL 批量 Selection：每棵树执行 K 次 VL 模拟，收集 N*K 个叶节点。
+         *
+         * 输出数组布局：[env0_leaf0, env0_leaf1, ..., env0_leafK-1, env1_leaf0, ...]
+         * sym_ids 作为显式输出数组（大小 N*K），因为 pending_sym_ids_ 仅 N 大小。
+         *
+         * @param K       每棵树每次迭代的 VL 模拟次数
+         * @param sym_ids 输出：对称变换 ID（N*K 长度）
+         */
+        void search_batch_vl(
+            int K,
+            const int8_t *input_boards,
+            const int *turns,
+            int8_t *output_boards,
+            float *output_term_d,
+            float *output_term_p1w,
+            float *output_term_p2w,
+            uint8_t *output_is_term,
+            int *output_turns,
+            int *sym_ids)
+        {
+#pragma omp parallel for schedule(static)
+            for (int i = 0; i < n_envs; ++i)
+            {
+                Game current_game;
+                current_game.import_board(input_boards + i * BOARD_SIZE);
+                current_game.set_turn(turns[i]);
+
+                mcts_envs[i]->prepare_vl(K);
+
+                for (int k = 0; k < K; ++k)
+                {
+                    int flat_idx = i * K + k;
+                    auto result = mcts_envs[i]->simulate_vl(k, current_game);
+
+                    output_is_term[flat_idx] = result.is_terminal ? 1 : 0;
+                    output_term_d[flat_idx] = result.terminal_wdl.d;
+                    output_term_p1w[flat_idx] = result.terminal_wdl.p1w;
+                    output_term_p2w[flat_idx] = result.terminal_wdl.p2w;
+                    output_turns[flat_idx] = result.board.get_turn();
+
+                    // 对称增强：每个叶节点独立随机变换
+                    if (!result.is_terminal && config_.use_symmetry && Game::Traits::NUM_SYMMETRIES > 1)
+                    {
+                        std::mt19937 &rng = get_rng();
+                        int sym_id = std::uniform_int_distribution<int>(
+                            0, Game::Traits::NUM_SYMMETRIES - 1)(rng);
+                        sym_ids[flat_idx] = sym_id;
+                        if (sym_id != 0) result.board.apply_symmetry(sym_id);
+                    }
+                    else
+                    {
+                        sym_ids[flat_idx] = 0;
+                    }
+
+                    std::memcpy(output_boards + flat_idx * BOARD_SIZE,
+                                result.board.board_data(), BOARD_SIZE);
+                }
+            }
+        }
+
+        /**
+         * VL 批量 Backpropagation：先移除所有 VL，再逐个反向传播 K 个结果。
+         *
+         * 输入数组布局与 search_batch_vl 一致：[env0_leaf0, ..., env0_leafK-1, env1_leaf0, ...]
+         *
+         * @param K       VL 模拟次数（与 search_batch_vl 一致）
+         * @param sym_ids 对称变换 ID（来自 search_batch_vl 的输出）
+         */
+        void backprop_batch_vl(
+            int K,
+            const float *policy_logits,
+            const float *d_vals,
+            const float *p1w_vals,
+            const float *p2w_vals,
+            const float *moves_left,
+            const uint8_t *is_term,
+            const int *sym_ids)
+        {
+#pragma omp parallel for schedule(static)
+            for (int i = 0; i < n_envs; ++i)
+            {
+                // Phase 1: 移除所有 VL，恢复树到干净状态
+                mcts_envs[i]->remove_all_vl(K);
+
+                // Phase 2: 逐个反向传播 K 个结果
+                for (int k = 0; k < K; ++k)
+                {
+                    int flat_idx = i * K + k;
+
+                    std::array<float, ACTION_SIZE> policy;
+                    int p_offset = flat_idx * ACTION_SIZE;
+                    for (int a = 0; a < ACTION_SIZE; ++a)
+                        policy[a] = policy_logits[p_offset + a];
+
+                    // 对称逆变换
+                    if (sym_ids[flat_idx] != 0)
+                        Game::inverse_symmetry_policy(sym_ids[flat_idx], policy);
+
+                    WDLValue wdl{d_vals[flat_idx], p1w_vals[flat_idx], p2w_vals[flat_idx]};
+                    mcts_envs[i]->backprop_vl(k, policy, wdl,
+                                               moves_left[flat_idx],
+                                               is_term[flat_idx] != 0);
+                }
+            }
+        }
+
         // ========== 通用搜索入口（IEvaluator）==========
 
         /**
          * 通用搜索入口：用 IEvaluator 完成整个 playout 循环。
-         *
-         * 替代旧的 rollout_playout()：对于纯 MCTS 基线，传入 RolloutEvaluator 即可。
-         * 工作流：并行 selection → 批量评估（IEvaluator）→ 并行 backprop → 重复 n_playout 次。
-         *
-         * @param evaluator    叶节点评估器（RolloutEvaluator、NNUE 等）
-         * @param input_boards 输入棋盘 (n_envs × BOARD_SIZE)，int8
-         * @param turns        当前落子方 (n_envs,)
-         * @param n_playout    模拟次数
          */
         void search(IEvaluator<Game> &evaluator,
                     const int8_t *input_boards, const int *turns, int n_playout)
@@ -348,7 +365,7 @@ namespace AlphaZero
 
         /**
          * 获取所有环境根节点各动作的访问次数。
-         * @return flat 向量 (n_envs × ACTION_SIZE)，counts[i*A + a] = 环境 i 动作 a 的访问次数
+         * @return flat 向量 (n_envs × ACTION_SIZE)
          */
         std::vector<int> get_all_counts()
         {
@@ -366,15 +383,11 @@ namespace AlphaZero
             return all_counts;
         }
 
-        /// 每个环境的 root stats flat 长度：6 (root_N, root_Q, root_M, root_D, root_P1W, root_P2W) + ACTION_SIZE × 8
+        /// 每个环境的 root stats flat 长度
         static constexpr int STATS_PER_ENV = 6 + ACTION_SIZE * 8;
 
         /**
          * 获取所有环境的根节点统计量，写入 flat 缓冲区。
-         *
-         * 每个环境布局：[root_N, root_Q, root_M, root_D, root_P1W, root_P2W, a0_N, a0_Q, a0_prior, a0_noise, a0_M, a0_D, a0_P1W, a0_P2W, ...]
-         *
-         * @param out 预分配缓冲区，大小 = n_envs × STATS_PER_ENV
          */
         void get_all_root_stats(float *out)
         {

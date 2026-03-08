@@ -1,6 +1,8 @@
 #pragma once
 #include "GameContext.h"
 #include "MCTSNode.h"
+#include <algorithm>
+#include <limits>
 #include <random>
 #include <span>
 #include <vector>
@@ -16,21 +18,28 @@ namespace AlphaZero
 
     /**
      * simulate() 的返回值：叶节点状态及其终局信息。
-     * 使用结构体返回替代 4 个 out 参数，利用 NRVO 零开销。
      */
     template <MCTSGame Game>
     struct SimResult
     {
-        Game board;             ///< 叶节点棋盘（可能经过对称变换）
-        WDLValue terminal_wdl;  ///< 终局 WDL（绝对视角），仅终局有效
-        bool is_terminal;       ///< 是否为终局状态
+        Game board;
+        WDLValue terminal_wdl;
+        bool is_terminal;
+    };
+
+    /// Virtual Loss 路径条目：记录经过的 (parent_node, edge_idx) 对
+    struct VLPathEntry
+    {
+        int32_t node_idx;   ///< 父节点索引
+        int32_t edge_idx;   ///< 在该节点中选择的边索引
     };
 
     /**
      * 单棵 MCTS 搜索树，对应一局游戏。
      *
-     * 核心流程：simulate() 选择叶节点 → 外部评估（NN 或 rollout）→ backprop() 反向传播。
-     * 节点以线性池（node_pool）管理，通过 int32_t 索引引用，避免指针开销。
+     * 核心流程：simulate() 选择叶节点 → 外部评估 → backprop() 反向传播。
+     * 节点和边分离存储在 NodePool 中，通过 int32_t 索引引用。
+     * 子节点延迟分配：expand_leaf() 只创建 Edge，子 Node 在首次访问时分配。
      *
      * @tparam Game 满足 MCTSGame concept 的游戏类型
      */
@@ -39,240 +48,251 @@ namespace AlphaZero
     {
     public:
         static constexpr int ACTION_SIZE = Game::Traits::ACTION_SIZE;
-        using Node = MCTSNode<ACTION_SIZE>;
 
-        std::vector<Node> node_pool;        ///< 节点池（线性数组，索引访问）
-        int32_t root_idx = 0;               ///< 当前根节点在 node_pool 中的索引
-        int32_t next_free_node = 0;         ///< 下一个可分配的节点索引
+        NodePool pool_;                     ///< 节点 + 边池
+        int32_t root_idx_ = -1;             ///< 根节点索引
+        const SearchConfig *config_;        ///< 搜索配置（非拥有指针）
 
         Game sim_env;                       ///< simulate() 中用于模拟走步的临时游戏状态
         int32_t current_leaf_idx = -1;      ///< 最近一次 simulate() 到达的叶节点索引
-        int current_leaf_turn = 1;          ///< 最近一次 simulate() 叶节点的落子方（1 或 -1）
+        int current_leaf_turn = 1;          ///< 最近一次 simulate() 叶节点的落子方
 
-        float c_init, c_base, alpha;        ///< PUCT 常数、Dirichlet alpha
-        float noise_epsilon;                ///< Dirichlet 噪声混合权重 ε
-        float fpu_reduction;                ///< First Play Urgency 衰减系数
-        float mlh_slope;                    ///< Moves Left Head 斜率
-        float mlh_cap;                      ///< Moves Left Head 最大影响上限
-        float mlh_threshold;                ///< MLH Q 阈值：|Q| 低于此值时 M utility 为 0
-        float value_decay;                  ///< Backprop 逐层衰减系数：每层将 WDL 向 uniform(⅓) 混合
+        // ======== Virtual Loss 状态 ========
+        std::vector<std::vector<VLPathEntry>> vl_paths_;   ///< K 条路径，每条记录 (parent_node, edge_idx)
+        std::vector<Game>     vl_envs_;                     ///< K 个叶节点的游戏状态
+        std::vector<int32_t>  vl_leaf_indices_;             ///< K 个叶节点索引
+        std::vector<int>      vl_leaf_turns_;               ///< K 个叶节点的落子方
 
         /**
          * 构造 MCTS 搜索树。
-         * @param c_i       PUCT 初始常数 c_init
-         * @param c_b       PUCT 对数基数 c_base
-         * @param a         Dirichlet 噪声 alpha（≤0 时禁用噪声）
-         * @param noise_eps 噪声混合权重 ε
-         * @param fpu_red   FPU 衰减系数
-         * @param mlh_slope_ MLH 斜率
-         * @param mlh_cap_   MLH 上限
-         * @param mlh_threshold_ MLH Q 阈值
-         * @param value_decay_ Backprop 逐层衰减系数（1.0=禁用）
+         * @param config 搜索配置的引用（由 BatchedMCTS 拥有）
          */
-        MCTS(float c_i, float c_b, float a, float noise_eps = 0.25f, float fpu_red = 0.4f,
-             float mlh_slope_ = 0.0f, float mlh_cap_ = 0.2f, float mlh_threshold_ = 0.8f, float value_decay_ = 1.0f)
-            : c_init(c_i), c_base(c_b), alpha(a), noise_epsilon(noise_eps), fpu_reduction(fpu_red),
-              mlh_slope(mlh_slope_), mlh_cap(mlh_cap_), mlh_threshold(mlh_threshold_), value_decay(value_decay_)
+        MCTS(const SearchConfig &config)
+            : config_(&config), pool_(2048)
         {
-            node_pool.resize(2000);
             reset();
         }
 
-        /// 重置搜索树：清空节点池，创建新根节点
+        /// 重置搜索树：清空池，创建新根节点
         void reset()
         {
-            next_free_node = 0;
-            root_idx = allocate_node(-1, 1.0f);
+            pool_.reset();
+            root_idx_ = pool_.allocate_node();
+            pool_.node(root_idx_).turn = 1; // 默认 P1 先手
         }
 
-        /**
-         * 从节点池分配一个新节点。
-         * 池空间不足时自动 2 倍扩容。
-         * @param parent 父节点索引
-         * @param prior  策略先验概率
-         * @return 新节点在 node_pool 中的索引
-         */
-        int32_t allocate_node(int32_t parent, float prior)
-        {
-            if (next_free_node >= static_cast<int32_t>(node_pool.size()))
-            {
-                node_pool.resize(node_pool.size() * 2);
-            }
-            int32_t idx = next_free_node++;
-            node_pool[idx].reset(parent, prior);
-            return idx;
-        }
+        // ======== 树剪枝 ========
 
         /**
-         * 树剪枝：落子 action 后，将对应子节点提升为新根节点。
-         * 如果子节点不存在（action 无效），则重置整棵树。
-         * 剪枝后为新根节点重新生成 Dirichlet 噪声。
-         * @param action 实际落子的动作
+         * 落子后将对应子树提升为新根节点。
+         * 遍历根节点的 edges 查找匹配动作（O(num_edges)，每步仅调用一次）。
          */
         void prune_root(int action)
         {
-            int32_t child_idx = node_pool[root_idx].children[action];
-            if (action >= 0 && action < ACTION_SIZE && child_idx != -1)
+            MCTSNode &root = pool_.node(root_idx_);
+            if (root.is_expanded)
             {
-                root_idx = child_idx;
-                node_pool[root_idx].parent = -1;
-                apply_root_noise();
-            } else
-            {
-                reset();
+                for (int i = 0; i < root.num_edges; ++i)
+                {
+                    Edge &e = pool_.edge(root.edge_offset, i);
+                    if (e.action == action && e.child != -1)
+                    {
+                        root_idx_ = e.child;
+                        pool_.node(root_idx_).parent = -1;
+                        apply_root_noise();
+                        return;
+                    }
+                }
             }
+            reset();
         }
 
         /**
-         * 为当前根节点的所有已有子节点重新生成 Dirichlet 噪声。
-         * 仅在 alpha > 0 且根节点已展开时生效。
-         * 通过 Gamma 分布采样后归一化得到 Dirichlet 分布。
+         * 为根节点的边重新生成 Dirichlet 噪声。
          */
         void apply_root_noise()
         {
-            if (alpha <= 0.0f || !node_pool[root_idx].is_expanded) return;
+            if (config_->dirichlet_alpha <= 0.0f) return;
+            MCTSNode &root = pool_.node(root_idx_);
+            if (!root.is_expanded || root.num_edges == 0) return;
 
             std::mt19937 &rng = get_rng();
-            std::gamma_distribution<float> gamma(alpha, 1.0f);
+            std::gamma_distribution<float> gamma(config_->dirichlet_alpha, 1.0f);
 
-            std::array<int32_t, ACTION_SIZE> valid_children;
-            int n_valid = 0;
-            for (int a = 0; a < ACTION_SIZE; ++a)
-            {
-                if (node_pool[root_idx].children[a] != -1)
-                    valid_children[n_valid++] = node_pool[root_idx].children[a];
-            }
-            if (n_valid == 0) return;
-
-            std::array<float, ACTION_SIZE> noise_arr;
             float sum = 0.0f;
-            for (int i = 0; i < n_valid; ++i)
+            std::vector<float> noise_arr(root.num_edges);
+            for (int i = 0; i < root.num_edges; ++i)
             {
                 noise_arr[i] = gamma(rng);
                 sum += noise_arr[i];
             }
-            for (int i = 0; i < n_valid; ++i)
-                node_pool[valid_children[i]].noise = noise_arr[i] / (sum + 1e-8f);
+            float inv = 1.0f / (sum + 1e-8f);
+            for (int i = 0; i < root.num_edges; ++i)
+                pool_.edge(root.edge_offset, i).noise = noise_arr[i] * inv;
         }
 
         // ======== Selection 辅助函数 ========
 
         /**
          * 计算 FPU（First Play Urgency）：未访问动作的默认价值估计。
-         * 劣势时降低 FPU，鼓励探索新走法。
-         *
-         * @param node_idx  当前节点索引
-         * @param valids    合法动作列表
-         * @return FPU 值，用于未访问子节点的 UCB Q 值替代
+         * 遍历节点的 edges，统计已访问子节点的 policy 总和。
          */
-        float compute_fpu(int32_t node_idx, const ValidMoves<ACTION_SIZE> &valids) const
+        float compute_fpu(int32_t node_idx) const
         {
-            const Node &node = node_pool[node_idx];
+            const MCTSNode &node = pool_.node(node_idx);
+            float parent_q = node.mean_q();
             float seen_policy = 0.0f;
-            for (int action : valids)
+            for (int i = 0; i < node.num_edges; ++i)
             {
-                int32_t child_idx = node.children[action];
-                if (child_idx != -1 && node_pool[child_idx].n_visits > 0)
-                    seen_policy += node_pool[child_idx].prior;
+                const Edge &e = pool_.edge(node.edge_offset, i);
+                if (e.child != -1 && pool_.node(e.child).n_visits > 0)
+                    seen_policy += e.prior;
             }
-            float scale = (1.0f + node.Q) / 2.0f;
-            float effective_fpu = fpu_reduction * scale;
-            float fpu_value = node.Q - effective_fpu * std::sqrt(seen_policy);
+            float scale = (1.0f + parent_q) / 2.0f;
+            float effective_fpu = config_->fpu_reduction * scale;
+            float fpu_value = parent_q - effective_fpu * std::sqrt(seen_policy);
             return std::max(-1.0f, fpu_value);
         }
 
         /**
-         * 在已展开节点中按 UCB 分数选择最优动作。
-         *
-         * @param node_idx  当前节点索引
-         * @param valids    合法动作列表
-         * @param fpu_value FPU 值（未访问子节点的默认 Q 估计）
-         * @return 最优动作索引；所有子节点都不存在时返回 -1
+         * 在已展开节点中选择最优边（UCB 分数最高）。
+         * UCB = q_value + u_score + m_utility，内联计算。
+         * @return 最优边索引；无有效边时返回 -1
          */
-        int select_action(int32_t node_idx, const ValidMoves<ACTION_SIZE> &valids, float fpu_value) const
+        int select_edge(int32_t node_idx, float fpu_value) const
         {
-            const Node &node = node_pool[node_idx];
+            const MCTSNode &node = pool_.node(node_idx);
             float parent_n = static_cast<float>(node.n_visits);
-            float parent_M = node.M;
-            bool is_root = (node_idx == root_idx);
+            float parent_M = node.mean_M();
+            bool is_root = (node_idx == root_idx_);
+            float ne = config_->noise_epsilon;
 
             float best_score = -std::numeric_limits<float>::infinity();
-            int best_action = -1;
+            int best_edge = -1;
 
-            for (int action : valids)
+            for (int i = 0; i < node.num_edges; ++i)
             {
-                int32_t child_idx = node.children[action];
-                if (child_idx != -1)
+                const Edge &e = pool_.edge(node.edge_offset, i);
+
+                // 有效先验：根节点混合 Dirichlet 噪声
+                float effective_prior = e.prior;
+                if (is_root && ne > 0.0f)
+                    effective_prior = (1.0f - ne) * e.prior + ne * e.noise;
+
+                // Q 值
+                float q_value;
+                float child_Q = 0.0f;
+                float child_M = 0.0f;
+                int child_visits = 0;
+
+                if (e.child != -1 && pool_.node(e.child).n_visits > 0)
                 {
-                    float score = node_pool[child_idx].get_ucb(
-                        c_init, c_base, parent_n, is_root, noise_epsilon,
-                        fpu_value, parent_M, mlh_slope, mlh_cap, mlh_threshold);
-                    if (score > best_score)
+                    const MCTSNode &child = pool_.node(e.child);
+                    child_visits = child.n_visits;
+                    child_Q = child.mean_q(); // 子节点视角
+                    child_M = child.mean_M();
+                    q_value = -child_Q; // 翻转到父节点视角
+                }
+                else
+                {
+                    q_value = fpu_value;
+                }
+
+                // PUCT 探索项
+                float c_puct = config_->c_init +
+                    std::log((parent_n + config_->c_base + 1.0f) / config_->c_base);
+                float u_score = c_puct * effective_prior *
+                    std::sqrt(parent_n) / (1.0f + child_visits);
+
+                // MLH 偏好项
+                float m_utility = 0.0f;
+                if (config_->mlh_slope > 0.0f && child_visits > 0)
+                {
+                    float abs_q = std::abs(child_Q);
+                    if (config_->mlh_threshold <= 0.0f || abs_q >= config_->mlh_threshold)
                     {
-                        best_score = score;
-                        best_action = action;
+                        float m_diff = child_M - parent_M;
+                        m_utility = std::clamp(config_->mlh_slope * m_diff,
+                                               -config_->mlh_cap, config_->mlh_cap) * child_Q;
+                        if (config_->mlh_threshold > 0.0f && config_->mlh_threshold < 1.0f)
+                            m_utility *= (abs_q - config_->mlh_threshold) /
+                                         (1.0f - config_->mlh_threshold);
                     }
                 }
+
+                float score = q_value + u_score + m_utility;
+                if (score > best_score)
+                {
+                    best_score = score;
+                    best_edge = i;
+                }
             }
-            return best_action;
+            return best_edge;
         }
 
         // ======== 核心搜索流程 ========
 
         /**
-         * MCTS 模拟阶段（Selection）：从根节点沿搜索树向下选择，直到到达叶节点或终局状态。
-         *
-         * 在已展开节点中，按 UCB 分数选择最优动作并前进；
-         * 遇到未展开节点或终局状态时停止。
-         * 对非终局叶节点可选应用随机对称变换。
-         *
-         * @param start_state 当前棋盘状态
-         * @return SimResult 包含叶节点状态和终局信息
+         * MCTS Selection：从根节点沿搜索树向下选择，直到叶节点或终局。
+         * 子节点延迟分配：首次沿某条边访问时才创建子 Node。
          */
         SimResult<Game> simulate(const Game &start_state)
         {
             sim_env = start_state;
-            int32_t curr_idx = root_idx;
+            int32_t curr_idx = root_idx_;
 
             int winner = 0;
             bool board_full = false;
 
-            // Selection：沿已展开路径选择最优动作
-            while (node_pool[curr_idx].is_expanded)
+            while (pool_.node(curr_idx).is_expanded)
             {
-                // 快速路径：已标记的终局节点，跳过 check_winner/is_full
-                if (node_pool[curr_idx].is_terminal)
+                MCTSNode &node = pool_.node(curr_idx);
+
+                // 快速路径：已标记的终局节点
+                if (node.is_terminal)
                     break;
 
-                auto valids = sim_env.get_valid_moves();
-                if (valids.empty()) break;
+                if (node.num_edges == 0) break;
 
-                float fpu = compute_fpu(curr_idx, valids);
-                int action = select_action(curr_idx, valids, fpu);
-                if (action == -1) break;
+                float fpu = compute_fpu(curr_idx);
+                int best_edge = select_edge(curr_idx, fpu);
+                if (best_edge < 0) break;
 
-                sim_env.step(action);
-                curr_idx = node_pool[curr_idx].children[action];
+                Edge &e = pool_.edge(node.edge_offset, best_edge);
+                sim_env.step(e.action);
 
+                // 延迟子节点分配
+                if (e.child == -1)
+                {
+                    e.child = pool_.allocate_node();
+                    MCTSNode &child = pool_.node(e.child);
+                    child.parent = curr_idx;
+                    child.parent_edge_idx = best_edge;
+                    child.turn = sim_env.get_turn();
+                }
+                curr_idx = e.child;
+
+                // 终局检测
                 winner = sim_env.check_winner();
                 board_full = sim_env.is_full();
                 if (winner != 0 || board_full)
                 {
-                    // 标记终局节点
                     WDLValue tw = (winner != 0) ? winner_to_wdl(winner) : WDLValue::draw();
-                    node_pool[curr_idx].is_terminal = true;
-                    node_pool[curr_idx].terminal_wdl = tw;
+                    MCTSNode &leaf = pool_.node(curr_idx);
+                    leaf.is_terminal = true;
+                    leaf.set_terminal_wdl(tw);
                     break;
                 }
             }
+
             current_leaf_idx = curr_idx;
             current_leaf_turn = sim_env.get_turn();
 
             // 快速路径：已标记的终局节点
-            if (node_pool[curr_idx].is_terminal)
-                return {sim_env, node_pool[curr_idx].terminal_wdl, true};
+            if (pool_.node(curr_idx).is_terminal)
+                return {sim_env, pool_.node(curr_idx).get_terminal_wdl(), true};
 
-            // 首次终局检测（循环未进入或因非终局条件退出）
+            // 首次终局检测
             if (winner == 0 && !board_full)
             {
                 winner = sim_env.check_winner();
@@ -282,188 +302,332 @@ namespace AlphaZero
             if (winner != 0)
             {
                 WDLValue tw = winner_to_wdl(winner);
-                node_pool[curr_idx].is_terminal = true;
-                node_pool[curr_idx].terminal_wdl = tw;
+                MCTSNode &leaf = pool_.node(curr_idx);
+                leaf.is_terminal = true;
+                leaf.set_terminal_wdl(tw);
                 return {sim_env, tw, true};
             }
             if (board_full)
             {
-                node_pool[curr_idx].is_terminal = true;
-                node_pool[curr_idx].terminal_wdl = WDLValue::draw();
+                MCTSNode &leaf = pool_.node(curr_idx);
+                leaf.is_terminal = true;
+                leaf.set_terminal_wdl(WDLValue::draw());
                 return {sim_env, WDLValue::draw(), true};
             }
 
-            // 非终局叶节点：返回未变换的状态（对称变换由 BatchedMCTS 层处理）
             return {sim_env, WDLValue{}, false};
         }
 
-        // ======== Backpropagation 辅助函数 ========
+        // ======== Expansion & Backpropagation ========
 
         /**
-         * 展开叶节点：为所有合法动作创建子节点，设置策略先验和可选 Dirichlet 噪声。
-         *
-         * 流程：
-         *   1. 对 policy 应用对称逆变换（恢复 simulate 中的随机对称）
-         *   2. 归一化策略概率
-         *   3. 根节点首次展开时生成 Dirichlet 噪声
-         *   4. 为每个合法动作分配子节点
-         *
-         * @param policy_logits NN 策略输出（或 uniform prior），长度 ACTION_SIZE
+         * 展开叶节点：为所有合法动作创建 Edge（不创建子 Node）。
          */
         void expand_leaf(std::span<const float> policy_logits)
         {
-            // policy 拷贝（对称逆变换已上提到 BatchedMCTS 层）
             std::array<float, ACTION_SIZE> policy;
             std::copy(policy_logits.begin(), policy_logits.end(), policy.begin());
 
             auto valids = sim_env.get_valid_moves();
+            int num_valid = valids.size();
 
-            // 策略归一化：只对合法动作的 logits 求和
+            MCTSNode &leaf = pool_.node(current_leaf_idx);
+            leaf.edge_offset = pool_.allocate_edges(num_valid);
+            leaf.num_edges = num_valid;
+            leaf.is_expanded = true;
+
+            // 策略归一化
             float policy_sum = 0.0f;
             for (int action : valids)
                 policy_sum += policy[action];
 
             // 根节点首次展开时生成 Dirichlet 噪声
             std::array<float, ACTION_SIZE> noise_arr{};
-            bool has_noise = (node_pool[current_leaf_idx].parent == -1 && alpha > 0.0f);
+            bool has_noise = (leaf.parent == -1 && config_->dirichlet_alpha > 0.0f);
             if (has_noise)
             {
                 std::mt19937 &rng = get_rng();
-                std::gamma_distribution<float> gamma(alpha, 1.0f);
+                std::gamma_distribution<float> gamma(config_->dirichlet_alpha, 1.0f);
                 float sum = 0.0f;
-                for (int i = 0; i < valids.size(); ++i)
+                for (int i = 0; i < num_valid; ++i)
                 {
                     noise_arr[i] = gamma(rng);
                     sum += noise_arr[i];
                 }
-                for (int i = 0; i < valids.size(); ++i)
-                    noise_arr[i] /= (sum + 1e-8f);
+                float inv = 1.0f / (sum + 1e-8f);
+                for (int i = 0; i < num_valid; ++i)
+                    noise_arr[i] *= inv;
             }
 
-            // 展开：为每个合法动作创建子节点
-            int noise_idx = 0;
-            for (int action : valids)
+            // 填充 Edge
+            for (int i = 0; i < num_valid; ++i)
             {
-                float prob = policy[action] / (policy_sum + 1e-8f);
-                if (node_pool[current_leaf_idx].children[action] == -1)
-                {
-                    int32_t new_node = allocate_node(current_leaf_idx, prob);
-                    node_pool[current_leaf_idx].children[action] = new_node;
-                    if (has_noise)
-                        node_pool[new_node].noise = noise_arr[noise_idx];
-                }
-                ++noise_idx;
+                Edge &e = pool_.edge(leaf.edge_offset, i);
+                e.action = valids.moves[i];
+                e.prior = policy[valids.moves[i]] / (policy_sum + 1e-8f);
+                e.child = -1; // 延迟分配
+                if (has_noise)
+                    e.noise = noise_arr[i];
             }
-            node_pool[current_leaf_idx].is_expanded = true;
         }
 
         /**
-         * 从叶节点沿 parent 链向上更新统计量（绝对视角 WDL 不交换）。
-         * Q 在每层根据该节点的落子方计算。
-         * moves_left 递增 1（父节点比子节点多一步）。
-         *
-         * @param leaf_wdl   叶节点评估的 WDL（绝对视角）
-         * @param moves_left 预期剩余步数
+         * 从叶节点沿 parent 链向上累加 WDL 和 M。
+         * WDL 使用绝对视角累加，不翻转。Q 按需从 mean_wdl() 计算。
          */
         void propagate(WDLValue leaf_wdl, float moves_left)
         {
             int32_t idx = current_leaf_idx;
             float ml = moves_left;
-            int turn = current_leaf_turn;
             while (idx != -1)
             {
-                Node &node = node_pool[idx];
+                MCTSNode &node = pool_.node(idx);
                 node.n_visits++;
-                node.wdl.update_mean(leaf_wdl, node.n_visits);
-                node.Q = node.wdl.q(turn);
-                node.M += (ml - node.M) / node.n_visits;
+                node.W_d   += leaf_wdl.d;
+                node.W_p1w += leaf_wdl.p1w;
+                node.W_p2w += leaf_wdl.p2w;
+                node.M_sum += ml;
                 ml += 1.0f;
-                turn = -turn;
                 idx = node.parent;
 
-                if (value_decay < 1.0f)
-                    leaf_wdl = leaf_wdl.decayed(value_decay);
+                if (config_->value_decay < 1.0f)
+                    leaf_wdl = leaf_wdl.decayed(config_->value_decay);
             }
         }
 
-        // ======== 公共反向传播接口 ========
-
         /**
-         * 反向传播阶段：用评估结果展开叶节点并更新路径上的统计量。
-         *
-         * @param policy_logits NN 输出的策略 logits（或 uniform），长度 ACTION_SIZE
-         * @param wdl           WDL 评估值（绝对视角）
-         * @param moves_left    预期剩余步数（NN 输出，纯 MCTS 时为 0）
-         * @param is_terminal   是否为终局状态（终局不展开，仅传播）
+         * 反向传播：展开叶节点并更新路径统计量。
          */
         void backprop(std::span<const float> policy_logits, WDLValue wdl, float moves_left, bool is_terminal)
         {
             if (current_leaf_idx == -1) return;
-
             if (!is_terminal)
                 expand_leaf(policy_logits);
-
             propagate(wdl, is_terminal ? 0.0f : moves_left);
         }
 
+        // ======== Virtual Loss 方法 ========
+
         /**
-         * 获取根节点各动作的访问次数。
-         * @return 长度为 ACTION_SIZE 的向量，counts[a] = 动作 a 的子节点访问次数
+         * 预分配 VL 状态向量。在每轮 VL 搜索开始前调用。
+         * @param K 每棵树每次迭代的 VL 模拟次数
+         */
+        void prepare_vl(int K)
+        {
+            vl_paths_.resize(K);
+            vl_envs_.resize(K);
+            vl_leaf_indices_.resize(K, -1);
+            vl_leaf_turns_.resize(K, 1);
+            for (int k = 0; k < K; ++k)
+                vl_paths_[k].clear();
+        }
+
+        /**
+         * VL 模拟：与 simulate() 逻辑相同，额外施加 Virtual Loss。
+         *
+         * 每经过一条边，对子节点 n_visits += vl_count。膨胀的访问次数
+         * 降低 UCB 分数，使后续模拟自动探索不同分支。
+         * 路径和叶节点状态存入 vl_* 向量，供 remove_all_vl / backprop_vl 使用。
+         *
+         * @param k 第 k 次 VL 模拟（0-indexed）
+         * @param start_state 当前棋盘状态
+         */
+        SimResult<Game> simulate_vl(int k, const Game &start_state)
+        {
+            vl_paths_[k].clear();
+            sim_env = start_state;
+            int32_t curr_idx = root_idx_;
+
+            int winner = 0;
+            bool board_full = false;
+
+            while (pool_.node(curr_idx).is_expanded)
+            {
+                MCTSNode &node = pool_.node(curr_idx);
+
+                if (node.is_terminal) break;
+                if (node.num_edges == 0) break;
+
+                float fpu = compute_fpu(curr_idx);
+                int best_edge = select_edge(curr_idx, fpu);
+                if (best_edge < 0) break;
+
+                Edge &e = pool_.edge(node.edge_offset, best_edge);
+                sim_env.step(e.action);
+
+                // 延迟子节点分配
+                if (e.child == -1)
+                {
+                    e.child = pool_.allocate_node();
+                    MCTSNode &child = pool_.node(e.child);
+                    child.parent = curr_idx;
+                    child.parent_edge_idx = best_edge;
+                    child.turn = sim_env.get_turn();
+                }
+
+                // 施加 Virtual Loss：膨胀子节点访问次数
+                pool_.node(e.child).n_visits += config_->vl_count;
+
+                // 记录路径
+                vl_paths_[k].push_back({curr_idx, best_edge});
+
+                curr_idx = e.child;
+
+                // 终局检测
+                winner = sim_env.check_winner();
+                board_full = sim_env.is_full();
+                if (winner != 0 || board_full)
+                {
+                    WDLValue tw = (winner != 0) ? winner_to_wdl(winner) : WDLValue::draw();
+                    MCTSNode &leaf = pool_.node(curr_idx);
+                    leaf.is_terminal = true;
+                    leaf.set_terminal_wdl(tw);
+                    break;
+                }
+            }
+
+            // 存储叶节点状态
+            vl_leaf_indices_[k] = curr_idx;
+            vl_leaf_turns_[k] = sim_env.get_turn();
+            vl_envs_[k] = sim_env;
+
+            // 快速路径：已标记的终局节点
+            if (pool_.node(curr_idx).is_terminal)
+                return {sim_env, pool_.node(curr_idx).get_terminal_wdl(), true};
+
+            // 首次终局检测
+            if (winner == 0 && !board_full)
+            {
+                winner = sim_env.check_winner();
+                board_full = sim_env.is_full();
+            }
+
+            if (winner != 0)
+            {
+                WDLValue tw = winner_to_wdl(winner);
+                MCTSNode &leaf = pool_.node(curr_idx);
+                leaf.is_terminal = true;
+                leaf.set_terminal_wdl(tw);
+                return {sim_env, tw, true};
+            }
+            if (board_full)
+            {
+                MCTSNode &leaf = pool_.node(curr_idx);
+                leaf.is_terminal = true;
+                leaf.set_terminal_wdl(WDLValue::draw());
+                return {sim_env, WDLValue::draw(), true};
+            }
+
+            return {sim_env, WDLValue{}, false};
+        }
+
+        /**
+         * 移除所有 VL：恢复 K 条路径上的子节点访问次数。
+         * 必须在 backprop_vl 之前调用，确保树统计量干净。
+         *
+         * @param K VL 模拟次数
+         */
+        void remove_all_vl(int K)
+        {
+            int vl = config_->vl_count;
+            for (int k = 0; k < K; ++k)
+            {
+                for (auto &entry : vl_paths_[k])
+                {
+                    Edge &e = pool_.edge(
+                        pool_.node(entry.node_idx).edge_offset, entry.edge_idx);
+                    if (e.child != -1)
+                        pool_.node(e.child).n_visits -= vl;
+                }
+            }
+        }
+
+        /**
+         * VL 反向传播：恢复第 k 次模拟的叶节点状态，执行展开 + 传播。
+         *
+         * 处理重复叶节点：若两次 VL 模拟到达同一未展开叶节点，
+         * 第一次 backprop_vl 展开它，第二次检测到 is_expanded=true 后跳过展开。
+         *
+         * @param k 第 k 次 VL 模拟（0-indexed）
+         */
+        void backprop_vl(int k, std::span<const float> policy_logits,
+                         WDLValue wdl, float moves_left, bool is_terminal)
+        {
+            // 恢复第 k 次模拟的叶节点状态
+            current_leaf_idx = vl_leaf_indices_[k];
+            current_leaf_turn = vl_leaf_turns_[k];
+            sim_env = vl_envs_[k];
+
+            if (current_leaf_idx == -1) return;
+
+            if (!is_terminal)
+            {
+                MCTSNode &leaf = pool_.node(current_leaf_idx);
+                if (!leaf.is_expanded)
+                    expand_leaf(policy_logits);
+                // 若已被之前的 backprop_vl 展开，跳过展开
+            }
+            propagate(wdl, is_terminal ? 0.0f : moves_left);
+        }
+
+        // ======== 统计查询 ========
+
+        /**
+         * 根节点各动作的访问次数。
+         * 遍历 edges，按 action 索引填充 counts。
          */
         std::vector<int> get_counts() const
         {
             std::vector<int> counts(ACTION_SIZE, 0);
-            for (int i = 0; i < ACTION_SIZE; ++i)
+            const MCTSNode &root = pool_.node(root_idx_);
+            if (!root.is_expanded) return counts;
+
+            for (int i = 0; i < root.num_edges; ++i)
             {
-                int32_t child_idx = node_pool[root_idx].children[i];
-                if (child_idx != -1)
-                {
-                    counts[i] = node_pool[child_idx].n_visits;
-                }
+                const Edge &e = pool_.edge(root.edge_offset, i);
+                if (e.child != -1)
+                    counts[e.action] = pool_.node(e.child).n_visits;
             }
             return counts;
         }
 
         /**
-         * 将根节点及其子节点的统计量写入 flat 缓冲区，供 Python 端读取。
-         *
+         * 根节点统计量写入 flat 缓冲区。
          * 布局：[root_N, root_Q, root_M, root_D, root_P1W, root_P2W,
-         *         a0_N, a0_Q, a0_prior, a0_noise, a0_M, a0_D, a0_P1W, a0_P2W, a1_N, ...]
-         * 总长度 = 6 + ACTION_SIZE × 8
-         *
-         * @param out 预分配的输出缓冲区
+         *         a0_N, a0_Q, a0_prior, a0_noise, a0_M, a0_D, a0_P1W, a0_P2W, ...]
          */
         void get_root_stats(float *out) const
         {
-            const Node &root = node_pool[root_idx];
+            const MCTSNode &root = pool_.node(root_idx_);
+            WDLValue root_wdl = root.mean_wdl();
             out[0] = static_cast<float>(root.n_visits);
-            out[1] = root.Q;
-            out[2] = root.M;
-            out[3] = root.wdl.d;
-            out[4] = root.wdl.p1w;
-            out[5] = root.wdl.p2w;
+            out[1] = root.mean_q();
+            out[2] = root.mean_M();
+            out[3] = root_wdl.d;
+            out[4] = root_wdl.p1w;
+            out[5] = root_wdl.p2w;
 
             float *p = out + 6;
-            for (int a = 0; a < ACTION_SIZE; ++a)
+            std::fill(p, p + ACTION_SIZE * 8, 0.0f);
+
+            if (!root.is_expanded) return;
+            for (int i = 0; i < root.num_edges; ++i)
             {
-                int32_t child_idx = root.children[a];
-                if (child_idx != -1)
+                const Edge &e = pool_.edge(root.edge_offset, i);
+                float *slot = p + e.action * 8;
+                slot[2] = e.prior;
+                slot[3] = e.noise;
+                if (e.child != -1)
                 {
-                    const Node &child = node_pool[child_idx];
-                    p[0] = static_cast<float>(child.n_visits);
-                    p[1] = child.Q;
-                    p[2] = child.prior;
-                    p[3] = child.noise;
-                    p[4] = child.M;
-                    p[5] = child.wdl.d;
-                    p[6] = child.wdl.p1w;
-                    p[7] = child.wdl.p2w;
+                    const MCTSNode &child = pool_.node(e.child);
+                    WDLValue cw = child.mean_wdl();
+                    slot[0] = static_cast<float>(child.n_visits);
+                    slot[1] = child.mean_q();
+                    slot[4] = child.mean_M();
+                    slot[5] = cw.d;
+                    slot[6] = cw.p1w;
+                    slot[7] = cw.p2w;
                 }
-                else
-                {
-                    std::fill(p, p + 8, 0.0f);
-                }
-                p += 8;
             }
         }
     };

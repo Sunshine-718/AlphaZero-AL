@@ -2,6 +2,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <vector>
 
 namespace AlphaZero
 {
@@ -23,14 +24,6 @@ namespace AlphaZero
             return (turn == 1) ? (p1w - p2w) : (p2w - p1w);
         }
 
-        /// 增量更新运行均值（第 n 次采样）
-        void update_mean(WDLValue sample, int n) {
-            float inv = 1.0f / static_cast<float>(n);
-            d   += (sample.d   - d)   * inv;
-            p1w += (sample.p1w - p1w) * inv;
-            p2w += (sample.p2w - p2w) * inv;
-        }
-
         /// 逐层衰减：向 uniform(⅓,⅓,⅓) 混合
         WDLValue decayed(float gamma) const {
             constexpr float u = 1.0f / 3.0f;
@@ -45,106 +38,161 @@ namespace AlphaZero
         return WDLValue::draw();
     }
 
+    // ======== SearchConfig ========
+
     /**
-     * MCTS 搜索树节点。
-     *
-     * 存储于 MCTS::node_pool（线性数组），通过 int32_t 索引相互引用。
-     * 每个节点对应搜索树中的一个游戏状态，记录访问次数、Q 值、策略先验等统计量。
-     *
-     * @tparam ACTION_SIZE 动作空间大小（如 Connect4 = 7）
+     * MCTS 搜索配置。所有搜索参数集中管理，运行时可安全修改。
+     * BatchedMCTS 拥有一份，所有子树通过 const 指针共享。
      */
-    template <int ACTION_SIZE>
-    struct MCTSNode
+    struct SearchConfig
     {
-        int32_t parent = -1;                        ///< 父节点索引，根节点为 -1
-        std::array<int32_t, ACTION_SIZE> children;  ///< 子节点索引数组，-1 表示未创建
+        float c_init = 1.25f;           ///< PUCT 初始常数
+        float c_base = 19652.0f;        ///< PUCT 对数基数
+        float dirichlet_alpha = 0.3f;   ///< Dirichlet 噪声 alpha（≤0 禁用噪声）
+        float noise_epsilon = 0.25f;    ///< Dirichlet 噪声混合权重 ε
+        float fpu_reduction = 0.4f;     ///< First Play Urgency 衰减系数
+        float mlh_slope = 0.0f;         ///< Moves Left Head 斜率（0=禁用）
+        float mlh_cap = 0.2f;           ///< MLH 最大影响上限
+        float mlh_threshold = 0.8f;     ///< MLH Q 阈值
+        float value_decay = 1.0f;       ///< Backprop 逐层衰减（1.0=禁用）
+        bool use_symmetry = true;       ///< 是否启用随机对称增强
+        int vl_count = 1;              ///< Virtual loss 强度（每次 VL 模拟给子节点加的访问次数）
+    };
 
-        int n_visits = 0;       ///< 访问次数 N
-        float Q = 0.0f;         ///< 状态价值 (当前落子方视角，由 propagate 计算)
-        WDLValue wdl;           ///< WDL 运行均值（绝对视角）
-        float M = 0.0f;         ///< 预期剩余步数的运行均值（Moves Left Head）
-        float prior = 0.0f;     ///< 神经网络策略先验概率 P(a)
-        float noise = 0.0f;     ///< Dirichlet 噪声（仅根节点的子节点有效）
-        bool is_expanded = false;   ///< 是否已展开（子节点已创建）
-        bool is_terminal = false;   ///< 是否已确认为终局状态（避免重复 check_winner）
-        WDLValue terminal_wdl;      ///< 终局 WDL 缓存（仅 is_terminal==true 时有效）
+    // ======== Edge ========
 
-        MCTSNode() { reset(-1, 0.0f); }
+    /**
+     * 搜索树边：连接父节点到子节点的动作。
+     * prior 和 noise 存储在边上（而非节点），因为它们是动作的属性。
+     */
+    struct Edge
+    {
+        int32_t action = -1;    ///< 动作索引
+        int32_t child = -1;     ///< 子节点索引（-1=延迟分配，未访问）
+        float prior = 0.0f;     ///< NN 策略先验概率 P(a)
+        float noise = 0.0f;     ///< Dirichlet 噪声（仅根节点边有效）
+    };
 
-        /**
-         * 重置节点状态，以便在节点池中复用。
-         * @param p      父节点索引
-         * @param p_prior 策略先验概率
-         */
-        void reset(int32_t p, float p_prior) {
-            parent = p;
-            prior = p_prior;
-            children.fill(-1);
-            n_visits = 0;
-            Q = 0.0f;
-            wdl = WDLValue{};
-            M = 0.0f;
-            noise = 0.0f;
-            is_expanded = false;
-            is_terminal = false;
-            terminal_wdl = WDLValue{};
+    // ======== MCTSNode ========
+
+    /**
+     * MCTS 搜索树节点。64 字节 cache-line 对齐。
+     *
+     * WDL 使用累加值（W_d, W_p1w, W_p2w），按需除 N 得到均值。
+     * 子节点通过 Edge 池间接引用，不再嵌入固定大小数组。
+     */
+    struct alignas(64) MCTSNode
+    {
+        // WDL 累加（绝对视角）—— 12 bytes
+        float W_d = 0.0f;
+        float W_p1w = 0.0f;
+        float W_p2w = 0.0f;
+
+        int32_t n_visits = 0;       ///< 访问次数 N —— 4 bytes
+
+        float M_sum = 0.0f;         ///< 剩余步数累加 —— 4 bytes
+
+        // Edge 池引用 —— 8 bytes
+        int32_t num_edges = 0;      ///< 合法动作数（展开后设置）
+        int32_t edge_offset = -1;   ///< Edge 池中的起始偏移
+
+        // 树结构 —— 8 bytes
+        int32_t parent = -1;        ///< 父节点索引（-1=根节点）
+        int32_t parent_edge_idx = -1; ///< 父节点中指向此节点的 Edge 索引
+
+        // 元数据 —— 3 bytes
+        int8_t turn = 1;            ///< 该节点的落子方（1 或 -1）
+        bool is_expanded = false;
+        bool is_terminal = false;
+
+        // 终局 WDL 缓存（仅 is_terminal 时有效）—— 12 bytes
+        float term_d = 0.0f;
+        float term_p1w = 0.0f;
+        float term_p2w = 0.0f;
+
+        // 总计: 12+4+4+8+8+3+1(pad)+12 = 52 bytes, 对齐到 64
+
+        /// WDL 均值（绝对视角）
+        WDLValue mean_wdl() const {
+            if (n_visits == 0) return WDLValue::uniform();
+            float inv = 1.0f / static_cast<float>(n_visits);
+            return {W_d * inv, W_p1w * inv, W_p2w * inv};
         }
 
-        /**
-         * 计算 UCB 分数，用于在树遍历中选择最优动作。
-         *
-         * UCB = q_value + u_score + m_utility
-         *   q_value   = -Q（父节点视角：子节点越差，父节点越好）
-         *   u_score   = C_puct × prior × √N_parent / (1 + N_child)（PUCT 探索项）
-         *   m_utility = clamp(slope × (child_M - parent_M), -cap, cap) × Q × ramp(|Q|, threshold)
-         *
-         * @param c_init        PUCT 初始常数
-         * @param c_base        PUCT 对数基数
-         * @param parent_n      父节点访问次数
-         * @param is_root_node  是否为根节点（根节点混合 Dirichlet 噪声）
-         * @param noise_epsilon 噪声混合权重 ε
-         * @param fpu_value     First Play Urgency 值（未访问节点的默认 Q 估计）
-         * @param parent_M      父节点的 M 值
-         * @param mlh_slope     MLH 斜率（0 = 禁用 MLH）
-         * @param mlh_cap       MLH 最大影响上限
-         * @param mlh_threshold MLH Q 阈值：|Q| 低于此值时 M utility 为 0（0 = 无阈值）
-         * @return UCB 分数
-         */
-        [[nodiscard]] float get_ucb(float c_init, float c_base, float parent_n,
-                                     bool is_root_node, float noise_epsilon, float fpu_value,
-                                     float parent_M, float mlh_slope, float mlh_cap,
-                                     float mlh_threshold) const {
-            // 根节点混合 Dirichlet 噪声：effective_prior = (1-ε)·prior + ε·noise
-            float effective_prior = prior;
-            if (is_root_node) {
-                effective_prior = (1.0f - noise_epsilon) * prior + noise_epsilon * noise;
-            }
+        /// 当前落子方视角的 Q 值
+        float mean_q() const { return mean_wdl().q(turn); }
 
-            // Q 值：未访问节点用 FPU 替代，已访问节点取 -Q（翻转到父节点视角）
-            float q_value = (n_visits == 0) ? fpu_value : -Q;
-            // PUCT 探索项：C(s) = c_init + log((N_parent + c_base + 1) / c_base)
-            float c_puct = c_init + std::log((parent_n + c_base + 1.0f) / c_base);
-            float u_score = c_puct * effective_prior * std::sqrt(parent_n) / (1.0f + n_visits);
+        /// 指定视角的 Q 值
+        float mean_q(int t) const { return mean_wdl().q(t); }
 
-            // MLH 偏好项：鼓励在劣势时快速结束、优势时延长博弈
-            //   Q < 0 (对手赢着): 快结束 bonus, 慢结束 penalty
-            //   Q > 0 (对手输着): 慢结束 bonus, 快结束 penalty
-            //   Q ≈ 0 (均势):    自然无效果
-            // mlh_threshold: |Q| 低于阈值时完全抑制 M utility，高于阈值后平滑 ramp-up
-            float m_utility = 0.0f;
-            if (mlh_slope > 0.0f && n_visits > 0) {
-                float abs_q = std::abs(Q);
-                if (mlh_threshold <= 0.0f || abs_q >= mlh_threshold) {
-                    float m_diff = M - parent_M;
-                    m_utility = std::clamp(mlh_slope * m_diff, -mlh_cap, mlh_cap) * Q;
-                    // 平滑 ramp-up：|Q| 从 threshold 到 1.0 线性过渡
-                    if (mlh_threshold > 0.0f && mlh_threshold < 1.0f) {
-                        m_utility *= (abs_q - mlh_threshold) / (1.0f - mlh_threshold);
-                    }
-                }
-            }
-
-            return q_value + u_score + m_utility;
+        /// 剩余步数均值
+        float mean_M() const {
+            return (n_visits == 0) ? 0.0f : M_sum / static_cast<float>(n_visits);
         }
+
+        /// 终局 WDL
+        WDLValue get_terminal_wdl() const { return {term_d, term_p1w, term_p2w}; }
+
+        /// 设置终局 WDL
+        void set_terminal_wdl(WDLValue w) { term_d = w.d; term_p1w = w.p1w; term_p2w = w.p2w; }
+    };
+
+    // ======== NodePool ========
+
+    /**
+     * 节点 + 边的线性池分配器。
+     * 两个独立的 flat vector 提供 cache-friendly 的顺序访问。
+     * 通过 int32_t 索引引用，避免指针和堆碎片。
+     */
+    class NodePool
+    {
+    public:
+        explicit NodePool(int initial_node_cap = 2048, int initial_edge_cap = 0)
+            : node_count_(0), edge_count_(0)
+        {
+            if (initial_edge_cap <= 0) initial_edge_cap = initial_node_cap * 4;
+            nodes_.resize(static_cast<size_t>(initial_node_cap));
+            edges_.resize(static_cast<size_t>(initial_edge_cap));
+        }
+
+        /// 分配一个新节点，返回索引。不足时自动扩容。
+        int32_t allocate_node()
+        {
+            if (node_count_ >= static_cast<int32_t>(nodes_.size()))
+                nodes_.resize(nodes_.size() * 2);
+            int32_t idx = node_count_++;
+            nodes_[idx] = MCTSNode{};
+            return idx;
+        }
+
+        /// 分配一组连续边，返回起始偏移。
+        int32_t allocate_edges(int32_t count)
+        {
+            int32_t offset = edge_count_;
+            int32_t new_count = edge_count_ + count;
+            if (new_count > static_cast<int32_t>(edges_.size()))
+                edges_.resize(std::max(static_cast<size_t>(new_count),
+                                       edges_.size() * 2));
+            for (int32_t i = 0; i < count; ++i)
+                edges_[offset + i] = Edge{};
+            edge_count_ = new_count;
+            return offset;
+        }
+
+        MCTSNode& node(int32_t idx) { return nodes_[idx]; }
+        const MCTSNode& node(int32_t idx) const { return nodes_[idx]; }
+
+        Edge& edge(int32_t offset, int32_t i) { return edges_[offset + i]; }
+        const Edge& edge(int32_t offset, int32_t i) const { return edges_[offset + i]; }
+
+        void reset() { node_count_ = 0; edge_count_ = 0; }
+        int node_count() const { return node_count_; }
+        int edge_count() const { return edge_count_; }
+
+    private:
+        std::vector<MCTSNode> nodes_;
+        std::vector<Edge> edges_;
+        int32_t node_count_ = 0;
+        int32_t edge_count_ = 0;
     };
 }

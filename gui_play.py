@@ -40,10 +40,12 @@ class Def:
     c_init = 1.4
     c_base = 1000
     fpu = 0.2
-    alpha = 0.0
-    noise_eps = 0.0
+    alpha = 0.3
+    noise_eps = 0.
     symmetry = True
     cache = 10000
+    n_trees = 1
+    vl_batch = 8
     mlh_slope = 0.1
     mlh_cap = 0.15
     mlh_thr = 0.
@@ -821,6 +823,7 @@ class RootStatsWidget(QWidget):
         self.child_p1w = None
         self.child_p2w = None
         self.root_n = 0
+        self.per_tree_n = 0
         self.root_q = 0.0
         self.root_m = 0.0
         self.wdl = None
@@ -836,6 +839,7 @@ class RootStatsWidget(QWidget):
         self.child_p1w = stats['P1W'].copy()
         self.child_p2w = stats['P2W'].copy()
         self.root_n = float(stats['root_N'])
+        self.per_tree_n = float(stats.get('per_tree_N', stats['root_N']))
         self.root_q = float(stats['root_Q'])
         self.root_m = float(stats['root_M'])
         self.wdl = np.array([float(stats['root_D']),
@@ -854,6 +858,7 @@ class RootStatsWidget(QWidget):
         self.child_p1w = None
         self.child_p2w = None
         self.root_n = 0
+        self.per_tree_n = 0
         self.root_q = 0.0
         self.root_m = 0.0
         self.wdl = None
@@ -867,7 +872,7 @@ class RootStatsWidget(QWidget):
                     prior=self.prior.copy(),
                     child_m=self.child_m.copy(), child_d=self.child_d.copy(),
                     child_p1w=self.child_p1w.copy(), child_p2w=self.child_p2w.copy(),
-                    root_n=self.root_n,
+                    root_n=self.root_n, per_tree_n=self.per_tree_n,
                     root_q=self.root_q, root_m=self.root_m,
                     wdl=self.wdl.copy(), chosen=self.chosen,
                     ai_turn=self.ai_turn)
@@ -884,6 +889,7 @@ class RootStatsWidget(QWidget):
         self.child_p1w = snap['child_p1w']
         self.child_p2w = snap['child_p2w']
         self.root_n = snap['root_n']
+        self.per_tree_n = snap.get('per_tree_n', snap['root_n'])
         self.root_q = snap['root_q']
         self.root_m = snap['root_m']
         self.wdl = snap['wdl']
@@ -987,8 +993,16 @@ class RootStatsWidget(QWidget):
         else:
             w_pct, l_pct = self.wdl[2] * 100, self.wdl[1] * 100
 
+        ptn = int(self.per_tree_n)
+        rn = int(self.root_n)
+        if ptn > 0 and ptn != rn:
+            n_trees = max(1, round(rn / ptn))
+            n_text = f"N:{ptn}\u00d7{n_trees}={rn}"
+        else:
+            n_text = f"N:{rn}"
+
         parts = [
-            (f"N:{int(self.root_n)}", C.ACCENT),
+            (n_text, C.ACCENT),
             (f"Q:{self.root_q:+.2f}", C.GREEN_T),
             (f"M:{self.root_m:.1f}", C.YEL_HEX),
             (f"W:{w_pct:.0f}", C.GREEN),
@@ -1318,10 +1332,38 @@ class ParameterConsole(QWidget):
         lbl.setToolTip("MCTS simulations per move")
         row.addWidget(lbl)
         self.n_playout_spin = QSpinBox()
-        self.n_playout_spin.setRange(1, 10000)
+        self.n_playout_spin.setRange(1, 999999)
         self.n_playout_spin.setValue(Def.n_playout)
         row.addWidget(self.n_playout_spin)
         lay.addLayout(row)
+
+        row2 = QHBoxLayout()
+        lbl2 = QLabel("trees")
+        lbl2.setFixedWidth(76)
+        lbl2.setStyleSheet(f"color: {C.DIM}; font-size: 11px; font-family: Consolas;")
+        lbl2.setToolTip("Root-parallel: independent MCTS trees on the same position.\n"
+                         "Visit counts are aggregated for stronger play.\n"
+                         "Tip: set noise epsilon > 0 for tree diversity.")
+        row2.addWidget(lbl2)
+        self.n_trees_spin = QSpinBox()
+        self.n_trees_spin.setRange(1, 9999)
+        self.n_trees_spin.setValue(Def.n_trees)
+        row2.addWidget(self.n_trees_spin)
+        lay.addLayout(row2)
+
+        row3 = QHBoxLayout()
+        lbl3 = QLabel("vl_batch")
+        lbl3.setFixedWidth(76)
+        lbl3.setStyleSheet(f"color: {C.DIM}; font-size: 11px; font-family: Consolas;")
+        lbl3.setToolTip("Virtual Loss batch: K VL sims per tree per iteration.\n"
+                         "Larger K → bigger NN batch → faster GPU utilization.\n"
+                         "1 = standard single-sim path.")
+        row3.addWidget(lbl3)
+        self.vl_batch_spin = QSpinBox()
+        self.vl_batch_spin.setRange(1, 256)
+        self.vl_batch_spin.setValue(Def.vl_batch)
+        row3.addWidget(self.vl_batch_spin)
+        lay.addLayout(row3)
 
         self.c_init_sl = _make_slider(lay, "c_init", 0, 10, 0.1, Def.c_init,
                                       tooltip="PUCT exploration constant")
@@ -1369,6 +1411,8 @@ class ParameterConsole(QWidget):
         self.model_type_cb.setCurrentText(Def.model_type)
         self.player_cb.setCurrentIndex(0)
         self.n_playout_spin.setValue(Def.n_playout)
+        self.n_trees_spin.setValue(Def.n_trees)
+        self.vl_batch_spin.setValue(Def.vl_batch)
         self.c_init_sl.setValue(int(Def.c_init * self.c_init_sl._scale))
         self.c_base_sl.setValue(int(Def.c_base * self.c_base_sl._scale))
         self.fpu_sl.setValue(int(Def.fpu * self.fpu_sl._scale))
@@ -1418,6 +1462,43 @@ class MoveLog(QTextEdit):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Root-parallel aggregation helper
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _aggregate_root_stats(raw):
+    """Aggregate root stats across multiple trees (root-parallel mode).
+
+    Args:
+        raw: dict from BatchedMCTS.get_root_stats() with shape (n_trees, ...)
+
+    Returns:
+        dict with aggregated stats (same keys, scalar/1-D values).
+    """
+    stats = {}
+    weights = raw['N']  # (n_trees, action_size)
+    total_w = weights.sum(axis=0)
+    mask = total_w > 0
+
+    # Root-level: sum N, average everything else
+    stats['root_N'] = float(raw['root_N'].sum())
+    stats['per_tree_N'] = float(raw['root_N'][0])
+    for k in ('root_Q', 'root_M', 'root_D', 'root_P1W', 'root_P2W'):
+        stats[k] = float(raw[k].mean())
+
+    # Child-level: sum N; prior/noise from first tree; weighted-average Q/M/WDL
+    stats['N'] = total_w.copy()
+    for k in ('prior', 'noise'):
+        stats[k] = raw[k][0].copy()
+    for k in ('Q', 'M', 'D', 'P1W', 'P2W'):
+        result = np.zeros_like(raw[k][0])
+        if mask.any():
+            result[mask] = (raw[k] * weights).sum(axis=0)[mask] / total_w[mask]
+        stats[k] = result.copy()
+
+    return stats
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # MCTS Search Worker (background thread)
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1436,6 +1517,8 @@ class ContinuousSearchWorker(QThread):
         self._turns = None
         self._is_ai_turn = False
         self._threshold = 500
+        self._n_trees = 1
+        self._vl_batch = 1
         self._t0 = 0.0
         self._ai_acted = False
         self._paused = True
@@ -1444,13 +1527,15 @@ class ContinuousSearchWorker(QThread):
         self._idle = threading.Event()
         self._idle.set()
 
-    def set_position(self, bmcts, pv_fn, board, turns, is_ai_turn, threshold):
+    def set_position(self, bmcts, pv_fn, board, turns, is_ai_turn, threshold, n_trees=1, vl_batch=1):
         self._bmcts = bmcts
         self._pv_fn = pv_fn
         self._board = np.ascontiguousarray(board, dtype=np.int8)
         self._turns = np.ascontiguousarray(turns, dtype=np.int32)
         self._is_ai_turn = is_ai_turn
         self._threshold = threshold
+        self._n_trees = n_trees
+        self._vl_batch = vl_batch
         self._t0 = time.time()
         self._ai_acted = False
 
@@ -1486,22 +1571,30 @@ class ContinuousSearchWorker(QThread):
                 continue
 
             bm.batch_playout(pv, self._board, self._turns,
-                             n_playout=self.CHUNK)
+                             n_playout=self.CHUNK, vl_batch=self._vl_batch)
 
             if self._paused or self._stop_flag:
                 continue
 
             raw = bm.get_root_stats()
-            stats_0 = {}
-            for k, v in raw.items():
-                val = v[0]
-                stats_0[k] = val.copy() if hasattr(val, 'copy') else float(val)
-            visits = bm.get_visits_count()[0].copy()
+            all_visits = bm.get_visits_count()
+
+            if self._n_trees > 1:
+                stats_0 = _aggregate_root_stats(raw)
+                visits = all_visits.sum(axis=0).copy()
+            else:
+                stats_0 = {}
+                for k, v in raw.items():
+                    val = v[0]
+                    stats_0[k] = val.copy() if hasattr(val, 'copy') else float(val)
+                visits = all_visits[0].copy()
 
             self.progress.emit(stats_0, visits)
 
             if self._is_ai_turn and not self._ai_acted:
-                if stats_0['root_N'] >= self._threshold:
+                # Use per-tree root_N for threshold (all trees get same playouts)
+                per_tree_n = float(raw['root_N'][0])
+                if per_tree_n >= self._threshold:
                     self._ai_acted = True
                     self._paused = True
                     elapsed = time.time() - self._t0
@@ -1531,8 +1624,10 @@ class Connect4GUI(QWidget):
             is_selfplay=0, cache_size=Def.cache,
             fpu_reduction=Def.fpu, use_symmetry=Def.symmetry,
             mlh_slope=Def.mlh_slope, mlh_cap=Def.mlh_cap,
-            mlh_threshold=Def.mlh_thr)
+            mlh_threshold=Def.mlh_thr,
+            vl_batch=Def.vl_batch)
         self.player_color = 1
+        self._n_trees = 1
         self.move_count = 0
         self.animating = False
 
@@ -1685,6 +1780,9 @@ class Connect4GUI(QWidget):
         self.console.network_cb.currentIndexChanged.connect(_model_delayed)
         self.console.model_type_cb.currentIndexChanged.connect(_model_delayed)
 
+        _trees_delayed = lambda _=None: self.settings_timer.start(400)
+        self.console.n_trees_spin.valueChanged.connect(_trees_delayed)
+
         _param_delayed = lambda _=None: self.param_timer.start(150)
         self.console.n_playout_spin.valueChanged.connect(self._on_sims_changed)
         self.console.c_init_sl.valueChanged.connect(_param_delayed)
@@ -1830,6 +1928,8 @@ class Connect4GUI(QWidget):
         p._mlh_slope = _sv(self.console.mlh_slope_sl)
         p._mlh_cap = _sv(self.console.mlh_cap_sl)
         p._mlh_threshold = _sv(self.console.mlh_thr_sl)
+        p.n_trees = self.console.n_trees_spin.value()
+        p._vl_batch = self.console.vl_batch_spin.value()
 
         p.reload(self.net,
                  c_puct=_sv(self.console.c_init_sl),
@@ -1837,6 +1937,7 @@ class Connect4GUI(QWidget):
                  alpha=_sv(self.console.alpha_sl),
                  is_self_play=0)
         p.eval()
+        self._n_trees = p.n_trees
         self.player_color = 1 if self.console.player_cb.currentIndex() == 0 else -1
 
     def _reload_and_restart(self):
@@ -1862,6 +1963,8 @@ class Connect4GUI(QWidget):
             from src.Cache import LRUCache
             m.cache = LRUCache(new_cache) if new_cache > 0 else None
             m.cache_size = new_cache
+        self.az_player._vl_batch = self.console.vl_batch_spin.value()
+        self.worker._vl_batch = self.az_player._vl_batch
         if not self._search_paused:
             self.worker.resume()
 
@@ -1873,7 +1976,8 @@ class Connect4GUI(QWidget):
         self.worker.pause_and_wait()
         self._stop_scan()
         self.env.reset()
-        self.az_player.mcts.reset_env(0)
+        for i in range(self._n_trees):
+            self.az_player.mcts.reset_env(i)
         self.board.last_move = None
         self.board.win_cells = None
         self.board.anim_row = -1
@@ -1974,11 +2078,13 @@ class Connect4GUI(QWidget):
     # ── Continuous search helpers ──────────────────────────────────────────
     def _resume_search(self, is_ai_turn):
         p = self.az_player
-        board = self.env.board[np.newaxis, ...]
-        turns = np.array([self.env.turn], dtype=np.int32)
+        K = self._n_trees
+        board = np.tile(self.env.board, (K, 1, 1))
+        turns = np.full(K, self.env.turn, dtype=np.int32)
         threshold = self.console.n_playout_spin.value()
         self.worker.set_position(p.mcts, p.pv_fn, board, turns,
-                                 is_ai_turn, threshold)
+                                 is_ai_turn, threshold, n_trees=K,
+                                 vl_batch=p._vl_batch)
         if not self._search_paused:
             self.worker.resume()
 
@@ -2028,13 +2134,19 @@ class Connect4GUI(QWidget):
         self.worker._threshold = new_thr
         if self.worker._is_ai_turn and not self.worker._ai_acted:
             raw = self.az_player.mcts.get_root_stats()
-            root_n = float(raw['root_N'][0])
+            root_n = float(raw['root_N'][0])  # per-tree N
             if root_n >= new_thr:
-                stats_0 = {}
-                for k, v in raw.items():
-                    val = v[0]
-                    stats_0[k] = val.copy() if hasattr(val, 'copy') else float(val)
-                visits = self.az_player.mcts.get_visits_count()[0].copy()
+                K = self._n_trees
+                all_visits = self.az_player.mcts.get_visits_count()
+                if K > 1:
+                    stats_0 = _aggregate_root_stats(raw)
+                    visits = all_visits.sum(axis=0).copy()
+                else:
+                    stats_0 = {}
+                    for k, v in raw.items():
+                        val = v[0]
+                        stats_0[k] = val.copy() if hasattr(val, 'copy') else float(val)
+                    visits = all_visits[0].copy()
                 elapsed = time.time() - self.worker._t0
                 self._on_ai_ready(stats_0, visits, elapsed)
                 return
@@ -2078,20 +2190,26 @@ class Connect4GUI(QWidget):
         self.status.set_thinking(elapsed)
         self._stop_scan()
 
+        K = self._n_trees
         ai_turn = self.env.turn
         action = int(np.argmax(visits))
 
         self.ai_root_stats.set_data(stats_0, chosen=action, ai_turn=ai_turn)
         self.ai_child_table.update()
 
-        self.az_player.mcts.prune_roots(np.array([action], dtype=np.int32))
+        self.az_player.mcts.prune_roots(np.full(K, action, dtype=np.int32))
 
         hint_raw = self.az_player.mcts.get_root_stats()
-        hint_s0 = {}
-        for k, v in hint_raw.items():
-            val = v[0]
-            hint_s0[k] = val.copy() if hasattr(val, 'copy') else float(val)
-        hint_v = self.az_player.mcts.get_visits_count()[0].copy()
+        all_hint_v = self.az_player.mcts.get_visits_count()
+        if K > 1:
+            hint_s0 = _aggregate_root_stats(hint_raw)
+            hint_v = all_hint_v.sum(axis=0).copy()
+        else:
+            hint_s0 = {}
+            for k, v in hint_raw.items():
+                val = v[0]
+                hint_s0[k] = val.copy() if hasattr(val, 'copy') else float(val)
+            hint_v = all_hint_v[0].copy()
         human_turn = -ai_turn
         if hint_s0['root_N'] > 0:
             best_hint = int(np.argmax(hint_v))
@@ -2115,14 +2233,16 @@ class Connect4GUI(QWidget):
 
         env_copy = self.env.copy()
         env_copy.step(action)
-        next_board = env_copy.board[np.newaxis, ...]
-        next_turns = np.array([env_copy.turn], dtype=np.int32)
+        next_board = np.tile(env_copy.board, (K, 1, 1))
+        next_turns = np.full(K, env_copy.turn, dtype=np.int32)
         threshold = self.console.n_playout_spin.value()
 
         if not env_copy.done():
             self.worker.set_position(self.az_player.mcts, self.az_player.pv_fn,
                                      next_board, next_turns,
-                                     is_ai_turn=False, threshold=threshold)
+                                     is_ai_turn=False, threshold=threshold,
+                                     n_trees=K,
+                                     vl_batch=self.az_player._vl_batch)
             if not self._search_paused:
                 self.worker.resume()
 
@@ -2150,7 +2270,8 @@ class Connect4GUI(QWidget):
 
     def _after_human_anim(self, col):
         current_player = self.env.turn
-        self.az_player.mcts.prune_roots(np.array([col], dtype=np.int32))
+        K = self._n_trees
+        self.az_player.mcts.prune_roots(np.full(K, col, dtype=np.int32))
         self.env.step(col)
         self.move_count += 1
         self.move_log.add_move(self.move_count, current_player, col)
@@ -2219,7 +2340,8 @@ class Connect4GUI(QWidget):
         saved_env, saved_last, saved_count, saved_ai, saved_hint, saved_log = self._history.pop()
         self.env = saved_env
         self.board.env = saved_env
-        self.az_player.mcts.reset_env(0)
+        for i in range(self._n_trees):
+            self.az_player.mcts.reset_env(i)
         self.board.last_move = saved_last
         self.board.win_cells = None
         self.board.anim_row = -1

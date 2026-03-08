@@ -68,24 +68,34 @@ class Human(Player):
 
 
 class MCTSPlayer(Player):
-    """Pure MCTS baseline (uniform prior + random rollout) — wraps C++ BatchedMCTS."""
-    def __init__(self, c_puct=4, n_playout=1000, eps=0.0, game_name='Connect4'):
+    """Pure MCTS baseline (uniform prior + random rollout) — wraps C++ BatchedMCTS.
+
+    Args:
+        n_trees: Number of independent trees for root-parallel search.
+            Each tree explores the same root position independently;
+            visit counts are summed across all trees for action selection.
+    """
+    def __init__(self, c_puct=4, n_playout=1000, eps=0.0, game_name='Connect4', n_trees=1):
         super().__init__()
+        self.n_trees = max(1, n_trees)
         self.mcts = BatchedMCTS(
-            batch_size=1, c_init=c_puct, c_base=500,
+            batch_size=self.n_trees, c_init=c_puct, c_base=500,
             alpha=0, n_playout=n_playout, game_name=game_name,
             noise_epsilon=0.0, fpu_reduction=0.0, use_symmetry=False,
         )
 
     def reset_player(self):
-        self.mcts.reset_env(0)
+        for i in range(self.n_trees):
+            self.mcts.reset_env(i)
 
     def get_action(self, env, *args, **kwargs):
-        board = env.board[np.newaxis, ...]
-        turns = np.array([env.turn], dtype=np.int32)
+        K = self.n_trees
+        board = np.tile(env.board, (K, 1, 1))
+        turns = np.full(K, env.turn, dtype=np.int32)
         self.mcts.rollout_playout(board, turns)
-        visits = self.mcts.get_visits_count()[0]
-        action = int(np.argmax(visits))
+        visits = self.mcts.get_visits_count()  # (K, action_size)
+        agg = visits.sum(axis=0) if K > 1 else visits[0]
+        action = int(np.argmax(agg))
         self.reset_player()
         return action, None
 
@@ -95,7 +105,13 @@ class AlphaZeroPlayer(Player):
 
     单环境模式：get_action(env, temp) — 用于 play.py / gui_play.py / pipeline Elo 评估
     批量模式：  get_batch_action(boards, turns, temps) — 用于 client.py 分布式自对弈
+
+    Root-parallel (n_trees > 1):
+        eval() 模式下保留最小噪声 (0.05) 以确保多棵树有不同的搜索路径。
+        无噪声时 NN 模式下所有树会走完全相同的路径，root-parallel 退化。
     """
+
+    _ROOT_PARALLEL_MIN_NOISE = 0.05  # eval 模式下 root-parallel 的最小噪声
     def __init__(self, policy_value_fn, n_envs=1, c_init=1.25, c_base=500,
                  n_playout=100, alpha=None, is_selfplay=0,
                  cache_size=0, noise_epsilon=0.25, fpu_reduction=0.4, use_symmetry=True,
@@ -103,12 +119,15 @@ class AlphaZeroPlayer(Player):
                  noise_steps=0, noise_eps_min=0.1,
                  mlh_slope=0.0, mlh_cap=0.2, mlh_threshold=0.8,
                  value_decay=1.0,
+                 n_trees=1,
+                 vl_batch=1,
                  # 向后兼容：旧调用方用 eps= 而非 noise_epsilon=
                  eps=None):
         super().__init__()
         self.pv_fn = policy_value_fn
         self.is_selfplay = is_selfplay
         self.n_envs = n_envs
+        self.n_trees = max(1, n_trees)
         self.n_actions = getattr(policy_value_fn, 'n_actions', 7) if policy_value_fn else 7
 
         # eps= 是旧参数名的兼容，优先使用 eps（若显式传入），否则用 noise_epsilon
@@ -126,6 +145,7 @@ class AlphaZeroPlayer(Player):
         self._mlh_cap = mlh_cap
         self._mlh_threshold = mlh_threshold
         self._value_decay = value_decay
+        self._vl_batch = max(1, vl_batch)
 
         # 噪声衰减（批量自对弈用）
         self.noise_eps_init = self._noise_eps
@@ -141,8 +161,10 @@ class AlphaZeroPlayer(Player):
             self.mcts = None  # gui_play creates with None, then reload
 
     def _make_mcts(self, noise_eps):
+        # Root-parallel: when n_envs=1 and n_trees>1, batch_size = n_trees
+        bs = self.n_trees if (self.n_envs == 1 and self.n_trees > 1) else self.n_envs
         return BatchedMCTS(
-            batch_size=self.n_envs, c_init=self._c_init, c_base=self._c_base,
+            batch_size=bs, c_init=self._c_init, c_base=self._c_base,
             alpha=self._alpha, n_playout=self._n_playout,
             game_name=self._game_name, board_converter=self._board_converter,
             cache_size=self._cache_size, noise_epsilon=noise_eps,
@@ -174,21 +196,29 @@ class AlphaZeroPlayer(Player):
 
     def eval(self):
         if self.mcts:
-            self.mcts.set_noise_epsilon(0.0)
+            # Root-parallel 需要噪声来分化树的搜索路径
+            # n_trees > 1 时保留最小噪声，否则 K 棵树完全相同
+            if self.n_trees > 1:
+                self.mcts.set_noise_epsilon(self._ROOT_PARALLEL_MIN_NOISE)
+            else:
+                self.mcts.set_noise_epsilon(0.0)
 
     def reset_player(self):
         if self.mcts:
-            for i in range(self.n_envs):
+            bs = self.n_trees if (self.n_envs == 1 and self.n_trees > 1) else self.n_envs
+            for i in range(bs):
                 self.mcts.reset_env(i)
 
     # ── 单环境接口（play.py / gui_play.py / pipeline Elo）────────────────────
 
     def get_action(self, env, temp=0):
-        board = env.board[np.newaxis, ...]  # (1, 6, 7)
-        turns = np.array([env.turn], dtype=np.int32)
+        K = self.n_trees
+        board = np.tile(env.board, (K, 1, 1))    # (K, H, W)
+        turns = np.full(K, env.turn, dtype=np.int32)
 
-        self.mcts.batch_playout(self.pv_fn, board, turns)
-        visits = self.mcts.get_visits_count()[0]
+        self.mcts.batch_playout(self.pv_fn, board, turns, vl_batch=self._vl_batch)
+        all_visits = self.mcts.get_visits_count()  # (K, action_size)
+        visits = all_visits.sum(axis=0) if K > 1 else all_visits[0]
 
         action_probs = np.zeros(self.n_actions, dtype=np.float32)
         valid_mask = visits > 0
@@ -207,9 +237,10 @@ class AlphaZeroPlayer(Player):
             action = np.random.choice(valid_actions, p=sample_dist)
 
         if self.is_selfplay:
-            self.mcts.prune_roots(np.array([action], dtype=np.int32))
+            self.mcts.prune_roots(np.full(K, action, dtype=np.int32))
         else:
-            self.mcts.reset_env(0)
+            for i in range(K):
+                self.mcts.reset_env(i)
 
         return action, action_probs
 
@@ -220,7 +251,7 @@ class AlphaZeroPlayer(Player):
         if temps is None:
             temps = [0 for _ in range(self.n_envs)]
 
-        self.mcts.batch_playout(self.pv_fn, current_boards, turns)
+        self.mcts.batch_playout(self.pv_fn, current_boards, turns, vl_batch=self._vl_batch)
         visits = self.mcts.get_visits_count()
         # 获取根节点 WDL 分布（绝对视角：draw, p1_win, p2_win）
         root_stats = self.mcts.get_root_stats()

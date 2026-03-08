@@ -49,37 +49,17 @@ void register_batched_mcts(py::module_ &m, const char *name)
 
     py::class_<BM>(m, name)
         // ── 构造 ─────────────────────────────────────────────────────────
-        .def(py::init<int, float, float, float, float, float, bool, float, float, float, float>(),
-             py::arg("n_envs"), py::arg("c_init"), py::arg("c_base"),
-             py::arg("alpha"), py::arg("noise_epsilon") = 0.25f,
-             py::arg("fpu_reduction") = 0.4f, py::arg("use_symmetry") = true,
-             py::arg("mlh_slope") = 0.0f, py::arg("mlh_cap") = 0.2f,
-             py::arg("mlh_threshold") = 0.8f, py::arg("value_decay") = 1.0f)
+        .def(py::init<int>(), py::arg("n_envs"))
 
-        // ── 参数设置 ─────────────────────────────────────────────────────
+        // ── 配置访问 ────────────────────────────────────────────────────
+        .def_property("config",
+            [](BM &self) -> SearchConfig& { return self.config(); },
+            [](BM &self, const SearchConfig &cfg) { self.config() = cfg; },
+            py::return_value_policy::reference_internal)
+
+        // ── 种子设置 ────────────────────────────────────────────────────
         .def("set_seed", &BM::set_seed,
              "Set random seed for all OpenMP threads")
-
-        .def("set_noise_epsilon", &BM::set_noise_epsilon,
-             py::arg("eps"),
-             "Set Dirichlet noise mixing weight for all environments")
-
-        .def("set_mlh_params", &BM::set_mlh_params,
-             py::arg("slope"), py::arg("cap"), py::arg("threshold"),
-             "Set Moves Left Head parameters (slope, cap, threshold)")
-
-        .def("set_c_init", &BM::set_c_init, py::arg("val"),
-             "Set PUCT c_init for all environments")
-        .def("set_c_base", &BM::set_c_base, py::arg("val"),
-             "Set PUCT c_base for all environments")
-        .def("set_alpha", &BM::set_alpha, py::arg("val"),
-             "Set Dirichlet alpha for all environments")
-        .def("set_fpu_reduction", &BM::set_fpu_reduction, py::arg("val"),
-             "Set FPU reduction for all environments")
-        .def("set_use_symmetry", &BM::set_use_symmetry, py::arg("val"),
-             "Set symmetry augmentation for all environments")
-        .def("set_value_decay", &BM::set_value_decay, py::arg("val"),
-             "Set backprop value decay for all environments (1.0=disabled)")
 
         // ── 树管理 ──────────────────────────────────────────────────────
         .def("reset_env", &BM::reset_env,
@@ -105,7 +85,6 @@ void register_batched_mcts(py::module_ &m, const char *name)
         /**
          * Selection 阶段：并行选择叶节点。
          * 输入当前棋盘状态，返回 (leaf_boards, term_d, term_p1w, term_p2w, is_terminal, leaf_turns)。
-         * Python 端用返回的叶节点状态调用 NN，再调 backprop_batch() 反向传播。
          */
         .def("search_batch", [](BM &self,
                                 py::array_t<int8_t, py::array::c_style | py::array::forcecast> input_boards,
@@ -152,7 +131,6 @@ void register_batched_mcts(py::module_ &m, const char *name)
 
         /**
          * Backpropagation 阶段：用 NN 评估结果展开叶节点并反向传播。
-         * 接收 policy_logits, d, p1w, p2w, moves_left, is_terminal 六个批量数组（绝对视角）。
          */
         .def("backprop_batch", [](BM &self,
                                   py::array_t<float, py::array::c_style | py::array::forcecast> policy_logits,
@@ -194,11 +172,123 @@ void register_batched_mcts(py::module_ &m, const char *name)
                 self.backprop_batch(ptr_pol, ptr_d, ptr_p1w, ptr_p2w, ptr_ml, ptr_term);
             } })
 
+        // ── Virtual Loss 批量搜索 ────────────────────────────────────
+
+        /**
+         * VL Selection 阶段：每棵树执行 K 次 VL 模拟，返回 N*K 个叶节点。
+         * 返回 (boards, term_d, term_p1w, term_p2w, is_term, turns, sym_ids)。
+         */
+        .def("search_batch_vl", [](BM &self,
+                                   int K,
+                                   py::array_t<int8_t, py::array::c_style | py::array::forcecast> input_boards,
+                                   py::array_t<int, py::array::c_style | py::array::forcecast> turns)
+             {
+            auto buf_in = input_boards.request();
+            auto buf_turns = turns.request();
+            py::ssize_t n = self.get_num_envs();
+
+            if (buf_in.shape[0] != n)
+                throw std::runtime_error("search_batch_vl: input batch (" + std::to_string(buf_in.shape[0]) +
+                                         ") != n_envs (" + std::to_string(n) + ")");
+            if (buf_turns.size != n)
+                throw std::runtime_error("search_batch_vl: turns size must match n_envs");
+            if (K < 1)
+                throw std::runtime_error("search_batch_vl: K must be >= 1");
+
+            py::ssize_t total = n * K;
+
+            // 输出数组：N*K 个叶节点
+            std::vector<py::ssize_t> out_shape = {total};
+            for (auto d : Game::Traits::BOARD_SHAPE) out_shape.push_back(d);
+
+            py::array_t<int8_t>  out_boards(out_shape);
+            py::array_t<float>   out_term_d(total);
+            py::array_t<float>   out_term_p1w(total);
+            py::array_t<float>   out_term_p2w(total);
+            py::array_t<uint8_t> out_term(total);
+            py::array_t<int>     out_turns(total);
+            py::array_t<int>     out_sym_ids(total);
+
+            int8_t*  ptr_in       = static_cast<int8_t*>(buf_in.ptr);
+            int*     ptr_turns_in = static_cast<int*>(buf_turns.ptr);
+            int8_t*  ptr_ob  = static_cast<int8_t*>(out_boards.request().ptr);
+            float*   ptr_td  = static_cast<float*>(out_term_d.request().ptr);
+            float*   ptr_tp1 = static_cast<float*>(out_term_p1w.request().ptr);
+            float*   ptr_tp2 = static_cast<float*>(out_term_p2w.request().ptr);
+            uint8_t* ptr_ot  = static_cast<uint8_t*>(out_term.request().ptr);
+            int*     ptr_otn = static_cast<int*>(out_turns.request().ptr);
+            int*     ptr_sym = static_cast<int*>(out_sym_ids.request().ptr);
+
+            {
+                py::gil_scoped_release release;
+                self.search_batch_vl(K, ptr_in, ptr_turns_in, ptr_ob,
+                                     ptr_td, ptr_tp1, ptr_tp2,
+                                     ptr_ot, ptr_otn, ptr_sym);
+            }
+
+            return py::make_tuple(out_boards, out_term_d, out_term_p1w,
+                                  out_term_p2w, out_term, out_turns, out_sym_ids);
+        }, py::arg("K"), py::arg("input_boards"), py::arg("turns"),
+           "VL Selection: K sims per tree, returns N*K leaves + sym_ids")
+
+        /**
+         * VL Backpropagation 阶段：移除 VL 并反向传播 N*K 个结果。
+         */
+        .def("backprop_batch_vl", [](BM &self,
+                                     int K,
+                                     py::array_t<float, py::array::c_style | py::array::forcecast> policy_logits,
+                                     py::array_t<float, py::array::c_style | py::array::forcecast> d_vals,
+                                     py::array_t<float, py::array::c_style | py::array::forcecast> p1w_vals,
+                                     py::array_t<float, py::array::c_style | py::array::forcecast> p2w_vals,
+                                     py::array_t<float, py::array::c_style | py::array::forcecast> moves_left,
+                                     py::array_t<uint8_t, py::array::c_style | py::array::forcecast> is_term,
+                                     py::array_t<int, py::array::c_style | py::array::forcecast> sym_ids)
+             {
+            auto buf_pol = policy_logits.request();
+            auto buf_d = d_vals.request();
+            auto buf_p1w = p1w_vals.request();
+            auto buf_p2w = p2w_vals.request();
+            auto buf_ml = moves_left.request();
+            auto buf_term = is_term.request();
+            auto buf_sym = sym_ids.request();
+
+            int n = self.get_num_envs();
+            py::ssize_t total = static_cast<py::ssize_t>(n) * K;
+
+            if (buf_pol.shape[0] != total)
+                throw std::runtime_error("backprop_batch_vl: policy batch (" + std::to_string(buf_pol.shape[0]) +
+                                         ") != N*K (" + std::to_string(total) + ")");
+            if (buf_d.size != total || buf_p1w.size != total || buf_p2w.size != total)
+                throw std::runtime_error("backprop_batch_vl: d/p1w/p2w size must be N*K");
+            if (buf_ml.size != total)
+                throw std::runtime_error("backprop_batch_vl: moves_left size must be N*K");
+            if (buf_term.size != total)
+                throw std::runtime_error("backprop_batch_vl: is_term size must be N*K");
+            if (buf_sym.size != total)
+                throw std::runtime_error("backprop_batch_vl: sym_ids size must be N*K");
+
+            float*   ptr_pol  = static_cast<float*>(buf_pol.ptr);
+            float*   ptr_d    = static_cast<float*>(buf_d.ptr);
+            float*   ptr_p1w  = static_cast<float*>(buf_p1w.ptr);
+            float*   ptr_p2w  = static_cast<float*>(buf_p2w.ptr);
+            float*   ptr_ml   = static_cast<float*>(buf_ml.ptr);
+            uint8_t* ptr_term = static_cast<uint8_t*>(buf_term.ptr);
+            int*     ptr_sym  = static_cast<int*>(buf_sym.ptr);
+
+            {
+                py::gil_scoped_release release;
+                self.backprop_batch_vl(K, ptr_pol, ptr_d, ptr_p1w, ptr_p2w,
+                                       ptr_ml, ptr_term, ptr_sym);
+            }
+        }, py::arg("K"), py::arg("policy_logits"), py::arg("d_vals"),
+           py::arg("p1w_vals"), py::arg("p2w_vals"), py::arg("moves_left"),
+           py::arg("is_term"), py::arg("sym_ids"),
+           "VL Backprop: remove VL then backprop N*K results")
+
         // ── 通用搜索入口（IEvaluator）─────────────────────────────────
 
         /**
          * 通用搜索：用 C++ IEvaluator 完成整个 playout 循环。
-         * 对于纯 MCTS 基线，传入 RolloutEvaluator 即可。
          */
         .def("search", [](BM &self,
                           IEvaluator<Game> &evaluator,
@@ -234,8 +324,6 @@ void register_batched_mcts(py::module_ &m, const char *name)
         /**
          * 获取所有环境的根节点统计量（绝对视角）。
          * 返回 shape (n_envs, 6 + action_size*8) 的 float32 数组。
-         * 每行布局：[root_N, root_Q, root_M, root_D, root_P1W, root_P2W,
-         *            a0_N, a0_Q, a0_prior, a0_noise, a0_M, a0_D, a0_P1W, a0_P2W, ...]
          */
         .def("get_all_root_stats", [](BM &self)
              {
@@ -264,6 +352,21 @@ void register_batched_mcts(py::module_ &m, const char *name)
 PYBIND11_MODULE(mcts_cpp, m)
 {
     m.doc() = "AlphaZero Batched MCTS (multi-game support)";
+
+    // === 注册 SearchConfig（模块级，所有游戏共享）===
+    py::class_<SearchConfig>(m, "SearchConfig")
+        .def(py::init<>())
+        .def_readwrite("c_init", &SearchConfig::c_init)
+        .def_readwrite("c_base", &SearchConfig::c_base)
+        .def_readwrite("dirichlet_alpha", &SearchConfig::dirichlet_alpha)
+        .def_readwrite("noise_epsilon", &SearchConfig::noise_epsilon)
+        .def_readwrite("fpu_reduction", &SearchConfig::fpu_reduction)
+        .def_readwrite("mlh_slope", &SearchConfig::mlh_slope)
+        .def_readwrite("mlh_cap", &SearchConfig::mlh_cap)
+        .def_readwrite("mlh_threshold", &SearchConfig::mlh_threshold)
+        .def_readwrite("value_decay", &SearchConfig::value_decay)
+        .def_readwrite("use_symmetry", &SearchConfig::use_symmetry)
+        .def_readwrite("vl_count", &SearchConfig::vl_count);
 
     // === 注册各游戏的 BatchedMCTS ===
     register_batched_mcts<Connect4>(m, "BatchedMCTS_Connect4");

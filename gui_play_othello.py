@@ -33,16 +33,21 @@ PARAMS_PATH = './params/{name}_{env}_{net}_{type}.pt'
 N_ACTIONS = 65      # 64 squares + 1 pass
 BOARD_SIZE = 8
 MAX_STEPS = 60      # max possible moves in Othello
+CHUNK = 50
 
 # Action ↔ board coordinate helpers
+
+
 def action_to_rc(action):
     """Convert action index (0-63) to (row, col). Action 64 = pass."""
     if action == 64:
         return None
     return action // 8, action % 8
 
+
 def rc_to_action(row, col):
     return row * 8 + col
+
 
 def action_label(action):
     """Human-readable label for an action: e.g. 'd3' or 'pass'."""
@@ -59,10 +64,12 @@ class Def:
     c_init = 1.4
     c_base = 1000
     fpu = 0.2
-    alpha = 0.0
-    noise_eps = 0.0
+    alpha = 0.3
+    noise_eps = 0.
     symmetry = True
     cache = 10000
+    n_trees = 1
+    vl_batch = 8
     mlh_slope = 0.1
     mlh_cap = 0.15
     mlh_thr = 0.
@@ -74,57 +81,57 @@ class Def:
 
 class C:
     # Backgrounds
-    BG       = "#0b0b1e"
-    SURFACE  = "rgba(255, 255, 255, 10)"
+    BG = "#0b0b1e"
+    SURFACE = "rgba(255, 255, 255, 10)"
     SURFACE2 = "rgba(255, 255, 255, 15)"
-    BORDER   = "rgba(255, 255, 255, 25)"
-    BORDER2  = "rgba(255, 255, 255, 40)"
+    BORDER = "rgba(255, 255, 255, 25)"
+    BORDER2 = "rgba(255, 255, 255, 40)"
 
     # Text
-    TEXT     = "#e0e0f5"
-    DIM      = "#9090b0"
-    MUTED    = "#505070"
-    GREEN_T  = "#4ade80"
+    TEXT = "#e0e0f5"
+    DIM = "#9090b0"
+    MUTED = "#505070"
+    GREEN_T = "#4ade80"
 
     # Accents
-    ACCENT   = "#a78bfa"
-    ACCENT2  = "#c4b5fd"
-    CYAN     = "#38bdf8"
-    CYAN2    = "#0ea5e9"
-    MAGENTA  = "#c084fc"
-    GREEN    = "#4ade80"
-    RED_HEX  = "#fb7185"
-    YEL_HEX  = "#fbbf24"
+    ACCENT = "#a78bfa"
+    ACCENT2 = "#c4b5fd"
+    CYAN = "#38bdf8"
+    CYAN2 = "#0ea5e9"
+    MAGENTA = "#c084fc"
+    GREEN = "#4ade80"
+    RED_HEX = "#fb7185"
+    YEL_HEX = "#fbbf24"
 
     # QColor objects — accent
-    ACCENT_CLR   = QColor(167, 139, 250)
-    ACCENT_DIM   = QColor(167, 139, 250, 40)
-    ACCENT_GLOW  = QColor(167, 139, 250, 80)
-    MAGENTA_CLR  = QColor(192, 132, 252)
+    ACCENT_CLR = QColor(167, 139, 250)
+    ACCENT_DIM = QColor(167, 139, 250, 40)
+    ACCENT_GLOW = QColor(167, 139, 250, 80)
+    MAGENTA_CLR = QColor(192, 132, 252)
 
     # Piece colors  — Black & White for Othello
-    BLACK        = QColor(30, 30, 50)
-    BLACK_LT     = QColor(80, 80, 110)
-    BLACK_GLOW   = QColor(100, 100, 160, 50)
-    WHITE        = QColor(230, 230, 245)
-    WHITE_LT     = QColor(255, 255, 255)
-    WHITE_GLOW   = QColor(230, 230, 245, 50)
+    BLACK = QColor(30, 30, 50)
+    BLACK_LT = QColor(80, 80, 110)
+    BLACK_GLOW = QColor(100, 100, 160, 50)
+    WHITE = QColor(230, 230, 245)
+    WHITE_LT = QColor(255, 255, 255)
+    WHITE_GLOW = QColor(230, 230, 245, 50)
 
     # Board
-    BOARD_BG     = QColor(12, 12, 35, 200)
-    CELL_BG      = QColor(8, 8, 25, 180)
-    GRID_CORE    = QColor(255, 255, 255, 18)
-    GRID_GLOW    = QColor(167, 139, 250, 12)
-    HOVER        = QColor(167, 139, 250, 25)
-    WIN_GLOW     = QColor(167, 139, 250, 150)
+    BOARD_BG = QColor(12, 12, 35, 200)
+    CELL_BG = QColor(8, 8, 25, 180)
+    GRID_CORE = QColor(255, 255, 255, 18)
+    GRID_GLOW = QColor(167, 139, 250, 12)
+    HOVER = QColor(167, 139, 250, 25)
+    WIN_GLOW = QColor(167, 139, 250, 150)
 
     # Glass
-    GLASS_FILL   = QColor(255, 255, 255, 10)
+    GLASS_FILL = QColor(255, 255, 255, 10)
     GLASS_BORDER = QColor(255, 255, 255, 25)
-    GLASS_HL     = QColor(255, 255, 255, 15)
+    GLASS_HL = QColor(255, 255, 255, 15)
 
     # Board surface — dark green for Othello
-    BOARD_GREEN  = QColor(0, 80, 50, 180)
+    BOARD_GREEN = QColor(0, 80, 50, 180)
     BOARD_GREEN_LT = QColor(10, 100, 65, 200)
 
 
@@ -407,7 +414,7 @@ class BoardWidget(QWidget):
         x = self.MARGIN + c * self.CELL
         y = self.MARGIN + r * self.CELL
         qp.fillRect(int(x), int(y), self.CELL, self.CELL,
-                     QColor(167, 139, 250, 25))
+                    QColor(167, 139, 250, 25))
 
     def _draw_grid(self, qp):
         m, c = self.MARGIN, self.CELL
@@ -456,11 +463,16 @@ class BoardWidget(QWidget):
         rad = self.CELL // 2 - 6
         if value == 1:
             # Black piece
-            dk = QColor(C.BLACK); lt = QColor(C.BLACK_LT); glow_c = QColor(C.BLACK_GLOW)
+            dk = QColor(C.BLACK)
+            lt = QColor(C.BLACK_LT)
+            glow_c = QColor(C.BLACK_GLOW)
         else:
             # White piece
-            dk = QColor(C.WHITE); lt = QColor(C.WHITE_LT); glow_c = QColor(C.WHITE_GLOW)
-        dk.setAlpha(alpha); lt.setAlpha(alpha)
+            dk = QColor(C.WHITE)
+            lt = QColor(C.WHITE_LT)
+            glow_c = QColor(C.WHITE_GLOW)
+        dk.setAlpha(alpha)
+        lt.setAlpha(alpha)
 
         # Outer glow halo
         for i in range(3):
@@ -530,7 +542,7 @@ class BoardWidget(QWidget):
             qp.setFont(QFont("Consolas", 8, QFont.Bold))
             n_text = f"{n_arr[action]:.0f}%" if n_arr[action] >= 10 else f"{n_arr[action]:.1f}%"
             qp.drawText(QRectF(cx - rad, cy - rad, rad * 2, rad * 0.9),
-                         Qt.AlignCenter | Qt.AlignBottom, n_text)
+                        Qt.AlignCenter | Qt.AlignBottom, n_text)
 
             # Q value
             qp.setPen(sub_clr)
@@ -538,14 +550,14 @@ class BoardWidget(QWidget):
             q_val = -q_arr[action]
             q_text = f"{q_val:+.2f}" if abs(q_val) < 10 else f"{q_val:+.0f}"
             qp.drawText(QRectF(cx - rad, cy - rad * 0.15, rad * 2, rad * 0.7),
-                         Qt.AlignCenter, q_text)
+                        Qt.AlignCenter, q_text)
 
             # W%
             qp.setPen(sub_clr)
             qp.setFont(QFont("Consolas", 7))
             w_text = f"W:{w_arr[action]:.0f}"
             qp.drawText(QRectF(cx - rad, cy + rad * 0.15, rad * 2, rad * 0.85),
-                         Qt.AlignCenter | Qt.AlignTop, w_text)
+                        Qt.AlignCenter | Qt.AlignTop, w_text)
 
     def _draw_ghost(self, qp):
         if self.hover_cell is None or not self.interactive or self.ghost_color is None:
@@ -561,7 +573,7 @@ class BoardWidget(QWidget):
         gc.setAlpha(50)
         qp.setBrush(gc)
         qp.setPen(QPen(QColor(self.ghost_color.red(), self.ghost_color.green(),
-                               self.ghost_color.blue(), 80), 1))
+                              self.ghost_color.blue(), 80), 1))
         qp.drawEllipse(QPointF(cx, cy), rad, rad)
 
     def _draw_coords(self, qp):
@@ -573,11 +585,11 @@ class BoardWidget(QWidget):
             # Column labels (a-h) at top
             x = m + i * c + c // 2
             qp.drawText(QRectF(x - 10, 4, 20, m - 4), Qt.AlignCenter,
-                         chr(ord('a') + i))
+                        chr(ord('a') + i))
             # Row labels (1-8) at left
             y = m + i * c + c // 2
             qp.drawText(QRectF(2, y - 8, m - 4, 16), Qt.AlignCenter,
-                         str(i + 1))
+                        str(i + 1))
 
     def _draw_scan_line(self, qp):
         if not self.scanning or self.scan_y < 0:
@@ -712,6 +724,7 @@ class RootStatsWidget(QWidget):
         self.child_p1w = None
         self.child_p2w = None
         self.root_n = 0
+        self.per_tree_n = 0
         self.root_q = 0.0
         self.root_m = 0.0
         self.wdl = None
@@ -727,6 +740,7 @@ class RootStatsWidget(QWidget):
         self.child_p1w = stats['P1W'].copy()
         self.child_p2w = stats['P2W'].copy()
         self.root_n = float(stats['root_N'])
+        self.per_tree_n = float(stats.get('per_tree_N', stats['root_N']))
         self.root_q = float(stats['root_Q'])
         self.root_m = float(stats['root_M'])
         self.wdl = np.array([float(stats['root_D']),
@@ -745,6 +759,7 @@ class RootStatsWidget(QWidget):
         self.child_p1w = None
         self.child_p2w = None
         self.root_n = 0
+        self.per_tree_n = 0
         self.root_q = 0.0
         self.root_m = 0.0
         self.wdl = None
@@ -758,7 +773,7 @@ class RootStatsWidget(QWidget):
                     prior=self.prior.copy(),
                     child_m=self.child_m.copy(), child_d=self.child_d.copy(),
                     child_p1w=self.child_p1w.copy(), child_p2w=self.child_p2w.copy(),
-                    root_n=self.root_n,
+                    root_n=self.root_n, per_tree_n=self.per_tree_n,
                     root_q=self.root_q, root_m=self.root_m,
                     wdl=self.wdl.copy(), chosen=self.chosen,
                     ai_turn=self.ai_turn)
@@ -775,6 +790,7 @@ class RootStatsWidget(QWidget):
         self.child_p1w = snap['child_p1w']
         self.child_p2w = snap['child_p2w']
         self.root_n = snap['root_n']
+        self.per_tree_n = snap.get('per_tree_n', snap['root_n'])
         self.root_q = snap['root_q']
         self.root_m = snap['root_m']
         self.wdl = snap['wdl']
@@ -843,7 +859,7 @@ class RootStatsWidget(QWidget):
             qp.setFont(QFont("Consolas", 7))
             pct_text = f"{pct:.0%}" if pct >= 0.1 else f"{pct:.1%}"
             qp.drawText(QRectF(bx + bw + 4, y, 40, bar_h),
-                         Qt.AlignVCenter | Qt.AlignLeft, pct_text)
+                        Qt.AlignVCenter | Qt.AlignLeft, pct_text)
 
         if self.dimmed:
             qp.fillRect(QRectF(0, 0, w, h), QColor(11, 11, 30, 190))
@@ -855,8 +871,16 @@ class RootStatsWidget(QWidget):
         else:
             w_pct, l_pct = self.wdl[2] * 100, self.wdl[1] * 100
 
+        ptn = int(self.per_tree_n)
+        rn = int(self.root_n)
+        if ptn > 0 and ptn != rn:
+            n_trees = max(1, round(rn / ptn))
+            n_text = f"N:{ptn}\u00d7{n_trees}={rn}"
+        else:
+            n_text = f"N:{rn}"
+
         parts = [
-            (f"N:{int(self.root_n)}", C.ACCENT),
+            (n_text, C.ACCENT),
             (f"Q:{self.root_q:+.2f}", C.GREEN_T),
             (f"M:{self.root_m:.1f}", C.YEL_HEX),
             (f"W:{w_pct:.0f}", C.GREEN),
@@ -904,7 +928,7 @@ class ChildStatsTable(QWidget):
             qp.setPen(QColor(C.MUTED))
             qp.setFont(QFont("Consolas", 9))
             qp.drawText(QRectF(0, 0, w, h), Qt.AlignCenter,
-                         "-- awaiting search --")
+                        "-- awaiting search --")
             return
 
         total_v = s.visits.sum()
@@ -942,7 +966,7 @@ class ChildStatsTable(QWidget):
 
             if is_chosen:
                 qp.fillRect(QRectF(pad, y, usable, self.ROW_H),
-                             QColor(167, 139, 250, 15))
+                            QColor(167, 139, 250, 15))
 
             qp.setFont(QFont("Consolas", 8))
 
@@ -959,7 +983,7 @@ class ChildStatsTable(QWidget):
             prior = s.prior[idx] * 100
 
             cells = [
-                (action_label(idx),  C.ACCENT if is_chosen else C.MUTED),
+                (action_label(idx), C.ACCENT if is_chosen else C.MUTED),
                 (str(n) if n > 0 else '-',
                     C.TEXT if n > 0 else C.MUTED),
                 (f"{n_pct:.1f}" if n > 0 else '-',
@@ -1115,8 +1139,8 @@ class StatusPanel(QWidget):
 
     def clear_mcts(self):
         for lbl, prefix, color in [(self.win_lbl, 'WIN', C.GREEN),
-                                    (self.draw_lbl, 'DRAW', C.CYAN),
-                                    (self.lose_lbl, 'LOSE', C.RED_HEX)]:
+                                   (self.draw_lbl, 'DRAW', C.CYAN),
+                                   (self.lose_lbl, 'LOSE', C.RED_HEX)]:
             lbl.setText(f"<font color='{color}' style='font-family:Consolas;"
                         f"font-size:10px;'>{prefix}</font><br>"
                         f"<font color='{color}'>--%</font>")
@@ -1197,10 +1221,37 @@ class ParameterConsole(QWidget):
         lbl.setToolTip("MCTS simulations per move")
         row.addWidget(lbl)
         self.n_playout_spin = QSpinBox()
-        self.n_playout_spin.setRange(1, 10000)
+        self.n_playout_spin.setRange(1, 999999)
         self.n_playout_spin.setValue(Def.n_playout)
         row.addWidget(self.n_playout_spin)
         lay.addLayout(row)
+
+        row2 = QHBoxLayout()
+        lbl2 = QLabel("trees")
+        lbl2.setFixedWidth(76)
+        lbl2.setStyleSheet(f"color: {C.DIM}; font-size: 11px; font-family: Consolas;")
+        lbl2.setToolTip("Root-parallel: independent MCTS trees on the same position.\n"
+                         "Visit counts are aggregated for stronger play.\n"
+                         "Tip: set noise epsilon > 0 for tree diversity.")
+        row2.addWidget(lbl2)
+        self.n_trees_spin = QSpinBox()
+        self.n_trees_spin.setRange(1, 9999)
+        self.n_trees_spin.setValue(Def.n_trees)
+        row2.addWidget(self.n_trees_spin)
+        lay.addLayout(row2)
+
+        row3 = QHBoxLayout()
+        lbl3 = QLabel("vl_batch")
+        lbl3.setFixedWidth(76)
+        lbl3.setStyleSheet(f"color: {C.DIM}; font-size: 11px; font-family: Consolas;")
+        lbl3.setToolTip("Virtual Loss batch size per tree per iteration.\n"
+                         ">1 enables VL tree parallelism for faster NN batching.")
+        row3.addWidget(lbl3)
+        self.vl_batch_spin = QSpinBox()
+        self.vl_batch_spin.setRange(1, 256)
+        self.vl_batch_spin.setValue(Def.vl_batch)
+        row3.addWidget(self.vl_batch_spin)
+        lay.addLayout(row3)
 
         self.c_init_sl = _make_slider(lay, "c_init", 0, 10, 0.1, Def.c_init,
                                       tooltip="PUCT exploration constant")
@@ -1248,6 +1299,8 @@ class ParameterConsole(QWidget):
         self.model_type_cb.setCurrentText(Def.model_type)
         self.player_cb.setCurrentIndex(0)
         self.n_playout_spin.setValue(Def.n_playout)
+        self.n_trees_spin.setValue(Def.n_trees)
+        self.vl_batch_spin.setValue(Def.vl_batch)
         self.c_init_sl.setValue(int(Def.c_init * self.c_init_sl._scale))
         self.c_base_sl.setValue(int(Def.c_base * self.c_base_sl._scale))
         self.fpu_sl.setValue(int(Def.fpu * self.fpu_sl._scale))
@@ -1300,8 +1353,29 @@ class MoveLog(QTextEdit):
 # MCTS Search Worker (background thread)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _aggregate_root_stats(raw):
+    """Aggregate root stats across multiple trees (root-parallel mode)."""
+    stats = {}
+    weights = raw['N']
+    total_w = weights.sum(axis=0)
+    mask = total_w > 0
+    stats['root_N'] = float(raw['root_N'].sum())
+    stats['per_tree_N'] = float(raw['root_N'][0])
+    for k in ('root_Q', 'root_M', 'root_D', 'root_P1W', 'root_P2W'):
+        stats[k] = float(raw[k].mean())
+    stats['N'] = total_w.copy()
+    for k in ('prior', 'noise'):
+        stats[k] = raw[k][0].copy()
+    for k in ('Q', 'M', 'D', 'P1W', 'P2W'):
+        result = np.zeros_like(raw[k][0])
+        if mask.any():
+            result[mask] = (raw[k] * weights).sum(axis=0)[mask] / total_w[mask]
+        stats[k] = result.copy()
+    return stats
+
+
 class ContinuousSearchWorker(QThread):
-    CHUNK = 50
+    CHUNK = CHUNK
 
     progress = pyqtSignal(dict, object)
     ai_ready = pyqtSignal(dict, object, float)
@@ -1314,6 +1388,8 @@ class ContinuousSearchWorker(QThread):
         self._turns = None
         self._is_ai_turn = False
         self._threshold = 500
+        self._n_trees = 1
+        self._vl_batch = 1
         self._t0 = 0.0
         self._ai_acted = False
         self._paused = True
@@ -1322,13 +1398,15 @@ class ContinuousSearchWorker(QThread):
         self._idle = threading.Event()
         self._idle.set()
 
-    def set_position(self, bmcts, pv_fn, board, turns, is_ai_turn, threshold):
+    def set_position(self, bmcts, pv_fn, board, turns, is_ai_turn, threshold, n_trees=1, vl_batch=1):
         self._bmcts = bmcts
         self._pv_fn = pv_fn
         self._board = np.ascontiguousarray(board, dtype=np.int8)
         self._turns = np.ascontiguousarray(turns, dtype=np.int32)
         self._is_ai_turn = is_ai_turn
         self._threshold = threshold
+        self._n_trees = n_trees
+        self._vl_batch = vl_batch
         self._t0 = time.time()
         self._ai_acted = False
 
@@ -1364,22 +1442,29 @@ class ContinuousSearchWorker(QThread):
                 continue
 
             bm.batch_playout(pv, self._board, self._turns,
-                             n_playout=self.CHUNK)
+                             n_playout=self.CHUNK, vl_batch=self._vl_batch)
 
             if self._paused or self._stop_flag:
                 continue
 
             raw = bm.get_root_stats()
-            stats_0 = {}
-            for k, v in raw.items():
-                val = v[0]
-                stats_0[k] = val.copy() if hasattr(val, 'copy') else float(val)
-            visits = bm.get_visits_count()[0].copy()
+            all_visits = bm.get_visits_count()
+
+            if self._n_trees > 1:
+                stats_0 = _aggregate_root_stats(raw)
+                visits = all_visits.sum(axis=0).copy()
+            else:
+                stats_0 = {}
+                for k, v in raw.items():
+                    val = v[0]
+                    stats_0[k] = val.copy() if hasattr(val, 'copy') else float(val)
+                visits = all_visits[0].copy()
 
             self.progress.emit(stats_0, visits)
 
             if self._is_ai_turn and not self._ai_acted:
-                if stats_0['root_N'] >= self._threshold:
+                per_tree_n = float(raw['root_N'][0])
+                if per_tree_n >= self._threshold:
                     self._ai_acted = True
                     self._paused = True
                     elapsed = time.time() - self._t0
@@ -1410,8 +1495,10 @@ class OthelloGUI(QWidget):
             fpu_reduction=Def.fpu, use_symmetry=Def.symmetry,
             game_name='Othello',
             mlh_slope=Def.mlh_slope, mlh_cap=Def.mlh_cap,
-            mlh_threshold=Def.mlh_thr)
+            mlh_threshold=Def.mlh_thr,
+            vl_batch=Def.vl_batch)
         self.player_color = 1    # 1 = Black (first player)
+        self._n_trees = 1
         self.move_count = 0
 
         # ── Widgets ─────────────────────────────────────────────────────────
@@ -1567,11 +1654,14 @@ class OthelloGUI(QWidget):
         self._reload_model()
 
         # ── Connect signals ─────────────────────────────────────────────────
-        _model_delayed = lambda _=None: self.settings_timer.start(400)
+        def _model_delayed(_=None): return self.settings_timer.start(400)
         self.console.network_cb.currentIndexChanged.connect(_model_delayed)
         self.console.model_type_cb.currentIndexChanged.connect(_model_delayed)
 
-        _param_delayed = lambda _=None: self.param_timer.start(150)
+        def _trees_delayed(_=None): return self.settings_timer.start(400)
+        self.console.n_trees_spin.valueChanged.connect(_trees_delayed)
+
+        def _param_delayed(_=None): return self.param_timer.start(150)
         self.console.n_playout_spin.valueChanged.connect(self._on_sims_changed)
         self.console.c_init_sl.valueChanged.connect(_param_delayed)
         self.console.c_base_sl.valueChanged.connect(_param_delayed)
@@ -1583,6 +1673,7 @@ class OthelloGUI(QWidget):
         self.console.mlh_slope_sl.valueChanged.connect(_param_delayed)
         self.console.mlh_cap_sl.valueChanged.connect(_param_delayed)
         self.console.mlh_thr_sl.valueChanged.connect(_param_delayed)
+        self.console.vl_batch_spin.valueChanged.connect(_param_delayed)
 
         self.console.player_cb.currentIndexChanged.connect(
             lambda _: self.reload_timer.start(100))
@@ -1714,6 +1805,8 @@ class OthelloGUI(QWidget):
         p._mlh_slope = _sv(self.console.mlh_slope_sl)
         p._mlh_cap = _sv(self.console.mlh_cap_sl)
         p._mlh_threshold = _sv(self.console.mlh_thr_sl)
+        p.n_trees = self.console.n_trees_spin.value()
+        p._vl_batch = self.console.vl_batch_spin.value()
 
         p.reload(self.net,
                  c_puct=_sv(self.console.c_init_sl),
@@ -1721,6 +1814,7 @@ class OthelloGUI(QWidget):
                  alpha=_sv(self.console.alpha_sl),
                  is_self_play=0)
         p.eval()
+        self._n_trees = p.n_trees
         self.player_color = 1 if self.console.player_cb.currentIndex() == 0 else -1
 
     def _reload_and_restart(self):
@@ -1746,6 +1840,8 @@ class OthelloGUI(QWidget):
             from src.Cache import LRUCache
             m.cache = LRUCache(new_cache) if new_cache > 0 else None
             m.cache_size = new_cache
+        self.az_player._vl_batch = self.console.vl_batch_spin.value()
+        self.worker._vl_batch = self.az_player._vl_batch
         if not self._search_paused:
             self.worker.resume()
 
@@ -1757,7 +1853,8 @@ class OthelloGUI(QWidget):
         self.worker.pause_and_wait()
         self._stop_scan()
         self.env.reset()
-        self.az_player.mcts.reset_env(0)
+        for i in range(self._n_trees):
+            self.az_player.mcts.reset_env(i)
         self.board.last_move = None
         self.board.interactive = True
         self.board.ghost_color = QColor(C.BLACK) if self.player_color == 1 else QColor(C.WHITE)
@@ -1874,11 +1971,13 @@ class OthelloGUI(QWidget):
     # ── Continuous search helpers ──────────────────────────────────────────
     def _resume_search(self, is_ai_turn):
         p = self.az_player
-        board = self.env.board[np.newaxis, ...]
-        turns = np.array([self.env.turn], dtype=np.int32)
+        K = self._n_trees
+        board = np.tile(self.env.board, (K, 1, 1))
+        turns = np.full(K, self.env.turn, dtype=np.int32)
         threshold = self.console.n_playout_spin.value()
         self.worker.set_position(p.mcts, p.pv_fn, board, turns,
-                                 is_ai_turn, threshold)
+                                 is_ai_turn, threshold, n_trees=K,
+                                 vl_batch=p._vl_batch)
         if not self._search_paused:
             self.worker.resume()
 
@@ -1930,11 +2029,17 @@ class OthelloGUI(QWidget):
             raw = self.az_player.mcts.get_root_stats()
             root_n = float(raw['root_N'][0])
             if root_n >= new_thr:
-                stats_0 = {}
-                for k, v in raw.items():
-                    val = v[0]
-                    stats_0[k] = val.copy() if hasattr(val, 'copy') else float(val)
-                visits = self.az_player.mcts.get_visits_count()[0].copy()
+                K = self._n_trees
+                all_visits = self.az_player.mcts.get_visits_count()
+                if K > 1:
+                    stats_0 = _aggregate_root_stats(raw)
+                    visits = all_visits.sum(axis=0).copy()
+                else:
+                    stats_0 = {}
+                    for k, v in raw.items():
+                        val = v[0]
+                        stats_0[k] = val.copy() if hasattr(val, 'copy') else float(val)
+                    visits = all_visits[0].copy()
                 elapsed = time.time() - self.worker._t0
                 self._on_ai_ready(stats_0, visits, elapsed)
                 return
@@ -1976,21 +2081,27 @@ class OthelloGUI(QWidget):
         self.status.set_thinking(elapsed)
         self._stop_scan()
 
+        K = self._n_trees
         ai_turn = self.env.turn
         action = int(np.argmax(visits))
 
         self.ai_root_stats.set_data(stats_0, chosen=action, ai_turn=ai_turn)
         self.ai_child_table.update()
 
-        self.az_player.mcts.prune_roots(np.array([action], dtype=np.int32))
+        self.az_player.mcts.prune_roots(np.full(K, action, dtype=np.int32))
 
         # Pre-compute hint for next position
         hint_raw = self.az_player.mcts.get_root_stats()
-        hint_s0 = {}
-        for k, v in hint_raw.items():
-            val = v[0]
-            hint_s0[k] = val.copy() if hasattr(val, 'copy') else float(val)
-        hint_v = self.az_player.mcts.get_visits_count()[0].copy()
+        all_hint_v = self.az_player.mcts.get_visits_count()
+        if K > 1:
+            hint_s0 = _aggregate_root_stats(hint_raw)
+            hint_v = all_hint_v.sum(axis=0).copy()
+        else:
+            hint_s0 = {}
+            for k, v in hint_raw.items():
+                val = v[0]
+                hint_s0[k] = val.copy() if hasattr(val, 'copy') else float(val)
+            hint_v = all_hint_v[0].copy()
         human_turn = -ai_turn
         if hint_s0['root_N'] > 0:
             best_hint = int(np.argmax(hint_v))
@@ -2040,12 +2151,15 @@ class OthelloGUI(QWidget):
 
         if is_ai:
             # After AI move, start searching for human's turn
-            env_copy_board = self.env.board[np.newaxis, ...]
-            env_copy_turns = np.array([self.env.turn], dtype=np.int32)
+            K = self._n_trees
+            env_copy_board = np.tile(self.env.board, (K, 1, 1))
+            env_copy_turns = np.full(K, self.env.turn, dtype=np.int32)
             threshold = self.console.n_playout_spin.value()
             self.worker.set_position(self.az_player.mcts, self.az_player.pv_fn,
                                      env_copy_board, env_copy_turns,
-                                     is_ai_turn=False, threshold=threshold)
+                                     is_ai_turn=False, threshold=threshold,
+                                     n_trees=K,
+                                     vl_batch=self.az_player._vl_batch)
             if not self._search_paused:
                 self.worker.resume()
         else:
@@ -2084,7 +2198,8 @@ class OthelloGUI(QWidget):
         self.worker.pause_and_wait()
         self.board.overlay_data = None
         self._save_history()
-        self.az_player.mcts.prune_roots(np.array([64], dtype=np.int32))
+        K = self._n_trees
+        self.az_player.mcts.prune_roots(np.full(K, 64, dtype=np.int32))
         self._apply_move(64, self.env.turn, is_ai=False)
 
     def mousePressEvent(self, event):
@@ -2104,7 +2219,8 @@ class OthelloGUI(QWidget):
         self.worker.pause_and_wait()
         self.board.overlay_data = None
         self._save_history()
-        self.az_player.mcts.prune_roots(np.array([action], dtype=np.int32))
+        K = self._n_trees
+        self.az_player.mcts.prune_roots(np.full(K, action, dtype=np.int32))
         self._apply_move(action, self.env.turn, is_ai=False)
 
     def _save_history(self):
@@ -2128,7 +2244,8 @@ class OthelloGUI(QWidget):
         saved_env, saved_last, saved_count, saved_ai, saved_hint, saved_log = self._history.pop()
         self.env = saved_env
         self.board.env = saved_env
-        self.az_player.mcts.reset_env(0)
+        for i in range(self._n_trees):
+            self.az_player.mcts.reset_env(i)
         self.board.last_move = saved_last
         self.board.overlay_data = None
         self.board.update_valid()

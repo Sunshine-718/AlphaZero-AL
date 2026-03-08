@@ -28,6 +28,13 @@ parser.add_argument('--mlh_cap', type=float, default=0.2,
                     help='MLH max effect cap')
 parser.add_argument('--mlh_threshold', type=float, default=0.8,
                     help='MLH Q threshold: suppress M_utility when |Q| < threshold (0=no threshold)')
+parser.add_argument('-t', '--trees', type=int, default=1,
+                    help='Number of parallel MCTS trees (root-parallel). '
+                         'Each tree searches the same position independently; '
+                         'visit counts are aggregated for stronger play.')
+parser.add_argument('--vl_batch', type=int, default=1,
+                    help='Virtual Loss batch size per tree per iteration. '
+                         '>1 enables VL tree parallelism for faster NN batching.')
 
 args = parser.parse_args()
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -54,7 +61,9 @@ if __name__ == '__main__':
                                         n_playout=args.n, alpha=args.alpha, is_selfplay=0,
                                         use_symmetry=not args.no_symmetry,
                                         mlh_slope=args.mlh_slope, mlh_cap=args.mlh_cap,
-                                        mlh_threshold=args.mlh_threshold)
+                                        mlh_threshold=args.mlh_threshold,
+                                        n_trees=args.trees,
+                                        vl_batch=args.vl_batch)
         az_player.eval()
 
         human = Human()
