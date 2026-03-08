@@ -174,6 +174,16 @@ void register_batched_mcts(py::module_ &m, const char *name)
 
         // ── Virtual Loss 批量搜索 ────────────────────────────────────
 
+        /// 移除所有环境的 VL (n_inflight)。用于异常安全清理。
+        .def("remove_all_vl", [](BM &self, int K)
+             {
+            {
+                py::gil_scoped_release release;
+                self.remove_all_vl(K);
+            }
+        }, py::arg("K"),
+           "Remove all VL (n_inflight) from all trees. For exception-safety cleanup.")
+
         /**
          * VL Selection 阶段：每棵树执行 K 次 VL 模拟，返回 N*K 个叶节点。
          * 返回 (boards, term_d, term_p1w, term_p2w, is_term, turns, sym_ids)。

@@ -193,76 +193,85 @@ class BatchedMCTS:
                 leaf_boards, term_d, term_p1w, term_p2w, is_term, leaf_turns, sym_ids = \
                     self.mcts.search_batch_vl(cur_K, current_boards, turns)
 
-                term_mask = is_term.astype(bool)
-                d_vals = term_d.copy()
-                p1w_vals = term_p1w.copy()
-                p2w_vals = term_p2w.copy()
-                moves_left = np.zeros(cur_total, dtype=np.float32)
+                # try/finally 确保 VL 被清除：若 NN 推理抛异常，
+                # backprop_batch_vl 内的 remove_all_vl 不会执行，
+                # 导致 n_inflight 永久残留在树中
+                try:
+                    term_mask = is_term.astype(bool)
+                    d_vals = term_d.copy()
+                    p1w_vals = term_p1w.copy()
+                    p2w_vals = term_p2w.copy()
+                    moves_left = np.zeros(cur_total, dtype=np.float32)
 
-                non_term_mask = ~term_mask
-                probs = np.zeros((cur_total, self.action_size), dtype=np.float32)
+                    non_term_mask = ~term_mask
+                    probs = np.zeros((cur_total, self.action_size), dtype=np.float32)
 
-                if non_term_mask.any():
-                    if self.cache is None:
-                        conv = self._convert_board(leaf_boards[non_term_mask], leaf_turns[non_term_mask])
-                        nn_probs, nn_wdl, nn_ml = pv_func.predict(conv)
-                        probs[non_term_mask] = nn_probs
-                        d_abs, p1w_abs, p2w_abs = _relative_wdl_to_absolute(
-                            nn_wdl, leaf_turns[non_term_mask]
-                        )
-                        d_vals[non_term_mask] = d_abs
-                        p1w_vals[non_term_mask] = p1w_abs
-                        p2w_vals[non_term_mask] = p2w_abs
-                        moves_left[non_term_mask] = nn_ml.flatten()
-                    else:
-                        non_term_indices = np.where(non_term_mask)[0]
-                        miss_indices = []
-                        for i in non_term_indices:
-                            key = leaf_boards[i].tobytes() + leaf_turns[i].item().to_bytes(1, 'little', signed=True)
-                            if key in self.cache:
-                                p, wdl, ml = self.cache.get(key)
-                                probs[i] = p
-                                d_vals[i] = wdl[0]
-                                if leaf_turns[i] == 1:
-                                    p1w_vals[i] = wdl[1]
-                                    p2w_vals[i] = wdl[2]
-                                else:
-                                    p1w_vals[i] = wdl[2]
-                                    p2w_vals[i] = wdl[1]
-                                moves_left[i] = ml
-                            else:
-                                miss_indices.append(i)
-
-                        if miss_indices:
-                            miss_boards = leaf_boards[miss_indices]
-                            miss_turns  = leaf_turns[miss_indices]
-                            conv = self._convert_board(miss_boards, miss_turns)
-                            miss_probs, miss_wdl, miss_ml = pv_func.predict(conv)
-                            miss_ml = miss_ml.flatten()
-                            for j, i in enumerate(miss_indices):
-                                probs[i]  = miss_probs[j]
-                                d_vals[i] = miss_wdl[j, 0]
-                                if miss_turns[j] == 1:
-                                    p1w_vals[i] = miss_wdl[j, 1]
-                                    p2w_vals[i] = miss_wdl[j, 2]
-                                else:
-                                    p1w_vals[i] = miss_wdl[j, 2]
-                                    p2w_vals[i] = miss_wdl[j, 1]
-                                moves_left[i] = miss_ml[j]
+                    if non_term_mask.any():
+                        if self.cache is None:
+                            conv = self._convert_board(leaf_boards[non_term_mask], leaf_turns[non_term_mask])
+                            nn_probs, nn_wdl, nn_ml = pv_func.predict(conv)
+                            probs[non_term_mask] = nn_probs
+                            d_abs, p1w_abs, p2w_abs = _relative_wdl_to_absolute(
+                                nn_wdl, leaf_turns[non_term_mask]
+                            )
+                            d_vals[non_term_mask] = d_abs
+                            p1w_vals[non_term_mask] = p1w_abs
+                            p2w_vals[non_term_mask] = p2w_abs
+                            moves_left[non_term_mask] = nn_ml.flatten()
+                        else:
+                            non_term_indices = np.where(non_term_mask)[0]
+                            miss_indices = []
+                            for i in non_term_indices:
                                 key = leaf_boards[i].tobytes() + leaf_turns[i].item().to_bytes(1, 'little', signed=True)
-                                self.cache.put(key, (miss_probs[j].copy(), miss_wdl[j].copy(), miss_ml[j].item()))
-                                self.cache._od[key]['state'] = conv[j:j+1]
+                                if key in self.cache:
+                                    p, wdl, ml = self.cache.get(key)
+                                    probs[i] = p
+                                    d_vals[i] = wdl[0]
+                                    if leaf_turns[i] == 1:
+                                        p1w_vals[i] = wdl[1]
+                                        p2w_vals[i] = wdl[2]
+                                    else:
+                                        p1w_vals[i] = wdl[2]
+                                        p2w_vals[i] = wdl[1]
+                                    moves_left[i] = ml
+                                else:
+                                    miss_indices.append(i)
 
-                self.mcts.backprop_batch_vl(
-                    cur_K,
-                    np.ascontiguousarray(probs, dtype=np.float32),
-                    np.ascontiguousarray(d_vals, dtype=np.float32),
-                    np.ascontiguousarray(p1w_vals, dtype=np.float32),
-                    np.ascontiguousarray(p2w_vals, dtype=np.float32),
-                    np.ascontiguousarray(moves_left, dtype=np.float32),
-                    is_term,
-                    sym_ids
-                )
+                            if miss_indices:
+                                miss_boards = leaf_boards[miss_indices]
+                                miss_turns  = leaf_turns[miss_indices]
+                                conv = self._convert_board(miss_boards, miss_turns)
+                                miss_probs, miss_wdl, miss_ml = pv_func.predict(conv)
+                                miss_ml = miss_ml.flatten()
+                                for j, i in enumerate(miss_indices):
+                                    probs[i]  = miss_probs[j]
+                                    d_vals[i] = miss_wdl[j, 0]
+                                    if miss_turns[j] == 1:
+                                        p1w_vals[i] = miss_wdl[j, 1]
+                                        p2w_vals[i] = miss_wdl[j, 2]
+                                    else:
+                                        p1w_vals[i] = miss_wdl[j, 2]
+                                        p2w_vals[i] = miss_wdl[j, 1]
+                                    moves_left[i] = miss_ml[j]
+                                    key = leaf_boards[i].tobytes() + leaf_turns[i].item().to_bytes(1, 'little', signed=True)
+                                    self.cache.put(key, (miss_probs[j].copy(), miss_wdl[j].copy(), miss_ml[j].item()))
+                                    self.cache._od[key]['state'] = conv[j:j+1]
+
+                    self.mcts.backprop_batch_vl(
+                        cur_K,
+                        np.ascontiguousarray(probs, dtype=np.float32),
+                        np.ascontiguousarray(d_vals, dtype=np.float32),
+                        np.ascontiguousarray(p1w_vals, dtype=np.float32),
+                        np.ascontiguousarray(p2w_vals, dtype=np.float32),
+                        np.ascontiguousarray(moves_left, dtype=np.float32),
+                        is_term,
+                        sym_ids
+                    )
+                except BaseException:
+                    # NN 推理失败 / KeyboardInterrupt / SystemExit：
+                    # 手动清除所有残留的 VL (n_inflight)，防止树状态永久污染
+                    self.mcts.remove_all_vl(cur_K)
+                    raise
 
         return self
 

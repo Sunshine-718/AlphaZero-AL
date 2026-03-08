@@ -140,11 +140,12 @@ namespace AlphaZero
         float compute_fpu(int32_t node_idx) const
         {
             const MCTSNode &node = pool_.node(node_idx);
-            float parent_q = node.mean_q();
+            float parent_q = node.mean_q(); // 只用真实访问统计
             float seen_policy = 0.0f;
             for (int i = 0; i < node.num_edges; ++i)
             {
                 const Edge &e = pool_.edge(node.edge_offset, i);
+                // 只统计有真实回传的子节点，in-flight 不算 seen
                 if (e.child != -1 && pool_.node(e.child).n_visits > 0)
                     seen_policy += e.prior;
             }
@@ -162,7 +163,8 @@ namespace AlphaZero
         int select_edge(int32_t node_idx, float fpu_value) const
         {
             const MCTSNode &node = pool_.node(node_idx);
-            float parent_n = static_cast<float>(node.n_visits);
+            // parent_n = real + inflight：VL 期间正确反映"已派出"的模拟数
+            float parent_n = static_cast<float>(node.n_visits + node.n_inflight);
             float parent_M = node.mean_M();
             bool is_root = (node_idx == root_idx_);
             float ne = config_->noise_epsilon;
@@ -179,19 +181,26 @@ namespace AlphaZero
                 if (is_root && ne > 0.0f)
                     effective_prior = (1.0f - ne) * e.prior + ne * e.noise;
 
-                // Q 值
+                // Q 值：只看真实回传；in-flight 节点用 FPU
                 float q_value;
                 float child_Q = 0.0f;
                 float child_M = 0.0f;
-                int child_visits = 0;
+                int child_visits_total = 0; // real + inflight，用于探索项分母
 
                 if (e.child != -1 && pool_.node(e.child).n_visits > 0)
                 {
+                    // 有真实回传：Q/M 用真实统计，探索项分母用 real+inflight
                     const MCTSNode &child = pool_.node(e.child);
-                    child_visits = child.n_visits;
-                    child_Q = child.mean_q(); // 子节点视角
+                    child_visits_total = child.n_visits + child.n_inflight;
+                    child_Q = child.mean_q(); // 只用真实 W/N，子节点视角
                     child_M = child.mean_M();
                     q_value = -child_Q; // 翻转到父节点视角
+                }
+                else if (e.child != -1 && pool_.node(e.child).n_inflight > 0)
+                {
+                    // 只有 in-flight、没有真实回传：Q 用 FPU，探索分母用 inflight
+                    q_value = fpu_value;
+                    child_visits_total = pool_.node(e.child).n_inflight;
                 }
                 else
                 {
@@ -202,11 +211,11 @@ namespace AlphaZero
                 float c_puct = config_->c_init +
                     std::log((parent_n + config_->c_base + 1.0f) / config_->c_base);
                 float u_score = c_puct * effective_prior *
-                    std::sqrt(parent_n) / (1.0f + child_visits);
+                    std::sqrt(parent_n) / (1.0f + child_visits_total);
 
-                // MLH 偏好项
+                // MLH 偏好项（只对有真实访问的子节点生效）
                 float m_utility = 0.0f;
-                if (config_->mlh_slope > 0.0f && child_visits > 0)
+                if (config_->mlh_slope > 0.0f && e.child != -1 && pool_.node(e.child).n_visits > 0)
                 {
                     float abs_q = std::abs(child_Q);
                     if (config_->mlh_threshold <= 0.0f || abs_q >= config_->mlh_threshold)
@@ -423,11 +432,13 @@ namespace AlphaZero
         }
 
         /**
-         * VL 模拟：与 simulate() 逻辑相同，额外施加 Virtual Loss。
+         * VL 模拟：与 simulate() 逻辑相同，额外施加 Virtual Loss (in-flight)。
          *
-         * 每经过一条边，对子节点 n_visits += vl_count。膨胀的访问次数
-         * 降低 UCB 分数，使后续模拟自动探索不同分支。
-         * 路径和叶节点状态存入 vl_* 向量，供 remove_all_vl / backprop_vl 使用。
+         * 每个节点 n_inflight 只加一次——到达时（作为 child）加。
+         * root 没有 parent，在循环前单独加。
+         * 这样路径 root→A→B 的 inflight 分布为 root=1, A=1, B=1。
+         *
+         * Q 值只看真实回传 (n_visits)，不受 inflight 影响。
          *
          * @param k 第 k 次 VL 模拟（0-indexed）
          * @param start_state 当前棋盘状态
@@ -441,6 +452,13 @@ namespace AlphaZero
             int winner = 0;
             bool board_full = false;
 
+            // Root VL：root 没有 parent，在循环前单独施加。
+            // 用途：select_edge 的 parent_n = n_visits + n_inflight 正确反映
+            // 从 root 派出的 in-flight 模拟数。
+            // 若循环未执行（root 未展开/终局），vl_paths_ 为空，
+            // remove_all_vl 不会尝试移除 root VL（由 empty 检测保护）。
+            bool root_vl_applied = false;
+
             while (pool_.node(curr_idx).is_expanded)
             {
                 MCTSNode &node = pool_.node(curr_idx);
@@ -451,6 +469,13 @@ namespace AlphaZero
                 float fpu = compute_fpu(curr_idx);
                 int best_edge = select_edge(curr_idx, fpu);
                 if (best_edge < 0) break;
+
+                // 首次进入循环时给 root 施加 VL
+                if (!root_vl_applied)
+                {
+                    pool_.node(root_idx_).n_inflight += config_->vl_count;
+                    root_vl_applied = true;
+                }
 
                 Edge &e = pool_.edge(node.edge_offset, best_edge);
                 sim_env.step(e.action);
@@ -465,8 +490,9 @@ namespace AlphaZero
                     child.turn = sim_env.get_turn();
                 }
 
-                // 施加 Virtual Loss：膨胀子节点访问次数
-                pool_.node(e.child).n_visits += config_->vl_count;
+                // 施加 Virtual Loss：只给 child（到达时加）
+                // child 的 n_inflight 在后续循环作为 parent_n 和 child_visits_total 使用
+                pool_.node(e.child).n_inflight += config_->vl_count;
 
                 // 记录路径
                 vl_paths_[k].push_back({curr_idx, best_edge});
@@ -522,23 +548,38 @@ namespace AlphaZero
         }
 
         /**
-         * 移除所有 VL：恢复 K 条路径上的子节点访问次数。
+         * 移除所有 VL：恢复 K 条路径上的节点 n_inflight。
          * 必须在 backprop_vl 之前调用，确保树统计量干净。
+         *
+         * 与 simulate_vl 对称：
+         *  - 非空路径 → root VL 存在 → 移除
+         *  - 每条边只有 child 被加了 VL → 只移除 child
+         *
+         * 安全性：
+         *  - K 钳位到 vl_paths_ 实际大小，防止越界
+         *  - 移除后清空路径，使重复调用变成幂等 no-op
          *
          * @param K VL 模拟次数
          */
         void remove_all_vl(int K)
         {
+            int safe_K = std::min(K, static_cast<int>(vl_paths_.size()));
             int vl = config_->vl_count;
-            for (int k = 0; k < K; ++k)
+            for (int k = 0; k < safe_K; ++k)
             {
+                // 路径非空 → 该次模拟进入了选择循环 → root 被施加了 VL
+                if (!vl_paths_[k].empty())
+                    pool_.node(root_idx_).n_inflight -= vl;
+
                 for (auto &entry : vl_paths_[k])
                 {
+                    // 只移除 child VL（simulate_vl 只给 child 加了 VL）
                     Edge &e = pool_.edge(
                         pool_.node(entry.node_idx).edge_offset, entry.edge_idx);
                     if (e.child != -1)
-                        pool_.node(e.child).n_visits -= vl;
+                        pool_.node(e.child).n_inflight -= vl;
                 }
+                vl_paths_[k].clear();  // 幂等：重复调用不会重复减
             }
         }
 

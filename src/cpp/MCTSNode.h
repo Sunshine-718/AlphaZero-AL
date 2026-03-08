@@ -88,7 +88,8 @@ namespace AlphaZero
         float W_p1w = 0.0f;
         float W_p2w = 0.0f;
 
-        int32_t n_visits = 0;       ///< 访问次数 N —— 4 bytes
+        int32_t n_visits = 0;       ///< 真实访问次数 N —— 4 bytes
+        int32_t n_inflight = 0;     ///< VL in-flight 计数（仅 VL 搜索期间非零）—— 4 bytes
 
         float M_sum = 0.0f;         ///< 剩余步数累加 —— 4 bytes
 
@@ -110,7 +111,7 @@ namespace AlphaZero
         float term_p1w = 0.0f;
         float term_p2w = 0.0f;
 
-        // 总计: 12+4+4+8+8+3+1(pad)+12 = 52 bytes, 对齐到 64
+        // 总计: 12+4+4+4+8+8+3+1(pad)+12 = 56 bytes, 对齐到 64
 
         /// WDL 均值（绝对视角）
         WDLValue mean_wdl() const {

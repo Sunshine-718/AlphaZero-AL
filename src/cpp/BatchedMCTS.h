@@ -182,6 +182,21 @@ namespace AlphaZero
         // ========== Virtual Loss 批量方法 ==========
 
         /**
+         * 移除所有环境的 VL (n_inflight)。
+         * Python 异常安全：当 NN 推理在 search_batch_vl 和 backprop_batch_vl 之间
+         * 抛出异常时，调用此方法清除残留的 n_inflight。
+         * @param K VL 模拟次数（与 search_batch_vl 一致）
+         */
+        void remove_all_vl(int K)
+        {
+#pragma omp parallel for schedule(static)
+            for (int i = 0; i < n_envs; ++i)
+            {
+                mcts_envs[i]->remove_all_vl(K);
+            }
+        }
+
+        /**
          * VL 批量 Selection：每棵树执行 K 次 VL 模拟，收集 N*K 个叶节点。
          *
          * 输出数组布局：[env0_leaf0, env0_leaf1, ..., env0_leafK-1, env1_leaf0, ...]
