@@ -45,7 +45,7 @@ class Def:
     symmetry = True
     cache = 10000
     n_trees = 1
-    vl_batch = 8
+    vl_batch = 4
     mlh_slope = 0.1
     mlh_cap = 0.15
     mlh_thr = 0.
