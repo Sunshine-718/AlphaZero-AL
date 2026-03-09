@@ -159,7 +159,8 @@ class TrainPipeline(ABC):
                              mlh_slope=getattr(self, 'mlh_slope', 0.0),
                              mlh_cap=getattr(self, 'mlh_cap', 0.2),
                              mlh_threshold=getattr(self, 'mlh_threshold', 0.8),
-                             value_decay=getattr(self, 'value_decay', 1.0))
+                             value_decay=getattr(self, 'value_decay', 1.0),
+                             vl_batch=getattr(self, 'vl_batch', 1))
         az.eval()
         mcts = MCTSPlayer(1, self.pure_mcts_n_playout, game_name=self.env_name)
 
@@ -239,11 +240,12 @@ class TrainPipeline(ABC):
                 boards[i] = envs[i].board.astype(np.int8)
                 turns[i] = int(envs[i].turn)
 
+            vl = getattr(self, 'vl_batch', 1)
             if current_turn == 1:
-                mcts_p1.batch_playout(net_p1, boards, turns)
+                mcts_p1.batch_playout(net_p1, boards, turns, vl_batch=vl)
                 visits = mcts_p1.get_visits_count()
             else:
-                mcts_p2.batch_playout(net_p2, boards, turns)
+                mcts_p2.batch_playout(net_p2, boards, turns, vl_batch=vl)
                 visits = mcts_p2.get_visits_count()
 
             # 低温度采样：temp>0 保证不同对局走不同棋路
