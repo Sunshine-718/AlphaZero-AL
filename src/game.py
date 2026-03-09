@@ -8,6 +8,26 @@ import numpy as np
 class Game:
     def __init__(self, env):
         self.env = env
+        mod = env.__class__.__module__.lower()
+        if 'othello' in mod:
+            self.aux_mode = 'terminal_disc_diff'
+        else:
+            self.aux_mode = 'steps_to_end'
+
+    def _make_aux_targets(self, traj_players, terminal_env, steps_to_end):
+        if self.aux_mode == 'terminal_disc_diff':
+            board = np.asarray(terminal_env.board)
+            diff = int(np.sum(board == 1) - np.sum(board == -1))
+            players = np.asarray(traj_players, dtype=np.int32)
+            return diff * players
+        return steps_to_end
+
+    def _terminal_aux_target(self, terminal_env):
+        if self.aux_mode == 'terminal_disc_diff':
+            board = np.asarray(terminal_env.board)
+            diff = int(np.sum(board == 1) - np.sum(board == -1))
+            return diff * int(terminal_env.turn)
+        return 0
 
     def play(self, player1, player2, show=1):
         self.env.reset()
@@ -94,13 +114,16 @@ class Game:
                     T = len(traj['players'])
                     winner_z = np.full(T, winner, dtype=np.int32)
                     steps_to_end = np.arange(T, 0, -1, dtype=np.int32)
+                    aux_targets = self._make_aux_targets(traj['players'], env, steps_to_end)
 
                     # 此时 states 的 list 元素形状为 (3, 6, 7)，符合 dataset 预期
-                    play_data = list(zip(states, traj['probs'], winner_z, steps_to_end, traj['root_wdls']))
+                    play_data = list(zip(states, traj['probs'], winner_z,
+                                         steps_to_end, aux_targets, traj['root_wdls']))
                     # 追加终局状态: steps_to_end=0, prob 全零, root_wdl 全零
                     zero_prob = np.zeros_like(traj['probs'][0])
                     zero_wdl = np.zeros(3, dtype=np.float32)
-                    play_data.append((end_state_feature, zero_prob, winner, 0, zero_wdl))
+                    play_data.append((end_state_feature, zero_prob, winner, 0,
+                                      self._terminal_aux_target(env), zero_wdl))
                     completed_data[i] = (winner, tuple(play_data))
                     
                     # 游戏结束，重置该环境的 MCTS 树

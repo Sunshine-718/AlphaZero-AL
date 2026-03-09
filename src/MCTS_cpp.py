@@ -357,7 +357,7 @@ class BatchedMCTS:
             dict with keys:
                 'root_N':    (batch_size,)            root 访问次数
                 'root_Q':    (batch_size,)            root Q 值（当前落子方视角）
-                'root_M':    (batch_size,)            root 预期剩余步数
+                'root_M':    (batch_size,)            root auxiliary estimate
                 'root_D':    (batch_size,)            root 和棋率（绝对）
                 'root_P1W':  (batch_size,)            root P1 胜率（绝对）
                 'root_P2W':  (batch_size,)            root P2 胜率（绝对）
@@ -365,13 +365,15 @@ class BatchedMCTS:
                 'Q':         (batch_size, action_size)  各 action 子节点 Q 值
                 'prior':     (batch_size, action_size)  各 action NN 先验概率
                 'noise':     (batch_size, action_size)  各 action Dirichlet 噪声
-                'M':         (batch_size, action_size)  各 action 预期剩余步数
+                'M':         (batch_size, action_size)  child auxiliary estimate
                 'D':         (batch_size, action_size)  各 action 和棋率（绝对）
                 'P1W':       (batch_size, action_size)  各 action P1 胜率（绝对）
                 'P2W':       (batch_size, action_size)  各 action P2 胜率（绝对）
         """
         raw = self.mcts.get_all_root_stats()  # (batch_size, 6 + action_size*8)
         B, A = self.batch_size, self.action_size
+        # root_M / M are game-specific auxiliary predictions:
+        # Connect4 = remaining plies, Othello = terminal disc diff in root perspective.
 
         root_info = raw[:, :6]
         children = raw[:, 6:].reshape(B, A, 8)

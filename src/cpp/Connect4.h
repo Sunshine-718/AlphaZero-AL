@@ -30,6 +30,8 @@ namespace AlphaZero
     class Connect4
     {
     public:
+        static constexpr bool AUX_PLUS_ONE_PER_PLY = true;
+        static constexpr bool AUX_NEGATE_PER_PLY = false;
         /// 游戏维度常量
         struct Traits
         {
@@ -218,6 +220,16 @@ namespace AlphaZero
         [[nodiscard]] bool is_full() const
         {
             return n_pieces == Traits::ROWS * Traits::COLS;
+        }
+
+        [[nodiscard]] float terminal_aux() const
+        {
+            return 0.0f;
+        }
+
+        [[nodiscard]] static float scale_aux_utility(float utility, float child_q)
+        {
+            return utility * child_q;
         }
 
         /**

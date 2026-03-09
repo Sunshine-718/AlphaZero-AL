@@ -5,6 +5,7 @@ os.environ["OMP_NUM_THREADS"] = "1"
 
 from src.player import Human, AlphaZeroPlayer
 from src.environments import load
+# On Windows, importing PyQt before torch can break torch DLL initialization.
 import torch
 import time
 import math
@@ -32,7 +33,7 @@ MODEL_NAME = 'AZ'
 PARAMS_PATH = './params/{name}_{env}_{net}_{type}.pt'
 N_ACTIONS = 65      # 64 squares + 1 pass
 BOARD_SIZE = 8
-MAX_STEPS = 60      # max possible moves in Othello
+MAX_DISC_DIFF = 64  # terminal disc diff range: black - white
 CHUNK = 50
 
 # Action ↔ board coordinate helpers
@@ -272,6 +273,21 @@ def _sv(slider):
     return slider.value() / slider._scale
 
 
+class NoWheelSpinBox(QSpinBox):
+    def wheelEvent(self, event):
+        event.ignore()
+
+
+class NoWheelComboBox(QComboBox):
+    def wheelEvent(self, event):
+        event.ignore()
+
+
+class NoWheelSlider(QSlider):
+    def wheelEvent(self, event):
+        event.ignore()
+
+
 def _make_slider(layout, label, lo, hi, step, default, decimals=2, tooltip=""):
     row = QHBoxLayout()
     name = QLabel(label)
@@ -282,7 +298,7 @@ def _make_slider(layout, label, lo, hi, step, default, decimals=2, tooltip=""):
     row.addWidget(name)
 
     scale = 10 ** decimals
-    s = QSlider(Qt.Horizontal)
+    s = NoWheelSlider(Qt.Horizontal)
     s._scale = scale
     s._decimals = decimals
     s.setRange(int(lo * scale), int(hi * scale))
@@ -639,9 +655,14 @@ class WinRateBar(QWidget):
         super().__init__(parent)
         self.setFixedHeight(14)
         self.w_rate = self.d_rate = self.l_rate = 0.0
+        self.player_color = 1
 
     def set_rates(self, win, draw, lose):
         self.w_rate, self.d_rate, self.l_rate = win, draw, lose
+        self.update()
+
+    def set_player_color(self, player_color):
+        self.player_color = 1 if player_color == 1 else -1
         self.update()
 
     def paintEvent(self, _):
@@ -653,10 +674,11 @@ class WinRateBar(QWidget):
         qp.setClipPath(path)
         qp.fillRect(0, 0, w, h, QColor(255, 255, 255, 8))
         x = 0
-        # Black win, Draw (cyan), White win
+        win_clr = C.BLACK if self.player_color == 1 else C.WHITE
+        lose_clr = C.WHITE if self.player_color == 1 else C.BLACK
         for ratio, clr in [
-            (self.w_rate, C.BLACK), (self.d_rate, QColor(56, 189, 248)),
-            (self.l_rate, C.WHITE)
+            (self.w_rate, win_clr), (self.d_rate, QColor(C.CYAN)),
+            (self.l_rate, lose_clr)
         ]:
             pw = int(w * ratio)
             if pw > 0:
@@ -670,39 +692,58 @@ class WinRateBar(QWidget):
         qp.drawLine(0, 0, w, 0)
 
 
-class StepsBar(QWidget):
-    MAX_STEPS = MAX_STEPS
+class DiffBar(QWidget):
+    MAX_ABS_DIFF = MAX_DISC_DIFF
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(14)
-        self.steps = 0
+        self.diff = 0.0
+        self.player_color = 1
 
-    def set_steps(self, steps):
-        self.steps = max(0, min(int(round(steps)), self.MAX_STEPS))
+    def set_player_color(self, player_color):
+        self.player_color = 1 if player_color == 1 else -1
+        self.update()
+
+    def set_diff(self, diff):
+        self.diff = max(-self.MAX_ABS_DIFF, min(float(diff), self.MAX_ABS_DIFF))
         self.update()
 
     def paintEvent(self, _):
         qp = QPainter(self)
         qp.setRenderHint(QPainter.Antialiasing)
-        text = str(self.steps)
+        text = f"{self.diff:+.1f}"
         fm = qp.fontMetrics()
         tw = fm.horizontalAdvance(text) + 8
-        bw = self.width() - tw
+        bw = max(12, self.width() - tw)
         h = self.height()
         path = QPainterPath()
         path.addRoundedRect(QRectF(0, 0, bw, h), 4, 4)
         qp.setClipPath(path)
         qp.fillRect(0, 0, bw, h, QColor(255, 255, 255, 8))
-        ratio = self.steps / self.MAX_STEPS if self.MAX_STEPS else 0
-        fill_w = int(bw * ratio)
+        center = bw // 2
+        qp.fillRect(center, 0, 1, h, QColor(255, 255, 255, 35))
+        ratio = min(abs(self.diff) / self.MAX_ABS_DIFF, 1.0) if self.MAX_ABS_DIFF else 0.0
+        fill_w = int(center * ratio)
         if fill_w > 0:
-            grad = QLinearGradient(0, 0, fill_w, 0)
-            grad.setColorAt(0, QColor(80, 60, 140))
-            grad.setColorAt(1, QColor(167, 139, 250))
-            qp.fillRect(0, 0, fill_w, h, grad)
+            if self.diff > 0:
+                base = C.BLACK if self.player_color == 1 else C.WHITE
+                x0, x1 = center, center + fill_w
+            else:
+                base = C.WHITE if self.player_color == 1 else C.BLACK
+                x0, x1 = center - fill_w, center
+            grad = QLinearGradient(x0, 0, x1, 0)
+            grad.setColorAt(0, QColor(base.red(), base.green(), base.blue(), 210))
+            grad.setColorAt(1, QColor(base.red() // 2, base.green() // 2, base.blue() // 2, 210))
+            qp.fillRect(int(x0), 0, max(1, int(x1 - x0)), h, grad)
         qp.setClipping(False)
-        qp.setPen(QColor(C.ACCENT))
+        if self.diff > 0:
+            text_color = C.BLACK if self.player_color == 1 else C.WHITE
+        elif self.diff < 0:
+            text_color = C.WHITE if self.player_color == 1 else C.BLACK
+        else:
+            text_color = QColor(C.ACCENT)
+        qp.setPen(text_color)
         qp.setFont(QFont("Consolas", 10))
         qp.drawText(bw + 4, 0, tw, h, Qt.AlignVCenter | Qt.AlignLeft, text)
 
@@ -882,7 +923,7 @@ class RootStatsWidget(QWidget):
         parts = [
             (n_text, C.ACCENT),
             (f"Q:{self.root_q:+.2f}", C.GREEN_T),
-            (f"M:{self.root_m:.1f}", C.YEL_HEX),
+            (f"Df:{self.root_m:+.1f}", C.YEL_HEX),
             (f"W:{w_pct:.0f}", C.GREEN),
             (f"D:{d_pct:.0f}", C.DIM),
             (f"L:{l_pct:.0f}", C.RED_HEX),
@@ -902,7 +943,7 @@ class ChildStatsTable(QWidget):
     HDR_H = 18
     MAX_ROWS = 8
 
-    COLS = ['Pos', 'N', 'N%', 'Q', 'W%', 'D%', 'L%', 'M', 'P', 'N/P']
+    COLS = ['Pos', 'N', 'N%', 'Q', 'W%', 'D%', 'L%', 'Df', 'P']
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -933,7 +974,7 @@ class ChildStatsTable(QWidget):
 
         total_v = s.visits.sum()
 
-        ratios = [0.07, 0.12, 0.08, 0.10, 0.10, 0.09, 0.10, 0.10, 0.09, 0.10]
+        ratios = [0.07, 0.12, 0.08, 0.10, 0.10, 0.09, 0.10, 0.10, 0.09]
         pad = 6
         usable = w - pad * 2
         col_x = [pad]
@@ -997,12 +1038,10 @@ class ChildStatsTable(QWidget):
                     C.DIM),
                 (f"{l_pct:.1f}" if n > 0 else '-',
                     C.RED_HEX if n > 0 else C.MUTED),
-                (f"{m_val:.1f}" if n > 0 else '-',
+                (f"{m_val:+.1f}" if n > 0 else '-',
                     C.YEL_HEX if n > 0 else C.MUTED),
                 (f"{prior:.1f}" if prior > 0.05 else '<.1',
                     C.MAGENTA if prior > 5 else C.DIM),
-                (f"{n / (s.prior[idx] * 100):.0f}" if (n > 0 and s.prior[idx] > 1e-6) else '-',
-                    C.TEXT if n > 0 else C.MUTED),
             ]
 
             for ci, (txt, color) in enumerate(cells):
@@ -1021,6 +1060,7 @@ class ChildStatsTable(QWidget):
 class StatusPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.player_color = 1
         root = QHBoxLayout(self)
         root.setContentsMargins(14, 10, 14, 10)
         root.setSpacing(16)
@@ -1077,17 +1117,18 @@ class StatusPanel(QWidget):
         # ── Right: steps ──
         right = QVBoxLayout()
         right.setSpacing(2)
-        steps_title = QLabel(f"<font color='{C.DIM}' style='font-family:Consolas;font-size:10px;'>REMAINING</font>")
-        steps_title.setAlignment(Qt.AlignCenter)
-        steps_title.setTextFormat(Qt.RichText)
-        right.addWidget(steps_title)
-        self.steps_bar = StepsBar()
-        self.steps_bar.setMinimumWidth(100)
-        right.addWidget(self.steps_bar)
-        self.nn_steps_lbl = QLabel("")
-        self.nn_steps_lbl.setAlignment(Qt.AlignCenter)
-        self.nn_steps_lbl.setTextFormat(Qt.RichText)
-        right.addWidget(self.nn_steps_lbl)
+        diff_title = QLabel(f"<font color='{C.DIM}' style='font-family:Consolas;font-size:10px;'>FINAL DIFF</font>")
+        diff_title.setAlignment(Qt.AlignCenter)
+        diff_title.setTextFormat(Qt.RichText)
+        right.addWidget(diff_title)
+        self.diff_bar = DiffBar()
+        self.diff_bar.setMinimumWidth(100)
+        self.diff_bar.set_player_color(self.player_color)
+        right.addWidget(self.diff_bar)
+        self.nn_diff_lbl = QLabel("")
+        self.nn_diff_lbl.setAlignment(Qt.AlignCenter)
+        self.nn_diff_lbl.setTextFormat(Qt.RichText)
+        right.addWidget(self.nn_diff_lbl)
         root.addLayout(right)
 
     def paintEvent(self, event):
@@ -1116,26 +1157,39 @@ class StatusPanel(QWidget):
             f"<br><font color='{C.RED_HEX}'>{lose:.1f}%</font>")
         self.wdl_bar.set_rates(win / 100, draw / 100, lose / 100)
 
+    def set_player_color(self, player_color):
+        self.player_color = 1 if player_color == 1 else -1
+        self.wdl_bar.set_player_color(player_color)
+        self.diff_bar.set_player_color(player_color)
+
     def set_disc_count(self, black, white):
+        if self.player_color == 1:
+            my_count, opp_count = black, white
+            my_color = C.BLACK_LT.name()
+            opp_color = C.WHITE.name()
+        else:
+            my_count, opp_count = white, black
+            my_color = C.WHITE.name()
+            opp_color = C.BLACK_LT.name()
         self.disc_lbl.setText(
-            f"<font color='{C.TEXT}' style='font-family:Consolas;font-size:11px;'>"
-            f"\u25cf {black}</font>"
+            f"<font color='{my_color}' style='font-family:Consolas;font-size:11px;'>"
+            f"\u25cf {my_count}</font>"
             f"<font color='{C.DIM}' style='font-family:Consolas;font-size:11px;'> - </font>"
-            f"<font color='{C.DIM}' style='font-family:Consolas;font-size:11px;'>"
-            f"\u25cb {white}</font>")
+            f"<font color='{opp_color}' style='font-family:Consolas;font-size:11px;'>"
+            f"\u25cf {opp_count}</font>")
 
     def set_nn_rates(self, win, draw, lose):
         self.nn_wdl_lbl.setText(
             f"<font color='{C.MUTED}' style='font-family:Consolas;font-size:9px;'>"
             f"nn {win:.1f} / {draw:.1f} / {lose:.1f}</font>")
 
-    def set_mcts_steps(self, m):
-        self.steps_bar.set_steps(m)
+    def set_mcts_diff(self, diff):
+        self.diff_bar.set_diff(diff)
 
-    def set_nn_steps(self, s):
-        self.nn_steps_lbl.setText(
+    def set_nn_diff(self, diff):
+        self.nn_diff_lbl.setText(
             f"<font color='{C.MUTED}' style='font-family:Consolas;font-size:9px;'>"
-            f"nn {s:.0f}</font>")
+            f"nn {diff:+.1f}</font>")
 
     def clear_mcts(self):
         for lbl, prefix, color in [(self.win_lbl, 'WIN', C.GREEN),
@@ -1145,9 +1199,9 @@ class StatusPanel(QWidget):
                         f"font-size:10px;'>{prefix}</font><br>"
                         f"<font color='{color}'>--%</font>")
         self.wdl_bar.set_rates(0, 0, 0)
-        self.steps_bar.set_steps(0)
+        self.diff_bar.set_diff(0)
         self.nn_wdl_lbl.setText("")
-        self.nn_steps_lbl.setText("")
+        self.nn_diff_lbl.setText("")
 
     def set_thinking(self, sec):
         self.time_lbl.setText(f"{sec:.2f}s" if sec >= 0 else "--")
@@ -1186,6 +1240,16 @@ class ParameterConsole(QWidget):
         self._build_mcts_tab()
         self._build_mlh_tab()
 
+    def _wrap_scroll_tab(self, content):
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.viewport().setStyleSheet("background: transparent;")
+        scroll.setWidget(content)
+        return scroll
+
     def _build_game_tab(self):
         w = QWidget()
         lay = QVBoxLayout(w)
@@ -1200,7 +1264,7 @@ class ParameterConsole(QWidget):
             lay.addWidget(QLabel(
                 f"<font color='{C.DIM}' style='font-family:Consolas;font-size:10px;"
                 f"letter-spacing:1px;'>{label_text}</font>"))
-            cb = QComboBox()
+            cb = NoWheelComboBox()
             cb.addItems(items)
             setattr(self, attr_name, cb)
             lay.addWidget(cb)
@@ -1209,8 +1273,8 @@ class ParameterConsole(QWidget):
         self.tabs.addTab(w, "GAME")
 
     def _build_mcts_tab(self):
-        w = QWidget()
-        lay = QVBoxLayout(w)
+        content = QWidget()
+        lay = QVBoxLayout(content)
         lay.setContentsMargins(8, 8, 8, 6)
         lay.setSpacing(10)
 
@@ -1220,7 +1284,7 @@ class ParameterConsole(QWidget):
         lbl.setStyleSheet(f"color: {C.DIM}; font-size: 11px; font-family: Consolas;")
         lbl.setToolTip("MCTS simulations per move")
         row.addWidget(lbl)
-        self.n_playout_spin = QSpinBox()
+        self.n_playout_spin = NoWheelSpinBox()
         self.n_playout_spin.setRange(1, 999999)
         self.n_playout_spin.setValue(Def.n_playout)
         row.addWidget(self.n_playout_spin)
@@ -1234,7 +1298,7 @@ class ParameterConsole(QWidget):
                          "Visit counts are aggregated for stronger play.\n"
                          "Tip: set noise epsilon > 0 for tree diversity.")
         row2.addWidget(lbl2)
-        self.n_trees_spin = QSpinBox()
+        self.n_trees_spin = NoWheelSpinBox()
         self.n_trees_spin.setRange(1, 9999)
         self.n_trees_spin.setValue(Def.n_trees)
         row2.addWidget(self.n_trees_spin)
@@ -1247,7 +1311,7 @@ class ParameterConsole(QWidget):
         lbl3.setToolTip("Virtual Loss batch size per tree per iteration.\n"
                          ">1 enables VL tree parallelism for faster NN batching.")
         row3.addWidget(lbl3)
-        self.vl_batch_spin = QSpinBox()
+        self.vl_batch_spin = NoWheelSpinBox()
         self.vl_batch_spin.setRange(1, 256)
         self.vl_batch_spin.setValue(Def.vl_batch)
         row3.addWidget(self.vl_batch_spin)
@@ -1272,7 +1336,7 @@ class ParameterConsole(QWidget):
         lay.addWidget(self.sym_check)
 
         lay.addStretch()
-        self.tabs.addTab(w, "MCTS")
+        self.tabs.addTab(self._wrap_scroll_tab(content), "MCTS")
 
     def _build_mlh_tab(self):
         w = QWidget()
@@ -1864,6 +1928,7 @@ class OthelloGUI(QWidget):
         self.board.update_valid()
         self.board.update()
 
+        self.status.set_player_color(self.player_color)
         self.status.set_result("")
         self.status.set_thinking(-1)
         self.status.clear_mcts()
@@ -1934,8 +1999,11 @@ class OthelloGUI(QWidget):
             self.status.set_nn_rates(win_pct, draw_pct, lose_pct)
 
             sp = sl[0].exp().cpu()
-            expected = (sp * torch.arange(len(sp), dtype=torch.float32)).sum().item()
-            self.status.set_nn_steps(expected)
+            offset = float(getattr(self.net, 'aux_target_offset', 0))
+            expected = (sp * torch.arange(len(sp), dtype=torch.float32)).sum().item() - offset
+            if self.player_color != self.env.turn:
+                expected = -expected
+            self.status.set_nn_diff(expected)
 
     def _update_status_mcts(self, stats_0):
         d = float(stats_0['root_D'])
@@ -1946,8 +2014,10 @@ class OthelloGUI(QWidget):
             win_pct, lose_pct = p1w * 100, p2w * 100
         else:
             win_pct, lose_pct = p2w * 100, p1w * 100
+        if self.player_color != self.env.turn:
+            m = -m
         self.status.set_mcts_rates(win_pct, d * 100, lose_pct)
-        self.status.set_mcts_steps(m)
+        self.status.set_mcts_diff(m)
 
     # ── Scan-line animation ─────────────────────────────────────────────────
     def _start_scan(self):

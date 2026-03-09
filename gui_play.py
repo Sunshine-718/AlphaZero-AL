@@ -5,6 +5,7 @@ os.environ["OMP_NUM_THREADS"] = "1"
 
 from src.player import Human, AlphaZeroPlayer
 from src.environments import load
+# On Windows, importing PyQt before torch can break torch DLL initialization.
 import torch
 import time
 import math
@@ -244,6 +245,21 @@ def _sv(slider):
     return slider.value() / slider._scale
 
 
+class NoWheelSpinBox(QSpinBox):
+    def wheelEvent(self, event):
+        event.ignore()
+
+
+class NoWheelComboBox(QComboBox):
+    def wheelEvent(self, event):
+        event.ignore()
+
+
+class NoWheelSlider(QSlider):
+    def wheelEvent(self, event):
+        event.ignore()
+
+
 def _make_slider(layout, label, lo, hi, step, default, decimals=2, tooltip=""):
     row = QHBoxLayout()
     name = QLabel(label)
@@ -254,7 +270,7 @@ def _make_slider(layout, label, lo, hi, step, default, decimals=2, tooltip=""):
     row.addWidget(name)
 
     scale = 10 ** decimals
-    s = QSlider(Qt.Horizontal)
+    s = NoWheelSlider(Qt.Horizontal)
     s._scale = scale
     s._decimals = decimals
     s.setRange(int(lo * scale), int(hi * scale))
@@ -1022,7 +1038,7 @@ class ChildStatsTable(QWidget):
     """Glass table showing per-action child node statistics."""
     ROW_H = 16
     HDR_H = 18
-    COLS = ['Col', 'N', 'N%', 'Q', 'W%', 'D%', 'L%', 'M', 'P', 'N/P']
+    COLS = ['Col', 'N', 'N%', 'Q', 'W%', 'D%', 'L%', 'M', 'P']
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1055,8 +1071,8 @@ class ChildStatsTable(QWidget):
         n_actions = len(s.visits)
         total_v = s.visits.sum()
 
-        #  Col  N     N%    Q      W%    D%    L%    M     P     N/P
-        ratios = [0.05, 0.12, 0.08, 0.10, 0.10, 0.09, 0.10, 0.10, 0.09, 0.10]
+        #  Col  N     N%    Q      W%    D%    L%    M     P
+        ratios = [0.05, 0.12, 0.08, 0.10, 0.10, 0.09, 0.10, 0.10, 0.09]
         pad = 6
         usable = w - pad * 2
         col_x = [pad]
@@ -1124,8 +1140,6 @@ class ChildStatsTable(QWidget):
                     C.YEL_HEX if n > 0 else C.MUTED),
                 (f"{prior:.1f}" if prior > 0.05 else '<.1',
                     C.MAGENTA if prior > 5 else C.DIM),
-                (f"{n / (s.prior[idx] * 100):.0f}" if (n > 0 and s.prior[idx] > 1e-6) else '-',
-                    C.TEXT if n > 0 else C.MUTED),
             ]
 
             for ci, (txt, color) in enumerate(cells):
@@ -1297,6 +1311,16 @@ class ParameterConsole(QWidget):
         self._build_mcts_tab()
         self._build_mlh_tab()
 
+    def _wrap_scroll_tab(self, content):
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.viewport().setStyleSheet("background: transparent;")
+        scroll.setWidget(content)
+        return scroll
+
     def _build_game_tab(self):
         w = QWidget()
         lay = QVBoxLayout(w)
@@ -1311,7 +1335,7 @@ class ParameterConsole(QWidget):
             lay.addWidget(QLabel(
                 f"<font color='{C.DIM}' style='font-family:Consolas;font-size:10px;"
                 f"letter-spacing:1px;'>{label_text}</font>"))
-            cb = QComboBox()
+            cb = NoWheelComboBox()
             cb.addItems(items)
             setattr(self, attr_name, cb)
             lay.addWidget(cb)
@@ -1320,8 +1344,8 @@ class ParameterConsole(QWidget):
         self.tabs.addTab(w, "GAME")
 
     def _build_mcts_tab(self):
-        w = QWidget()
-        lay = QVBoxLayout(w)
+        content = QWidget()
+        lay = QVBoxLayout(content)
         lay.setContentsMargins(8, 8, 8, 6)
         lay.setSpacing(10)
 
@@ -1331,7 +1355,7 @@ class ParameterConsole(QWidget):
         lbl.setStyleSheet(f"color: {C.DIM}; font-size: 11px; font-family: Consolas;")
         lbl.setToolTip("MCTS simulations per move")
         row.addWidget(lbl)
-        self.n_playout_spin = QSpinBox()
+        self.n_playout_spin = NoWheelSpinBox()
         self.n_playout_spin.setRange(1, 999999)
         self.n_playout_spin.setValue(Def.n_playout)
         row.addWidget(self.n_playout_spin)
@@ -1345,7 +1369,7 @@ class ParameterConsole(QWidget):
                          "Visit counts are aggregated for stronger play.\n"
                          "Tip: set noise epsilon > 0 for tree diversity.")
         row2.addWidget(lbl2)
-        self.n_trees_spin = QSpinBox()
+        self.n_trees_spin = NoWheelSpinBox()
         self.n_trees_spin.setRange(1, 9999)
         self.n_trees_spin.setValue(Def.n_trees)
         row2.addWidget(self.n_trees_spin)
@@ -1359,7 +1383,7 @@ class ParameterConsole(QWidget):
                          "Larger K → bigger NN batch → faster GPU utilization.\n"
                          "1 = standard single-sim path.")
         row3.addWidget(lbl3)
-        self.vl_batch_spin = QSpinBox()
+        self.vl_batch_spin = NoWheelSpinBox()
         self.vl_batch_spin.setRange(1, 256)
         self.vl_batch_spin.setValue(Def.vl_batch)
         row3.addWidget(self.vl_batch_spin)
@@ -1384,7 +1408,7 @@ class ParameterConsole(QWidget):
         lay.addWidget(self.sym_check)
 
         lay.addStretch()
-        self.tabs.addTab(w, "MCTS")
+        self.tabs.addTab(self._wrap_scroll_tab(content), "MCTS")
 
     def _build_mlh_tab(self):
         w = QWidget()

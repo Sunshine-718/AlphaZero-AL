@@ -12,6 +12,11 @@ from sklearn.metrics import f1_score
 
 
 class Base(ABC, nn.Module):
+    aux_target_offset = 0
+
+    def encode_aux_target(self, aux_target):
+        return aux_target.view(-1).long() + int(getattr(self, 'aux_target_offset', 0))
+
     def save(self, path=None):
         while True:
             try:
@@ -45,7 +50,7 @@ class Base(ABC, nn.Module):
         for _ in range(n_epochs):
             self.train()
             for batch in dataloader:
-                state, prob, winner, steps_to_end, root_wdl = augment(batch)
+                state, prob, winner, steps_to_end, aux_target, root_wdl = augment(batch)
                 # Value target in relative perspective:
                 # class 0=draw, 1=win(to-move), 2=loss(to-move)
                 winner_flat = winner.view(-1).long()
@@ -58,11 +63,11 @@ class Base(ABC, nn.Module):
                 non_draw = winner_flat != 0
                 value_class[non_draw & (winner_flat == turn_sign)] = 1
                 value_class[non_draw & (winner_flat != turn_sign)] = 2
-                steps_target = steps_to_end.view(-1,).long()
-                mask = (steps_target != 0).float()
+                aux_target = self.encode_aux_target(aux_target)
+                mask = (prob.sum(dim=1) > 0).float()
                 self.opt.zero_grad()
                 log_p_pred, value_pred, steps_pred = model(state)
-                steps_target = steps_target.clamp(0, steps_pred.shape[-1] - 1)
+                aux_target = aux_target.clamp(0, steps_pred.shape[-1] - 1)
 
                 if use_soft:
                     z_target = F.one_hot(value_class, 3).float()
@@ -101,7 +106,7 @@ class Base(ABC, nn.Module):
 
                 per_sample_p = -torch.sum(prob * log_p_pred, dim=1)
                 p_loss = torch.mean(per_sample_p * mask)
-                s_loss = F.nll_loss(steps_pred, steps_target)
+                s_loss = F.nll_loss(steps_pred, aux_target)
                 loss = p_loss + v_loss + 0.5 * s_loss
                 loss.backward()
                 nn.utils.clip_grad_norm_(self.parameters(), 5)

@@ -194,6 +194,8 @@ namespace AlphaZero
                     child_visits_total = child.n_visits + child.n_inflight;
                     child_Q = child.mean_q(); // 只用真实 W/N，子节点视角
                     child_M = child.mean_M();
+                    if constexpr (Game::AUX_NEGATE_PER_PLY)
+                        child_M = -child_M;
                     q_value = -child_Q; // 翻转到父节点视角
                 }
                 else if (e.child != -1 && pool_.node(e.child).n_inflight > 0)
@@ -222,7 +224,8 @@ namespace AlphaZero
                     {
                         float m_diff = child_M - parent_M;
                         m_utility = std::clamp(config_->mlh_slope * m_diff,
-                                               -config_->mlh_cap, config_->mlh_cap) * child_Q;
+                                               -config_->mlh_cap, config_->mlh_cap);
+                        m_utility = Game::scale_aux_utility(m_utility, child_Q);
                         if (config_->mlh_threshold > 0.0f && config_->mlh_threshold < 1.0f)
                             m_utility *= (abs_q - config_->mlh_threshold) /
                                          (1.0f - config_->mlh_threshold);
@@ -396,7 +399,10 @@ namespace AlphaZero
                 node.W_p1w += leaf_wdl.p1w;
                 node.W_p2w += leaf_wdl.p2w;
                 node.M_sum += ml;
-                ml += 1.0f;
+                if constexpr (Game::AUX_PLUS_ONE_PER_PLY)
+                    ml += 1.0f;
+                if constexpr (Game::AUX_NEGATE_PER_PLY)
+                    ml = -ml;
                 idx = node.parent;
 
                 if (config_->value_decay < 1.0f)
@@ -412,7 +418,7 @@ namespace AlphaZero
             if (current_leaf_idx == -1) return;
             if (!is_terminal)
                 expand_leaf(policy_logits);
-            propagate(wdl, is_terminal ? 0.0f : moves_left);
+            propagate(wdl, is_terminal ? sim_env.terminal_aux() : moves_left);
         }
 
         // ======== Virtual Loss 方法 ========
@@ -608,7 +614,7 @@ namespace AlphaZero
                     expand_leaf(policy_logits);
                 // 若已被之前的 backprop_vl 展开，跳过展开
             }
-            propagate(wdl, is_terminal ? 0.0f : moves_left);
+            propagate(wdl, is_terminal ? sim_env.terminal_aux() : moves_left);
         }
 
         // ======== 统计查询 ========
@@ -662,9 +668,12 @@ namespace AlphaZero
                 {
                     const MCTSNode &child = pool_.node(e.child);
                     WDLValue cw = child.mean_wdl();
+                    float child_m = child.mean_M();
+                    if constexpr (Game::AUX_NEGATE_PER_PLY)
+                        child_m = -child_m;
                     slot[0] = static_cast<float>(child.n_visits);
                     slot[1] = child.mean_q();
-                    slot[4] = child.mean_M();
+                    slot[4] = child_m;
                     slot[5] = cw.d;
                     slot[6] = cw.p1w;
                     slot[7] = cw.p2w;

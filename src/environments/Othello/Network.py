@@ -31,6 +31,8 @@ class ResidualBlock(nn.Module):
 
 
 class CNN(Base):
+    aux_target_offset = 64
+
     def __init__(self, lr, in_dim=3, h_dim=64, out_dim=65, dropout=0.2, device='cpu', num_res_blocks=4, policy_lr_scale=0.3):
         super().__init__()
         self.in_dim = in_dim
@@ -73,12 +75,13 @@ class CNN(Base):
         )
 
         # Steps-to-end head: max 60 placements possible (64-4=60) → 61 classes (0-60)
+        # Auxiliary head: terminal disc diff from current-player perspective, in [-64, 64].
         self.steps_head = nn.Sequential(
             nn.Conv2d(h_dim, 5, kernel_size=1, bias=True),
             nn.SiLU(inplace=True),
             nn.Flatten(),
             nn.LayerNorm(policy_conv_flat),
-            nn.Linear(policy_conv_flat, 61),
+            nn.Linear(policy_conv_flat, 129),
             nn.LogSoftmax(dim=-1)
         )
 
@@ -151,10 +154,11 @@ class CNN(Base):
         # Value head outputs: [P(draw), P(win to-move), P(loss to-move)]
         wdl = value_log_prob.exp()  # (batch, 3)
 
+        # Third head predicts terminal disc diff in current-player perspective.
         steps_prob = log_steps.exp()
-        idx = torch.arange(61, dtype=torch.float32, device=self.device)
-        expected_steps = (steps_prob * idx).sum(dim=1)
+        idx = torch.arange(log_steps.shape[-1], dtype=torch.float32, device=self.device)
+        expected_aux = (steps_prob * idx).sum(dim=1) - float(self.aux_target_offset)
 
         return (log_prob.exp().cpu().numpy(),
                 wdl.cpu().numpy(),
-                expected_steps.cpu().view(-1, 1).numpy())
+                expected_aux.cpu().view(-1, 1).numpy())

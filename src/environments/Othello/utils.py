@@ -72,7 +72,7 @@ def augment(batch):
     Othello 初始局面只在 Klein 四元群 {恒等, 180°旋转, 主对角线翻转, 副对角线翻转} 下不变。
     90°/270° 旋转和水平/垂直翻转会交换初始黑白子位置，不是合法对称。
     """
-    state, prob, winner, steps_to_end, root_wdl = batch
+    state, prob, winner, steps_to_end, aux_target, root_wdl = batch
 
     states_all = [state]
     probs_all = [prob]
@@ -85,9 +85,10 @@ def augment(batch):
     prob = torch.cat(probs_all, dim=0)
     winner = winner.repeat(4, 1)
     steps_to_end = steps_to_end.repeat(4, 1)
+    aux_target = aux_target.repeat(4, 1)
     root_wdl = root_wdl.repeat(4, 1)
 
-    return state, prob, winner, steps_to_end, root_wdl
+    return state, prob, winner, steps_to_end, aux_target, root_wdl
 
 
 def inspect(net, board=None):

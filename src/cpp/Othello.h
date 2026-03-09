@@ -2,6 +2,7 @@
 #include "GameContext.h"
 #include <array>
 #include <bit>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 
@@ -25,6 +26,9 @@ namespace AlphaZero
     class Othello
     {
     public:
+        static constexpr bool AUX_PLUS_ONE_PER_PLY = false;
+        static constexpr bool AUX_NEGATE_PER_PLY = true;
+
         struct Traits
         {
             static constexpr int ROWS = 8;
@@ -248,6 +252,17 @@ namespace AlphaZero
             if (p1 > p2) return 1;
             if (p2 > p1) return -1;
             return 0;
+        }
+
+        [[nodiscard]] float terminal_aux() const
+        {
+            int diff = std::popcount(bb[0]) - std::popcount(bb[1]);
+            return static_cast<float>(diff * turn);
+        }
+
+        [[nodiscard]] static float scale_aux_utility(float utility, float child_q)
+        {
+            return utility * std::abs(child_q);
         }
 
         /**
