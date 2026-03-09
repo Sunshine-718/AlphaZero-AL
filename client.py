@@ -81,6 +81,7 @@ class Actor:
             mlh_slope=self.cfg['mlh_slope'],
             mlh_cap=self.cfg['mlh_cap'],
             mlh_threshold=self.cfg['mlh_threshold'],
+            vl_batch=self.cfg.get('vl_batch', 1),
             value_decay=self.cfg.get('value_decay', 1.0))
         self.mtime = 0
 

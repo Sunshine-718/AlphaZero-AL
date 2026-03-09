@@ -42,6 +42,8 @@ g_mcts.add_argument('-c', '--c_init', type=float, default=1.4, help='PUCT explor
 g_mcts.add_argument('--c_base_factor', type=float, default=5,
                      help='PUCT base factor (c_base = n * c_base_factor)')
 g_mcts.add_argument('--fpu_reduction', type=float, default=0.2, help='First-play urgency reduction')
+g_mcts.add_argument('--vl_batch', type=int, default=1,
+                     help='Virtual Loss batch size per tree iteration')
 g_mcts.add_argument('--cache_size', type=int, default=10000, help='LRU transposition table max size')
 g_mcts.add_argument('--no_symmetry', action='store_true',
                      help='Disable random symmetry augmentation during MCTS')
@@ -80,7 +82,7 @@ g_train = parser.add_argument_group('Training')
 g_train.add_argument('--lr', type=float, default=0.01, help='Learning rate')
 g_train.add_argument('-b', '--batch_size', type=int, default=512, help='Training batch size')
 g_train.add_argument('--buf', '--buffer_size', type=int, default=500000, help='Replay buffer size')
-g_train.add_argument('--q_size', type=int, default=100,
+g_train.add_argument('--q_size', type=int, default=1,
                       help='Minimum buffer size before training starts')
 g_train.add_argument('--replay_ratio', type=float, default=0.1,
                       help='Fraction of buffer sampled per training step')
@@ -111,6 +113,7 @@ config = {"lr": args.lr,
           "c_puct": args.c_init,
           "c_base": args.n * args.c_base_factor,
           "fpu_reduction": args.fpu_reduction,
+          "vl_batch": args.vl_batch,
           "eps": args.eps,
           "n_playout": args.n,
           "buffer_size": args.buf,
@@ -159,6 +162,7 @@ def print_config():
             "c_init": args.c_init,
             "c_base": args.n * args.c_base_factor,
             "fpu_reduction": args.fpu_reduction,
+            "vl_batch": args.vl_batch,
             "cache_size": args.cache_size,
             "use_symmetry": not args.no_symmetry,
         }),
@@ -333,6 +337,7 @@ def get_config():
         'n_playout': pipeline.n_playout,
         'dirichlet_alpha': pipeline.dirichlet_alpha,
         'noise_eps': pipeline.eps,
+        'vl_batch': getattr(pipeline, 'vl_batch', 1),
         'noise_steps': getattr(pipeline, 'noise_steps', 0),
         'noise_eps_min': getattr(pipeline, 'noise_eps_min', 0.1),
         'fpu_reduction': pipeline.fpu_reduction,
