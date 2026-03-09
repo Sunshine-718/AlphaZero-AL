@@ -1,30 +1,34 @@
+/**
+ * Gomoku 游戏环境的 pybind11 绑定。
+ *
+ * 公共方法（reset, copy, step, apply_symmetry 等）由 env_common.h 提供。
+ * Gomoku 使用运行时维度，因此 board I/O、valid_move/mask、current_state、pickle
+ * 仍为 Gomoku 特有实现。
+ *
+ * 注册到 env_cpp.gomoku 子模块。
+ */
 #pragma once
 
-#include <pybind11/numpy.h>
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
-
+#include "env_common.h"
 #include "Gomoku.h"
-#include <cstring>
-#include <random>
 #include <sstream>
 #include <string>
 
-namespace py = pybind11;
 using namespace AlphaZero;
 
 namespace env_bind
 {
+
+// ── Gomoku 特有的 Board I/O 辅助 ────────────────────────────────────────
+
 inline py::array_t<float> gomoku_board_to_numpy(const Gomoku &self)
 {
     py::array_t<float> arr({self.rows(), self.cols()});
     auto buf = arr.mutable_unchecked<2>();
     const int8_t *src = self.board_data();
     for (int r = 0; r < self.rows(); ++r)
-    {
         for (int c = 0; c < self.cols(); ++c)
             buf(r, c) = static_cast<float>(src[r * self.cols() + c]);
-    }
     return arr;
 }
 
@@ -36,10 +40,8 @@ inline void gomoku_numpy_to_board(Gomoku &self, py::array_t<float, py::array::c_
 
     std::vector<int8_t> tmp(static_cast<size_t>(self.action_size()), 0);
     for (int r = 0; r < self.rows(); ++r)
-    {
         for (int c = 0; c < self.cols(); ++c)
             tmp[r * self.cols() + c] = static_cast<int8_t>(buf(r, c));
-    }
     self.import_board(tmp.data());
 }
 
@@ -53,55 +55,48 @@ inline Gomoku gomoku_construct_from_board(py::array_t<float, py::array::c_style 
     return g;
 }
 
+// ── 注册 ─────────────────────────────────────────────────────────────────
+
 inline void register_gomoku(py::module_ &m)
 {
     auto sub = m.def_submodule("gomoku", "Gomoku-like environment with configurable board and win length");
 
-    py::class_<Gomoku>(sub, "Env")
-        .def(py::init<int, int>(),
-             py::arg("board_size") = 15,
-             py::arg("n_in_row") = 5)
-        .def(py::init(&gomoku_construct_from_board),
-             py::arg("board"),
-             py::arg("n_in_row") = 5)
+    py::class_<Gomoku> cls(sub, "Env");
 
+    // ── 构造 ─────────────────────────────────────────────────────────
+    cls.def(py::init<int, int>(),
+            py::arg("board_size") = 15,
+            py::arg("n_in_row") = 5)
+       .def(py::init(&gomoku_construct_from_board),
+            py::arg("board"),
+            py::arg("n_in_row") = 5);
+
+    // ── 公共方法（reset, copy, step, check_winner, apply_symmetry 等）
+    register_env_common(cls, Gomoku::NUM_SYMMETRIES);
+
+    // ── Gomoku 特有绑定 ──────────────────────────────────────────────
+    cls
         .def_property("board", &gomoku_board_to_numpy, &gomoku_numpy_to_board)
-
-        .def_property(
-            "turn",
-            &Gomoku::get_turn,
-            &Gomoku::set_turn)
 
         .def_property_readonly("board_size", &Gomoku::board_size)
         .def_property_readonly("rows", &Gomoku::rows)
         .def_property_readonly("cols", &Gomoku::cols)
         .def_property_readonly("n_in_row", &Gomoku::n_in_row)
         .def_property_readonly("action_size", &Gomoku::action_size)
+        .def_property_readonly("num_symmetries", &Gomoku::num_symmetries)
 
-        .def_property_readonly_static(
-            "NUM_SYMMETRIES",
-            [](py::object) { return Gomoku::NUM_SYMMETRIES; })
-
-        .def_property_readonly(
-            "num_symmetries",
-            &Gomoku::num_symmetries)
-
-        .def("reset", &Gomoku::reset)
-        .def("copy", [](const Gomoku &self) { return Gomoku(self); })
         .def("set_params", &Gomoku::set_params,
              py::arg("board_size"), py::arg("n_in_row"))
 
-        .def("step", &Gomoku::step, py::arg("action"))
+        .def("done", &Gomoku::is_done)
+
         .def("step_xy", [](Gomoku &self, int row, int col)
              { self.step(self.coord_to_action(row, col)); },
              py::arg("row"), py::arg("col"))
 
-        .def("done", &Gomoku::is_done)
-        .def("winPlayer", &Gomoku::check_winner)
-        .def("check_winner", &Gomoku::check_winner)
-        .def("check_full", &Gomoku::is_full)
+        .def("coord_to_action", &Gomoku::coord_to_action,
+             py::arg("row"), py::arg("col"))
 
-        .def("coord_to_action", &Gomoku::coord_to_action, py::arg("row"), py::arg("col"))
         .def("action_to_coord", [](const Gomoku &self, int action)
              {
                  if (action < 0 || action >= self.action_size())
@@ -128,29 +123,11 @@ inline void register_gomoku(py::module_ &m)
                  return result;
              })
 
-        .def("current_state", [](const Gomoku &self)
-             {
-                 py::array_t<float> state({1, 3, self.rows(), self.cols()});
-                 auto buf = state.mutable_unchecked<4>();
-                 std::memset(buf.mutable_data(0, 0, 0, 0), 0,
-                             sizeof(float) * static_cast<size_t>(3 * self.rows() * self.cols()));
+        .def("current_state", [](Gomoku &self)
+             { return make_current_state(self, self.rows(), self.cols()); })
 
-                 const int turn = self.get_turn();
-                 const int8_t *b = self.board_data();
-                 for (int r = 0; r < self.rows(); ++r)
-                 {
-                     for (int c = 0; c < self.cols(); ++c)
-                     {
-                         const int8_t v = b[r * self.cols() + c];
-                         if (v == turn)
-                             buf(0, 0, r, c) = 1.0f;
-                         else if (v == -turn)
-                             buf(0, 1, r, c) = 1.0f;
-                         buf(0, 2, r, c) = static_cast<float>(turn);
-                     }
-                 }
-                 return state;
-             })
+        .def("inverse_symmetry_action", &Gomoku::inverse_symmetry_action,
+             py::arg("sym_id"), py::arg("action"))
 
         .def("show", [](const Gomoku &self)
              {
@@ -175,33 +152,7 @@ inline void register_gomoku(py::module_ &m)
                  py::print(os.str());
              })
 
-        .def("apply_symmetry", [](const Gomoku &self, int sym_id, bool inplace) -> Gomoku
-             {
-                 if (inplace)
-                 {
-                     Gomoku &mut_self = const_cast<Gomoku &>(self);
-                     mut_self.apply_symmetry(sym_id);
-                     return mut_self;
-                 }
-                 Gomoku copy(self);
-                 copy.apply_symmetry(sym_id);
-                 return copy;
-             },
-             py::arg("sym_id"), py::arg("inplace") = false)
-
-        .def("inverse_symmetry_action", &Gomoku::inverse_symmetry_action,
-             py::arg("sym_id"), py::arg("action"))
-
-        .def("random_symmetry", [](const Gomoku &self) -> py::tuple
-             {
-                 static thread_local std::mt19937 rng(std::random_device{}());
-                 std::uniform_int_distribution<int> dist(0, Gomoku::NUM_SYMMETRIES - 1);
-                 int sym_id = dist(rng);
-                 Gomoku copy(self);
-                 copy.apply_symmetry(sym_id);
-                 return py::make_tuple(copy, sym_id);
-             })
-
+        // Pickle: (board_ndarray, turn, n_in_row)
         .def(py::pickle(
             [](const Gomoku &self) -> py::tuple
             {
