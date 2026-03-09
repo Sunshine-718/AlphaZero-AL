@@ -215,7 +215,7 @@ void register_env_traits(py::class_<Game> &cls)
 
         // 合法动作掩码
         .def(
-            "valid_mask", [](const Game &self)
+            "valid_mask", [=](const Game &self)
             {
                 auto vm = self.get_valid_moves();
                 py::list result;
