@@ -100,7 +100,7 @@ class CNN(Base):
         ], lr=lr, momentum=0.9, weight_decay=1e-4)
 
         scheduler_warmup = LinearLR(self.opt, start_factor=0.001, total_iters=100)
-        scheduler_train = LinearLR(self.opt, start_factor=1, end_factor=0.01, total_iters=1000)
+        scheduler_train = LinearLR(self.opt, start_factor=1, end_factor=0.1, total_iters=1000)
         self.scheduler = SequentialLR(self.opt, schedulers=[scheduler_warmup, scheduler_train], milestones=[100])
         self.to(self.device)
 

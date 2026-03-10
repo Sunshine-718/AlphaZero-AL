@@ -61,9 +61,9 @@ def action_label(action):
 class Def:
     network = 'CNN'
     model_type = 'current'
-    n_playout = 500
+    n_playout = 10000
     c_init = 1.4
-    c_base = 1000
+    c_base = 2000
     fpu = 0.2
     alpha = 0.3
     noise_eps = 0.
@@ -72,7 +72,7 @@ class Def:
     n_trees = 1
     vl_batch = 4
     mlh_slope = 0.1
-    mlh_cap = 0.15
+    mlh_cap = 0.2
     mlh_thr = 0.
 
 
