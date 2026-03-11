@@ -37,7 +37,7 @@ g_env.add_argument('-d', '--device', type=str,
 
 # ── MCTS Search ───────────────────────────────────────────────────────────────
 g_mcts = parser.add_argument_group('MCTS Search')
-g_mcts.add_argument('-n', type=int, default=100, help='Number of MCTS simulations per move')
+g_mcts.add_argument('-n', type=int, default=400, help='Number of MCTS simulations per move')
 g_mcts.add_argument('-c', '--c_init', type=float, default=1.4, help='PUCT exploration constant')
 g_mcts.add_argument('--c_base_factor', type=float, default=5,
                      help='PUCT base factor (c_base = n * c_base_factor)')
@@ -64,13 +64,13 @@ g_mlh.add_argument('--mlh_cap', type=float, default=0.2,
                     help='MLH max effect cap: clamp M_utility to [-cap, cap]')
 g_mlh.add_argument('--mlh_threshold', type=float, default=0.,
                     help='MLH Q threshold: suppress M_utility when |Q| < threshold (0=no threshold)')
-g_mlh.add_argument('--mlh_warmup_loss', type=float, default=2.5,
+g_mlh.add_argument('--mlh_warmup_loss', type=float, default=0,
                     help='Steps-head loss threshold to activate MLH (0=disabled, MLH active from start)')
 
 # ── Self-play ─────────────────────────────────────────────────────────────────
 g_sp = parser.add_argument_group('Self-play')
 g_sp.add_argument('-t', '--temp', type=float, default=1, help='Self-play temperature')
-g_sp.add_argument('--temp_decay_moves', type=int, default=12,
+g_sp.add_argument('--temp_decay_moves', type=int, default=20,
                    help='Number of moves to linearly decay temperature to 0 (0=no decay)')
 g_sp.add_argument('--temp_endgame', type=float, default=0.3,
                    help='Temperature floor (minimum temperature after decay)')
@@ -97,12 +97,18 @@ g_train.add_argument('--distill_temp', type=float, default=1.0,
 g_train.add_argument('--value_decay', type=float, default=0.99,
                       help='Game-length discount γ for value targets: target = γ^steps × z + (1-γ^steps) × uniform '
                            '(1.0=no scaling, 0.99=moderate, 0.97=aggressive)')
+g_train.add_argument('--psw_beta', type=float, default=0.3,
+                      help='Policy Surprise Weighting β: w = 1 + β×KL(π||p), up-weights positions where '
+                           'MCTS policy diverges from network prior (0=disabled)')
+g_train.add_argument('--entropy_lambda', type=float, default=0.01,
+                      help='Entropy regularization λ: subtracts λ×H(p) from policy loss to discourage '
+                           'policy collapse (0=disabled)')
 
 # ── Evaluation ────────────────────────────────────────────────────────────────
 g_eval = parser.add_argument_group('Evaluation')
 g_eval.add_argument('--interval', type=int, default=10, help='Eval interval (training steps)')
 g_eval.add_argument('--num_eval', type=int, default=50, help='Number of evaluation games')
-g_eval.add_argument('--thres', type=float, default=0.52, help='Win rate threshold for new best')
+g_eval.add_argument('--thres', type=float, default=0.55, help='Win rate threshold for new best')
 g_eval.add_argument('--mcts_n', type=int, default=1000, help='Benchmark pure MCTS simulations')
 
 parser.add_argument('--config', action='store_true', help='Display current config and exit')
@@ -137,7 +143,9 @@ config = {"lr": args.lr,
           "mlh_warmup_loss": args.mlh_warmup_loss,
           "distill_alpha": args.distill_alpha,
           "distill_temp": args.distill_temp,
-          "value_decay": args.value_decay}
+          "value_decay": args.value_decay,
+          "psw_beta": args.psw_beta,
+          "entropy_lambda": args.entropy_lambda}
 
 
 def print_config():
@@ -196,6 +204,8 @@ def print_config():
             "distill_alpha": args.distill_alpha,
             "distill_temp": args.distill_temp,
             "value_decay": args.value_decay,
+            "psw_beta": args.psw_beta,
+            "entropy_lambda": args.entropy_lambda,
         }),
         ("Evaluation", {
             "interval": args.interval,

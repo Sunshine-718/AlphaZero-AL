@@ -140,7 +140,9 @@ class TrainPipeline(ABC):
             n_epochs=getattr(self, 'n_epochs', 10),
             distill_alpha=getattr(self, 'distill_alpha', 0.0),
             value_decay=getattr(self, 'value_decay', 1.0),
-            distill_temp=getattr(self, 'distill_temp', 1.0))
+            distill_temp=getattr(self, 'distill_temp', 1.0),
+            psw_beta=getattr(self, 'psw_beta', 0.3),
+            entropy_lambda=getattr(self, 'entropy_lambda', 0.01))
 
         if self.is_ddp:
             dist.barrier()

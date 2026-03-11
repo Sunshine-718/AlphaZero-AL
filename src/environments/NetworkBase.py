@@ -97,19 +97,39 @@ class Base(ABC, nn.Module):
         )
 
     @staticmethod
-    def _policy_loss(log_p_pred, prob, policy_mask):
-        per_sample_p = -torch.sum(prob * log_p_pred, dim=1)
-        return torch.mean(per_sample_p * policy_mask)
+    def _policy_loss(log_p_pred, prob, policy_mask, psw_beta=0.0, entropy_lambda=0.0):
+        # KL(π || p) per sample
+        per_sample_kl = F.kl_div(log_p_pred, prob, reduction='none').sum(dim=1)
+
+        # PSW: weight by surprise
+        if psw_beta > 0:
+            with torch.no_grad():
+                weights = 1.0 + psw_beta * per_sample_kl.detach()
+            weighted_kl = per_sample_kl * weights * policy_mask
+        else:
+            weighted_kl = per_sample_kl * policy_mask
+
+        p_loss = weighted_kl.mean()
+
+        # Entropy regularization: maximize H(p) = -Σ p log p
+        if entropy_lambda > 0:
+            p_pred = log_p_pred.exp()
+            entropy = -torch.sum(p_pred * log_p_pred, dim=1)
+            p_loss = p_loss - entropy_lambda * (entropy * policy_mask).mean()
+
+        return p_loss
 
     @staticmethod
     def _aux_loss(steps_pred, aux_target):
         aux_target = aux_target.clamp(0, steps_pred.shape[-1] - 1)
         return F.nll_loss(steps_pred, aux_target)
 
-    def _optimize_batch(self, model, batch_data, use_soft, value_decay, distill_alpha, distill_temp):
+    def _optimize_batch(self, model, batch_data, use_soft, value_decay, distill_alpha, distill_temp,
+                        psw_beta=0.0, entropy_lambda=0.0):
         self.opt.zero_grad()
         log_p_pred, value_pred, steps_pred = model(batch_data['state'])
-        p_loss = self._policy_loss(log_p_pred, batch_data['prob'], batch_data['policy_mask'])
+        p_loss = self._policy_loss(log_p_pred, batch_data['prob'], batch_data['policy_mask'],
+                                   psw_beta, entropy_lambda)
         v_loss = self._value_loss(
             value_pred,
             batch_data,
@@ -119,7 +139,7 @@ class Base(ABC, nn.Module):
             distill_temp,
         )
         s_loss = self._aux_loss(steps_pred, batch_data['aux_target'])
-        loss = p_loss + v_loss + 0.5 * s_loss
+        loss = p_loss + v_loss + 0.1 * s_loss
         loss.backward()
         nn.utils.clip_grad_norm_(self.parameters(), 5)
         self.opt.step()
@@ -233,8 +253,8 @@ class Base(ABC, nn.Module):
                 else:
                     v_loss = F.nll_loss(value_pred, value_class)
 
-                per_sample_p = -torch.sum(prob * log_p_pred, dim=1)
-                p_loss = torch.mean(per_sample_p * mask)
+                per_sample_kl = F.kl_div(log_p_pred, prob, reduction='none').sum(dim=1)
+                p_loss = torch.mean(per_sample_kl * mask)
                 s_loss = F.nll_loss(steps_pred, aux_target)
                 loss = p_loss + v_loss + 0.5 * s_loss
                 loss.backward()
@@ -260,7 +280,8 @@ class Base(ABC, nn.Module):
         return np.mean(p_l), np.mean(v_l), np.mean(s_l), float(entropy), total_norm, f1
 
     def train_step(self, dataloader, augment, ddp_model=None, n_epochs=10,
-                   distill_alpha=0.0, value_decay=1.0, distill_temp=1.0):
+                   distill_alpha=0.0, value_decay=1.0, distill_temp=1.0,
+                   psw_beta=0.0, entropy_lambda=0.0):
         model = ddp_model if ddp_model is not None else self
         p_l, v_l, s_l = [], [], []
         use_soft = value_decay < 1.0 or distill_alpha > 0
@@ -278,6 +299,8 @@ class Base(ABC, nn.Module):
                     value_decay,
                     distill_alpha,
                     distill_temp,
+                    psw_beta,
+                    entropy_lambda,
                 )
                 p_l.append(p_loss.item())
                 v_l.append(v_loss.item())

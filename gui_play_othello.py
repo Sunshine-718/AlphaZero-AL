@@ -65,7 +65,7 @@ class Def:
     c_init = 1.4
     c_base = 2000
     fpu = 0.2
-    alpha = 0.3
+    alpha = 0.
     noise_eps = 0.
     symmetry = True
     cache = 10000
