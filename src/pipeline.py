@@ -30,6 +30,7 @@ class TrainPipeline(ABC):
         self.name = f'{name}_{env_name}'
         self.params = './params'
         self.global_step = 0
+        self._dashboard_metrics = {}
         self.raw_config = config if config else {}
         for key, value in config.items():
             setattr(self, key, value)
@@ -319,6 +320,20 @@ class TrainPipeline(ABC):
         }
         swanlab.log(log_dict, step=self.global_step)
 
+        self._dashboard_metrics.update({
+            'global_step': self.global_step,
+            'p_loss': round(p_loss, 6),
+            'v_loss': round(v_loss, 6),
+            's_loss': round(s_loss, 6),
+            'total_loss': round(p_loss + v_loss + s_loss, 6),
+            'entropy': round(entropy, 6),
+            'f1': round(f1, 4),
+            'grad_norm': round(grad_norm, 4),
+            'lr': self.net.opt.param_groups[0]['lr'],
+            'episode_len': self.episode_len,
+            'buffer_ptr': self.buffer._ptr if self.buffer else 0,
+        })
+
     def _log_eval(self, r_a, r_b, win_rate, best_counter):
         swanlab.log({
             f'Metric/Elo/AlphaZero_{self.n_playout}': r_a,
@@ -327,6 +342,13 @@ class TrainPipeline(ABC):
         }, step=self.global_step)
         if best_counter is not None:
             swanlab.log({'Metric/Best policy': best_counter}, step=self.global_step)
+
+        self._dashboard_metrics.update({
+            'elo_az': round(r_a, 2),
+            'elo_bench': round(r_b, 2),
+            'win_rate': round(win_rate, 4),
+            'best_count': best_counter if best_counter is not None else self._dashboard_metrics.get('best_count', 0),
+        })
 
         if self.env_name == 'Connect4':
             p0, v0, p1, v1 = self.module.inspect(self.net)

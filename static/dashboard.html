@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AlphaZero Dashboard</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box
+    }
+
+    :root {
+      --bg: #12121a;
+      --panel: #1a1a2e;
+      --border: #2a2a3e;
+      --accent: #16c79a;
+      --accent2: #0f3460;
+      --text: #e0e0e0;
+      --text2: #888;
+      --alert: #e94560;
+      --card: #222240;
+      --input-bg: #0d0d18
+    }
+
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column
+    }
+
+    a {
+      color: var(--accent)
+    }
+
+    /* Header */
+    .header {
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      flex-wrap: wrap
+    }
+
+    .header .title {
+      font-size: 18px;
+      font-weight: 700;
+      color: #fff
+    }
+
+    .header .badge {
+      background: var(--accent2);
+      padding: 4px 12px;
+      border-radius: 12px;
+      font-size: 13px;
+      color: var(--accent)
+    }
+
+    .header .stat {
+      font-size: 13px;
+      color: var(--text2)
+    }
+
+    .header .stat b {
+      color: var(--text);
+      font-variant-numeric: tabular-nums
+    }
+
+    /* Layout */
+    .main {
+      display: grid;
+      grid-template-columns: 340px 1fr;
+      gap: 0;
+      flex: 1;
+      overflow: hidden
+    }
+
+    @media(max-width:900px) {
+      .main {
+        grid-template-columns: 1fr
+      }
+    }
+
+    /* Sidebar */
+    .sidebar {
+      background: var(--panel);
+      border-right: 1px solid var(--border);
+      overflow-y: auto;
+      padding: 16px
+    }
+
+    .group-title {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: var(--accent);
+      margin: 16px 0 8px;
+      font-weight: 600
+    }
+
+    .group-title:first-child {
+      margin-top: 0
+    }
+
+    .param-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px
+    }
+
+    .param-row label {
+      flex: 1;
+      font-size: 13px;
+      color: var(--text2);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis
+    }
+
+    .param-row input {
+      width: 90px;
+      background: var(--input-bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 4px 8px;
+      color: var(--text);
+      font-size: 13px;
+      text-align: right;
+      font-variant-numeric: tabular-nums
+    }
+
+    .param-row input:focus {
+      outline: none;
+      border-color: var(--accent)
+    }
+
+    .param-row .changed {
+      border-color: var(--accent) !important;
+      background: #16c79a12
+    }
+
+    .btn {
+      background: var(--accent);
+      color: #000;
+      border: none;
+      padding: 8px 20px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      width: 100%;
+      margin-top: 12px;
+      transition: opacity .2s
+    }
+
+    .btn:hover {
+      opacity: .85
+    }
+
+    .btn:disabled {
+      opacity: .4;
+      cursor: default
+    }
+
+    .toast {
+      position: fixed;
+      top: 16px;
+      right: 16px;
+      padding: 10px 20px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      z-index: 999;
+      animation: fadeout .5s 2s forwards
+    }
+
+    .toast.ok {
+      background: var(--accent);
+      color: #000
+    }
+
+    .toast.err {
+      background: var(--alert);
+      color: #fff
+    }
+
+    @keyframes fadeout {
+      to {
+        opacity: 0;
+        transform: translateY(-10px)
+      }
+    }
+
+    /* Content */
+    .content {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      padding: 16px;
+      gap: 16px
+    }
+
+    /* Metric cards */
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: 10px
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 14px
+    }
+
+    .card .label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text2);
+      margin-bottom: 4px
+    }
+
+    .card .value {
+      font-size: 22px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      color: #fff
+    }
+
+    .card .sub {
+      font-size: 11px;
+      color: var(--text2);
+      margin-top: 2px
+    }
+
+    .card.highlight .value {
+      color: var(--accent)
+    }
+  </style>
+</head>
+
+<body>
+
+  <div class="header">
+    <div class="title">AlphaZero Dashboard</div>
+    <div class="badge" id="hd-env">—</div>
+    <div class="stat">Step <b id="hd-step">—</b></div>
+    <div class="stat">Buffer <b id="hd-buf">—</b></div>
+    <div class="stat">ELO <b id="hd-elo">—</b></div>
+    <div class="stat">LR <b id="hd-lr">—</b></div>
+    <div class="stat">Recv <b id="hd-recv">—</b></div>
+    <div class="stat">Sent <b id="hd-sent">—</b></div>
+  </div>
+
+  <div class="main">
+    <div class="sidebar" id="sidebar">
+      <!-- JS fills param groups -->
+    </div>
+    <div class="content">
+      <div class="cards" id="cards"></div>
+    </div>
+  </div>
+
+  <script>
+    const PARAM_GROUPS = {
+      Training: ['psw_beta', 'entropy_lambda', 'distill_alpha', 'distill_temp', 'value_decay', 'n_epochs'],
+      MCTS: ['n_playout', 'c_puct', 'fpu_reduction', 'vl_batch'],
+      'Self-play': ['temp', 'temp_decay_moves', 'temp_endgame', 'eps'],
+      Noise: ['noise_steps', 'noise_eps_min'],
+      MLH: ['mlh_slope', 'mlh_cap', 'mlh_threshold'],
+    };
+    const METRIC_CARDS = [
+      { key: 'total_loss', label: 'Total Loss', fmt: 6 },
+      { key: 'p_loss', label: 'Policy Loss', fmt: 6 },
+      { key: 'v_loss', label: 'Value Loss', fmt: 6 },
+      { key: 'entropy', label: 'Entropy', fmt: 4 },
+      { key: 'f1', label: 'F1 Score', fmt: 4 },
+      { key: 'grad_norm', label: 'Grad Norm', fmt: 4 },
+      { key: 'episode_len', label: 'Ep Length', fmt: 1 },
+      { key: 'win_rate', label: 'Win Rate', fmt: 4 },
+    ];
+
+    let serverCfg = {};
+    let prevMetrics = {};
+
+    function fmtBytes(b) {
+      if (b == null) return '—';
+      if (b < 1024) return b + ' B';
+      if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
+      if (b < 1073741824) return (b / 1048576).toFixed(1) + ' MB';
+      return (b / 1073741824).toFixed(2) + ' GB';
+    }
+
+    // --- Init cards ---
+    const cardsEl = document.getElementById('cards');
+    METRIC_CARDS.forEach(c => {
+      cardsEl.innerHTML += `<div class="card" id="card-${c.key}">
+    <div class="label">${c.label}</div>
+    <div class="value" id="mv-${c.key}">—</div>
+    <div class="sub" id="ms-${c.key}"></div>
+  </div>`;
+    });
+
+    // --- Sidebar ---
+    function buildSidebar(cfg) {
+      const sb = document.getElementById('sidebar');
+      sb.innerHTML = '';
+      for (const [group, keys] of Object.entries(PARAM_GROUPS)) {
+        sb.innerHTML += `<div class="group-title">${group}</div>`;
+        keys.forEach(k => {
+          const v = cfg[k] ?? '';
+          sb.innerHTML += `<div class="param-row">
+        <label title="${k}">${k}</label>
+        <input id="p-${k}" type="text" value="${v}" data-orig="${v}" oninput="markChanged(this)">
+      </div>`;
+        });
+      }
+      sb.innerHTML += `<button class="btn" id="apply-btn" onclick="applyParams()">Apply Changes</button>`;
+    }
+
+    function markChanged(el) {
+      el.classList.toggle('changed', el.value !== el.dataset.orig);
+    }
+
+    async function applyParams() {
+      const updates = {};
+      document.querySelectorAll('.param-row input').forEach(el => {
+        if (el.value !== el.dataset.orig) {
+          const v = el.value;
+          updates[el.id.slice(2)] = isNaN(Number(v)) ? v : Number(v);
+        }
+      });
+      if (!Object.keys(updates).length) return;
+      try {
+        const r = await fetch('/update', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updates) });
+        const j = await r.json();
+        if (j.applied && Object.keys(j.applied).length) {
+          toast('Applied: ' + Object.keys(j.applied).join(', '), 'ok');
+          // Update orig values
+          for (const k of Object.keys(j.applied)) {
+            const el = document.getElementById('p-' + k);
+            if (el) { el.dataset.orig = el.value; el.classList.remove('changed'); }
+          }
+        }
+        if (j.rejected && Object.keys(j.rejected).length)
+          toast('Rejected: ' + Object.keys(j.rejected).join(', '), 'err');
+      } catch (e) { toast('Network error', 'err'); }
+    }
+
+    function toast(msg, type) {
+      const d = document.createElement('div');
+      d.className = 'toast ' + type;
+      d.textContent = msg;
+      document.body.appendChild(d);
+      setTimeout(() => d.remove(), 2600);
+    }
+
+    // --- Polling ---
+    async function fetchConfig() {
+      try {
+        const r = await fetch('/config');
+        serverCfg = await r.json();
+        document.getElementById('hd-env').textContent = (serverCfg.env || '') + ' / ' + (serverCfg.model || '');
+        // Update inputs only if not changed by user
+        document.querySelectorAll('.param-row input').forEach(el => {
+          const k = el.id.slice(2);
+          if (!el.classList.contains('changed') && serverCfg[k] !== undefined) {
+            el.value = serverCfg[k];
+            el.dataset.orig = String(serverCfg[k]);
+          }
+        });
+      } catch (e) { }
+    }
+
+    async function fetchMetrics() {
+      try {
+        const r = await fetch('/api/metrics');
+        const m = await r.json();
+        document.getElementById('hd-step').textContent = m.global_step ?? '—';
+        document.getElementById('hd-buf').textContent = m.buffer_ptr != null ? m.buffer_ptr.toLocaleString() : '—';
+        document.getElementById('hd-lr').textContent = m.lr != null ? m.lr.toExponential(1) : '—';
+        if (m.elo_az != null) document.getElementById('hd-elo').textContent = `${m.elo_az} / ${m.elo_bench}`;
+        document.getElementById('hd-recv').textContent = fmtBytes(m.total_received_bytes);
+        document.getElementById('hd-sent').textContent = fmtBytes(m.total_sent_bytes);
+
+        METRIC_CARDS.forEach(c => {
+          const v = m[c.key];
+          const el = document.getElementById('mv-' + c.key);
+          const sub = document.getElementById('ms-' + c.key);
+          if (v != null) {
+            el.textContent = Number(v).toFixed(c.fmt);
+            const prev = prevMetrics[c.key];
+            if (prev != null) {
+              const delta = v - prev;
+              const sign = delta >= 0 ? '+' : '';
+              sub.textContent = sign + delta.toFixed(c.fmt);
+              sub.style.color = delta < 0 ? 'var(--accent)' : (delta > 0 ? 'var(--alert)' : 'var(--text2)');
+            }
+          }
+        });
+        prevMetrics = { ...m };
+      } catch (e) { }
+    }
+
+    // --- Bootstrap ---
+    (async () => {
+      await fetchConfig();
+      buildSidebar(serverCfg);
+      await fetchMetrics();
+      setInterval(fetchMetrics, 2000);
+      setInterval(fetchConfig, 10000);
+    })();
+  </script>
+</body>
+
+</html>

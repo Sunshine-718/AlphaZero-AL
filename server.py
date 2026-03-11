@@ -10,9 +10,11 @@ import threading
 import numpy as np
 from src.pipeline import TrainPipeline
 from src.ReplayBuffer import ReplayBuffer
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, redirect, send_from_directory
 import argparse
 import sys
+
+
 
 # --- 流量统计全局变量 ---
 TOTAL_RECEIVED_BYTES = 0
@@ -356,10 +358,58 @@ def get_config():
         'mlh_cap': getattr(pipeline, 'mlh_cap', 0.2),
         'mlh_threshold': getattr(pipeline, 'mlh_threshold', 0.8),
         'value_decay': getattr(pipeline, 'value_decay', 1.0),
-        'temp': args.temp,
-        'temp_decay_moves': args.temp_decay_moves,
-        'temp_endgame': args.temp_endgame,
+        'temp': getattr(pipeline, 'temp', args.temp),
+        'temp_decay_moves': getattr(pipeline, 'temp_decay_moves', args.temp_decay_moves),
+        'temp_endgame': getattr(pipeline, 'temp_endgame', args.temp_endgame),
+        # Training params (for dashboard)
+        'psw_beta': getattr(pipeline, 'psw_beta', 0.3),
+        'entropy_lambda': getattr(pipeline, 'entropy_lambda', 0.01),
+        'distill_alpha': getattr(pipeline, 'distill_alpha', 0.0),
+        'distill_temp': getattr(pipeline, 'distill_temp', 1.0),
+        'n_epochs': getattr(pipeline, 'n_epochs', 10),
+        'c_puct': pipeline.c_puct,
+        'eps': pipeline.eps,
     })
+
+
+# ── 运行时可调参数白名单 ──────────────────────────────────────────────────────
+_TUNABLE_PARAMS = {
+    # Training
+    'entropy_lambda', 'psw_beta', 'distill_alpha', 'distill_temp',
+    'value_decay', 'n_epochs',
+    # Self-play (clients pull via GET /config)
+    'temp', 'temp_decay_moves', 'temp_endgame',
+    'eps', 'noise_steps', 'noise_eps_min',
+    # MCTS
+    'c_puct', 'n_playout', 'fpu_reduction', 'vl_batch',
+    'mlh_slope', 'mlh_cap', 'mlh_threshold',
+}
+
+
+@app.route('/update', methods=['POST'])
+def update_config():
+    """运行时修改训练/搜索参数。POST JSON: {"param": value, ...}"""
+    updates = request.get_json(silent=True)
+    if not updates:
+        return jsonify({'status': 'error', 'message': 'empty or invalid JSON'}), 400
+
+    applied = {}
+    rejected = {}
+    for key, value in updates.items():
+        if key not in _TUNABLE_PARAMS:
+            rejected[key] = 'not tunable'
+            continue
+        old_value = getattr(pipeline, key, getattr(args, key, None))
+        setattr(pipeline, key, value)
+        if hasattr(args, key):
+            setattr(args, key, value)
+        applied[key] = {'old': old_value, 'new': value}
+
+    if applied:
+        print(f'[CONFIG UPDATE] {applied}')
+    if rejected:
+        print(f'[CONFIG REJECTED] {rejected}')
+    return jsonify({'status': 'success', 'applied': applied, 'rejected': rejected})
 
 
 @app.route('/status', methods=['GET'])
@@ -378,6 +428,27 @@ def reset_traffic():
     TOTAL_SENT_BYTES = 0
     print('Network traffic statistics reset.')
     return jsonify({'status': 'success', 'message': 'Traffic stats reset'})
+
+
+@app.route('/')
+def index():
+    return redirect('/dashboard')
+
+
+@app.route('/api/metrics')
+def api_metrics():
+    m = dict(getattr(pipeline, '_dashboard_metrics', {}))
+    m['total_received_bytes'] = TOTAL_RECEIVED_BYTES
+    m['total_sent_bytes'] = TOTAL_SENT_BYTES
+    return jsonify(m)
+
+
+_STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static')
+
+
+@app.route('/dashboard')
+def dashboard():
+    return send_from_directory(_STATIC_DIR, 'dashboard.html')
 
 
 def set_seed(seed: int):
