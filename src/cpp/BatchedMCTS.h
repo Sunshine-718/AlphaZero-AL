@@ -30,6 +30,15 @@ namespace AlphaZero
         static constexpr int ACTION_SIZE = Game::Traits::ACTION_SIZE;
         static constexpr int BOARD_SIZE = Game::Traits::BOARD_SIZE;
 
+        static int sample_symmetry_id(std::mt19937 &rng)
+        {
+            if constexpr (requires(std::mt19937 &gen) { Game::sample_mcts_symmetry_id(gen); })
+            {
+                return Game::sample_mcts_symmetry_id(rng);
+            }
+            return std::uniform_int_distribution<int>(0, Game::Traits::NUM_SYMMETRIES - 1)(rng);
+        }
+
         int n_envs;                                             ///< 并行环境数量
         SearchConfig config_;                                   ///< 搜索配置（本类拥有）
         std::vector<std::unique_ptr<MCTS<Game>>> mcts_envs;     ///< 每局独立的 MCTS 搜索树
@@ -138,7 +147,7 @@ namespace AlphaZero
                 if (!result.is_terminal && config_.use_symmetry && Game::Traits::NUM_SYMMETRIES > 1)
                 {
                     std::mt19937 &rng = get_rng();
-                    int sym_id = std::uniform_int_distribution<int>(0, Game::Traits::NUM_SYMMETRIES - 1)(rng);
+                    int sym_id = sample_symmetry_id(rng);
                     pending_sym_ids_[i] = sym_id;
                     if (sym_id != 0) result.board.apply_symmetry(sym_id);
                 }
@@ -241,8 +250,7 @@ namespace AlphaZero
                     if (!result.is_terminal && config_.use_symmetry && Game::Traits::NUM_SYMMETRIES > 1)
                     {
                         std::mt19937 &rng = get_rng();
-                        int sym_id = std::uniform_int_distribution<int>(
-                            0, Game::Traits::NUM_SYMMETRIES - 1)(rng);
+                        int sym_id = sample_symmetry_id(rng);
                         sym_ids[flat_idx] = sym_id;
                         if (sym_id != 0) result.board.apply_symmetry(sym_id);
                     }

@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <random>
 
 namespace AlphaZero
 {
@@ -40,6 +41,7 @@ namespace AlphaZero
         };
 
         static constexpr int PASS_ACTION = 64;
+        static constexpr std::array<int, 4> MCTS_SYMMETRY_IDS = {0, 2, 6, 7};
 
         // 边缘掩码：防止位移时列方向环绕
         static constexpr uint64_t NOT_A_FILE = 0xFEFEFEFEFEFEFEFEULL; ///< 排除 col 0
@@ -350,6 +352,12 @@ namespace AlphaZero
             // 0→0, 1→3, 2→2, 3→1, 4→4, 5→5, 6→6, 7→7
             constexpr int inv[8] = {0, 3, 2, 1, 4, 5, 6, 7};
             return inv[sym_id];
+        }
+
+        static int sample_mcts_symmetry_id(std::mt19937 &rng)
+        {
+            return MCTS_SYMMETRY_IDS[std::uniform_int_distribution<int>(
+                0, static_cast<int>(MCTS_SYMMETRY_IDS.size()) - 1)(rng)];
         }
 
         /**
