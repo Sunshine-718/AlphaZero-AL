@@ -137,6 +137,13 @@
       font-variant-numeric: tabular-nums
     }
 
+    .param-row input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      padding: 0;
+      accent-color: var(--accent)
+    }
+
     .param-row input:focus {
       outline: none;
       border-color: var(--accent)
@@ -273,12 +280,14 @@
 
   <script>
     const PARAM_GROUPS = {
-      Training: ['psw_beta', 'entropy_lambda', 'distill_alpha', 'distill_temp', 'value_decay', 'n_epochs'],
-      MCTS: ['n_playout', 'c_puct', 'fpu_reduction', 'vl_batch'],
+      Training: ['batch_size', 'psw_beta', 'entropy_lambda', 'distill_alpha', 'distill_temp', 'value_decay', 'n_epochs'],
+      MCTS: ['n_playout', 'c_puct', 'c_base', 'fpu_reduction', 'vl_batch', 'use_symmetry'],
       'Self-play': ['temp', 'temp_decay_moves', 'temp_endgame', 'eps'],
-      Noise: ['noise_steps', 'noise_eps_min'],
+      Noise: ['dirichlet_alpha', 'noise_steps', 'noise_eps_min'],
       MLH: ['mlh_slope', 'mlh_cap', 'mlh_threshold'],
+      Evaluation: ['interval', 'num_eval', 'win_rate_threshold', 'pure_mcts_n_playout'],
     };
+    const BOOLEAN_PARAMS = new Set(['use_symmetry']);
     const METRIC_CARDS = [
       { key: 'total_loss', label: 'Total Loss', fmt: 6 },
       { key: 'p_loss', label: 'Policy Loss', fmt: 6 },
@@ -312,6 +321,21 @@
     });
 
     // --- Sidebar ---
+    function valueChanged(el) {
+      return el.type === 'checkbox'
+        ? String(el.checked) !== el.dataset.orig
+        : el.value !== el.dataset.orig;
+    }
+
+    function buildInput(key, value) {
+      if (BOOLEAN_PARAMS.has(key)) {
+        const checked = Boolean(value);
+        return `<input id="p-${key}" type="checkbox" ${checked ? 'checked' : ''} data-orig="${String(checked)}" onchange="markChanged(this)">`;
+      }
+      const v = value ?? '';
+      return `<input id="p-${key}" type="text" value="${v}" data-orig="${v}" oninput="markChanged(this)">`;
+    }
+
     function buildSidebar(cfg) {
       const sb = document.getElementById('sidebar');
       sb.innerHTML = '';
@@ -321,7 +345,7 @@
           const v = cfg[k] ?? '';
           sb.innerHTML += `<div class="param-row">
         <label title="${k}">${k}</label>
-        <input id="p-${k}" type="text" value="${v}" data-orig="${v}" oninput="markChanged(this)">
+        ${buildInput(k, v)}
       </div>`;
         });
       }
@@ -329,15 +353,19 @@
     }
 
     function markChanged(el) {
-      el.classList.toggle('changed', el.value !== el.dataset.orig);
+      el.classList.toggle('changed', valueChanged(el));
     }
 
     async function applyParams() {
       const updates = {};
       document.querySelectorAll('.param-row input').forEach(el => {
-        if (el.value !== el.dataset.orig) {
-          const v = el.value;
-          updates[el.id.slice(2)] = isNaN(Number(v)) ? v : Number(v);
+        if (valueChanged(el)) {
+          if (el.type === 'checkbox') {
+            updates[el.id.slice(2)] = el.checked;
+            return;
+          }
+          const v = el.value.trim();
+          updates[el.id.slice(2)] = v === '' || isNaN(Number(v)) ? v : Number(v);
         }
       });
       if (!Object.keys(updates).length) return;
@@ -349,7 +377,13 @@
           // Update orig values
           for (const k of Object.keys(j.applied)) {
             const el = document.getElementById('p-' + k);
-            if (el) { el.dataset.orig = el.value; el.classList.remove('changed'); }
+            if (!el) continue;
+            if (el.type === 'checkbox') {
+              el.dataset.orig = String(el.checked);
+            } else {
+              el.dataset.orig = el.value;
+            }
+            el.classList.remove('changed');
           }
         }
         if (j.rejected && Object.keys(j.rejected).length)
@@ -375,8 +409,13 @@
         document.querySelectorAll('.param-row input').forEach(el => {
           const k = el.id.slice(2);
           if (!el.classList.contains('changed') && serverCfg[k] !== undefined) {
-            el.value = serverCfg[k];
-            el.dataset.orig = String(serverCfg[k]);
+            if (el.type === 'checkbox') {
+              el.checked = Boolean(serverCfg[k]);
+              el.dataset.orig = String(Boolean(serverCfg[k]));
+            } else {
+              el.value = serverCfg[k];
+              el.dataset.orig = String(serverCfg[k]);
+            }
           }
         });
       } catch (e) { }

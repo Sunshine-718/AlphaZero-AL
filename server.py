@@ -367,23 +367,89 @@ def get_config():
         'distill_alpha': getattr(pipeline, 'distill_alpha', 0.0),
         'distill_temp': getattr(pipeline, 'distill_temp', 1.0),
         'n_epochs': getattr(pipeline, 'n_epochs', 10),
+        'batch_size': getattr(pipeline, 'batch_size', args.batch_size),
+        'interval': getattr(pipeline, 'interval', args.interval),
+        'num_eval': getattr(pipeline, 'num_eval', args.num_eval),
+        'win_rate_threshold': getattr(pipeline, 'win_rate_threshold', args.thres),
+        'pure_mcts_n_playout': getattr(pipeline, 'pure_mcts_n_playout', args.mcts_n),
         'c_puct': pipeline.c_puct,
         'eps': pipeline.eps,
     })
 
 
 # ── 运行时可调参数白名单 ──────────────────────────────────────────────────────
+_BOOL_PARAMS = {'use_symmetry'}
+
 _TUNABLE_PARAMS = {
     # Training
-    'entropy_lambda', 'psw_beta', 'distill_alpha', 'distill_temp',
-    'value_decay', 'n_epochs',
+    'batch_size', 'entropy_lambda', 'psw_beta', 'distill_alpha',
+    'distill_temp', 'value_decay', 'n_epochs',
     # Self-play (clients pull via GET /config)
     'temp', 'temp_decay_moves', 'temp_endgame',
-    'eps', 'noise_steps', 'noise_eps_min',
+    'dirichlet_alpha', 'eps', 'noise_steps', 'noise_eps_min',
     # MCTS
-    'c_puct', 'n_playout', 'fpu_reduction', 'vl_batch',
-    'mlh_slope', 'mlh_cap', 'mlh_threshold',
+    'c_puct', 'c_base', 'n_playout', 'fpu_reduction', 'vl_batch',
+    'use_symmetry', 'mlh_slope', 'mlh_cap', 'mlh_threshold',
+    # Evaluation
+    'interval', 'num_eval', 'win_rate_threshold', 'pure_mcts_n_playout',
 }
+
+
+def _coerce_update_value(key, value):
+    if key not in _BOOL_PARAMS:
+        return value, None
+    if isinstance(value, bool):
+        return value, None
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {'1', 'true', 'yes', 'on'}:
+            return True, None
+        if lowered in {'0', 'false', 'no', 'off'}:
+            return False, None
+    return value, 'invalid boolean'
+
+
+def _apply_pipeline_runtime_update(key):
+    az_player = getattr(pipeline, 'az_player', None)
+    az_mcts = getattr(az_player, 'mcts', None) if az_player else None
+    if az_player is None:
+        return
+
+    if key == 'noise_steps':
+        az_player.noise_steps = getattr(pipeline, 'noise_steps', 0)
+        return
+    if key == 'noise_eps_min':
+        az_player.noise_eps_min = getattr(pipeline, 'noise_eps_min', 0.1)
+        return
+    if key == 'vl_batch':
+        az_player._vl_batch = max(1, int(getattr(pipeline, 'vl_batch', 1)))
+        return
+
+    if az_mcts is None:
+        return
+
+    if key == 'c_puct':
+        az_mcts.set_c_init(getattr(pipeline, 'c_puct'))
+    elif key == 'c_base':
+        az_mcts.set_c_base(getattr(pipeline, 'c_base'))
+    elif key == 'n_playout':
+        az_mcts.n_playout = getattr(pipeline, 'n_playout')
+    elif key == 'dirichlet_alpha':
+        az_mcts.set_alpha(getattr(pipeline, 'dirichlet_alpha'))
+    elif key == 'eps':
+        az_mcts.set_noise_epsilon(getattr(pipeline, 'eps'))
+    elif key == 'fpu_reduction':
+        az_mcts.set_fpu_reduction(getattr(pipeline, 'fpu_reduction'))
+    elif key == 'use_symmetry':
+        az_mcts.set_use_symmetry(getattr(pipeline, 'use_symmetry'))
+    elif key == 'value_decay':
+        az_mcts.set_value_decay(getattr(pipeline, 'value_decay'))
+    elif key in {'mlh_slope', 'mlh_cap', 'mlh_threshold'}:
+        az_mcts.set_mlh_params(
+            getattr(pipeline, 'mlh_slope', 0.0),
+            getattr(pipeline, 'mlh_cap', 0.2),
+            getattr(pipeline, 'mlh_threshold', 0.8),
+        )
 
 
 @app.route('/update', methods=['POST'])
@@ -399,10 +465,21 @@ def update_config():
         if key not in _TUNABLE_PARAMS:
             rejected[key] = 'not tunable'
             continue
+        value, err = _coerce_update_value(key, value)
+        if err is not None:
+            rejected[key] = err
+            continue
         old_value = getattr(pipeline, key, getattr(args, key, None))
         setattr(pipeline, key, value)
         if hasattr(args, key):
             setattr(args, key, value)
+        if key == 'use_symmetry':
+            args.no_symmetry = not value
+        elif key == 'win_rate_threshold':
+            args.thres = value
+        elif key == 'pure_mcts_n_playout':
+            args.mcts_n = value
+        _apply_pipeline_runtime_update(key)
         applied[key] = {'old': old_value, 'new': value}
 
     if applied:

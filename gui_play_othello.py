@@ -71,7 +71,7 @@ class Def:
     cache = 10000
     n_trees = 1
     vl_batch = 4
-    mlh_slope = 0.1
+    mlh_slope = 0.02
     mlh_cap = 0.2
     mlh_thr = 0.
 

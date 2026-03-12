@@ -233,6 +233,7 @@ class Actor:
         # 逐个检查可同步的参数
         _SYNC_MAP = {
             'c_init':         lambda v: self.az_player.mcts.set_c_init(v),
+            'c_base':         lambda v: self.az_player.mcts.set_c_base(v),
             'n_playout':      lambda v: setattr(self.az_player.mcts, 'n_playout', v),
             'dirichlet_alpha': lambda v: self.az_player.mcts.set_alpha(v),
             'noise_eps':      lambda v: self.az_player.mcts.set_noise_epsilon(v),
