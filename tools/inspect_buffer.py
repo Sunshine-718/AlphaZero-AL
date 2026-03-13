@@ -14,6 +14,7 @@
     python tools/inspect_buffer.py --output figs # 指定图片输出目录
 """
 import sys, os, argparse, warnings, importlib
+from datetime import datetime
 import numpy as np
 import torch
 import matplotlib
@@ -27,7 +28,7 @@ from rich.panel import Panel
 from rich.text import Text
 from rich.progress import track
 
-console = Console()
+console = Console(record=True)
 
 _ZH_FONTS = [
     'Microsoft YaHei',
@@ -555,16 +556,251 @@ def analyze_buffer(path, top_n, output_dir, nn_policies, gcfg):
         console.print()
 
 
+# ────────────────────────── Embedding 诊断 ──────────────────────────
+
+def _cosine_sim(a, b):
+    """Cosine similarity between two 1-D tensors."""
+    return float(torch.nn.functional.cosine_similarity(a.unsqueeze(0), b.unsqueeze(0)))
+
+
+# 轨道编号 → 位置语义标签
+_ORBIT_LABELS = {
+    0: 'corner-A',   7: 'corner-B',
+    8: 'X-square',  14: 'XX-square',
+    1: 'C-edge-A',   6: 'C-edge-B',
+    18: 'center-A',  19: 'center-B',
+}
+
+
+def analyze_embeddings(net, output_dir):
+    """分析并可视化 Piece / Position Embedding。"""
+    piece_w = net.piece_emb.weight.detach().cpu()    # (3, d)
+    pos_w = net.pos_emb.weight.detach().cpu()        # (20, d)
+    has_player = hasattr(net, 'player_emb')
+    if has_player:
+        player_w = net.player_emb.weight.detach().cpu()  # (2, d)
+    orbit_map = net.orbit_map.cpu().numpy()           # (64,)
+
+    PIECE_NAMES = ['Empty', 'Own', 'Opp']
+    PLAYER_NAMES = ['P1 (Black)', 'P2 (White)']
+
+    # ── 1. Piece Embedding 表格 ──
+    piece_norms = piece_w.norm(dim=1)
+    piece_table = Table(title='Piece Embedding', show_header=True, header_style='bold')
+    piece_table.add_column('', style='bold')
+    piece_table.add_column('L2 Norm', justify='right')
+    piece_table.add_column('cos(Empty)', justify='right')
+    piece_table.add_column('cos(Own)', justify='right')
+    piece_table.add_column('cos(Opp)', justify='right')
+    for i, name in enumerate(PIECE_NAMES):
+        sims = [f'{_cosine_sim(piece_w[i], piece_w[j]):+.4f}' for j in range(3)]
+        piece_table.add_row(name, f'{piece_norms[i]:.4f}', *sims)
+
+    own_opp_dist = float((piece_w[1] - piece_w[2]).norm())
+    own_empty_dist = float((piece_w[1] - piece_w[0]).norm())
+    opp_empty_dist = float((piece_w[2] - piece_w[0]).norm())
+    piece_table.add_section()
+    piece_table.add_row('L2 dist Own-Opp', f'{own_opp_dist:.4f}', '', '', '')
+    piece_table.add_row('L2 dist Own-Empty', f'{own_empty_dist:.4f}', '', '', '')
+    piece_table.add_row('L2 dist Opp-Empty', f'{opp_empty_dist:.4f}', '', '', '')
+    console.print(piece_table)
+
+    # ── 2. Player Embedding 表格（仅在存在时显示） ──
+    if has_player:
+        player_norms = player_w.norm(dim=1)
+        p_cos = _cosine_sim(player_w[0], player_w[1])
+        p_dist = float((player_w[0] - player_w[1]).norm())
+        player_table = Table(title='Player Embedding', show_header=True, header_style='bold')
+        player_table.add_column('', style='bold')
+        player_table.add_column('L2 Norm', justify='right')
+        for i, name in enumerate(PLAYER_NAMES):
+            player_table.add_row(name, f'{player_norms[i]:.4f}')
+        player_table.add_section()
+        player_table.add_row('cos(P1, P2)', f'{p_cos:+.4f}')
+        player_table.add_row('L2 dist(P1, P2)', f'{p_dist:.4f}')
+        console.print(player_table)
+
+    # ── 3. Position Embedding 表格（关键轨道） ──
+    pos_norms = pos_w.norm(dim=1)  # (20,)
+    corner_a = pos_w[0]
+
+    pos_table = Table(title='Position Embedding (key orbits)', show_header=True, header_style='bold')
+    pos_table.add_column('Orbit', justify='right', style='bold')
+    pos_table.add_column('Label')
+    pos_table.add_column('L2 Norm', justify='right')
+    pos_table.add_column('cos(corner-A)', justify='right')
+
+    sorted_orbits = torch.argsort(pos_norms, descending=True).tolist()
+    for orbit_id in sorted_orbits:
+        label = _ORBIT_LABELS.get(orbit_id, '')
+        norm_val = f'{pos_norms[orbit_id]:.4f}'
+        cos_val = f'{_cosine_sim(pos_w[orbit_id], corner_a):+.4f}'
+        pos_table.add_row(str(orbit_id), label, norm_val, cos_val)
+    console.print(pos_table)
+
+    # ── 4. 绘图 ──
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 4-ref. 轨道参考图
+    orbit_board = np.array(orbit_map).reshape(8, 8)
+    fig, ax = plt.subplots(figsize=(6, 6))
+    cmap = plt.cm.get_cmap('tab20', 20)
+    im = ax.imshow(orbit_board, cmap=cmap, vmin=-0.5, vmax=19.5)
+    for r in range(8):
+        for c in range(8):
+            oid = orbit_board[r, c]
+            label = _ORBIT_LABELS.get(oid, '')
+            txt = f'{oid}\n{label}' if label else str(oid)
+            ax.text(c, r, txt, ha='center', va='center', fontsize=7, fontweight='bold')
+    ax.set_xticks(range(8), [f'c{i}' for i in range(8)])
+    ax.set_yticks(range(8), [f'r{i}' for i in range(8)])
+    ax.set_title('Orbit Map (Klein V4 symmetry, 20 orbits)')
+    fig.colorbar(im, ax=ax, shrink=0.8, ticks=range(20))
+    plt.tight_layout()
+    path = os.path.join(output_dir, 'emb_orbit_map.png')
+    fig.savefig(path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    console.print(f'    [dim]\\[saved] {path}[/dim]')
+
+    # 4a. Position L2 Norm 热力图
+    board_norms = pos_norms[orbit_map].reshape(8, 8).numpy()
+    fig, ax = plt.subplots(figsize=(6, 6))
+    im = ax.imshow(board_norms, cmap='YlOrRd')
+    for r in range(8):
+        for c in range(8):
+            ax.text(c, r, f'{board_norms[r, c]:.2f}', ha='center', va='center', fontsize=8)
+    ax.set_xticks(range(8), [f'c{i}' for i in range(8)])
+    ax.set_yticks(range(8), [f'r{i}' for i in range(8)])
+    ax.set_title('Position Embedding L2 Norm')
+    fig.colorbar(im, ax=ax, shrink=0.8)
+    plt.tight_layout()
+    path = os.path.join(output_dir, 'emb_position_norm.png')
+    fig.savefig(path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    console.print(f'    [dim]\\[saved] {path}[/dim]')
+
+    # 4b. Position cosine similarity to corner-A 热力图
+    cos_to_corner = torch.nn.functional.cosine_similarity(
+        pos_w, corner_a.unsqueeze(0), dim=1
+    )
+    board_cos = cos_to_corner[orbit_map].reshape(8, 8).numpy()
+    fig, ax = plt.subplots(figsize=(6, 6))
+    im = ax.imshow(board_cos, cmap='RdBu_r', vmin=-1, vmax=1)
+    for r in range(8):
+        for c in range(8):
+            ax.text(c, r, f'{board_cos[r, c]:.2f}', ha='center', va='center', fontsize=8)
+    ax.set_xticks(range(8), [f'c{i}' for i in range(8)])
+    ax.set_yticks(range(8), [f'r{i}' for i in range(8)])
+    ax.set_title('Position Embedding cos(orbit, corner-A)')
+    fig.colorbar(im, ax=ax, shrink=0.8)
+    plt.tight_layout()
+    path = os.path.join(output_dir, 'emb_position_cosine.png')
+    fig.savefig(path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    console.print(f'    [dim]\\[saved] {path}[/dim]')
+
+    # 4c. Position Embedding PCA 散点图
+    from sklearn.decomposition import PCA
+    pca = PCA(n_components=2)
+    pos_2d = pca.fit_transform(pos_w.numpy())
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.scatter(pos_2d[:, 0], pos_2d[:, 1], s=100, c=pos_norms.numpy(),
+               cmap='YlOrRd', edgecolors='black', linewidths=0.5, zorder=5)
+    for i in range(20):
+        label = _ORBIT_LABELS.get(i, str(i))
+        ax.annotate(label if i in _ORBIT_LABELS else str(i),
+                    (pos_2d[i, 0], pos_2d[i, 1]),
+                    textcoords='offset points', xytext=(6, 6), fontsize=8)
+    ax.set_xlabel(f'PC1 ({pca.explained_variance_ratio_[0]*100:.1f}%)')
+    ax.set_ylabel(f'PC2 ({pca.explained_variance_ratio_[1]*100:.1f}%)')
+    ax.set_title('Position Embedding PCA')
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    path = os.path.join(output_dir, 'emb_position_pca.png')
+    fig.savefig(path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    console.print(f'    [dim]\\[saved] {path}[/dim]')
+
+    # 4d. PCA 前两个主成分的 8×8 热力图
+    orbit_map_t = torch.tensor(orbit_map, dtype=torch.long)
+    fig, axes = plt.subplots(1, 2, figsize=(13, 6))
+    for k, ax in enumerate(axes):
+        pc_vals = torch.from_numpy(pos_2d[:, k])      # (20,)
+        board_pc = pc_vals[orbit_map_t].reshape(8, 8).numpy()
+        vmax = max(abs(board_pc.min()), abs(board_pc.max()))
+        im = ax.imshow(board_pc, cmap='RdBu_r', vmin=-vmax, vmax=vmax)
+        for r in range(8):
+            for c in range(8):
+                ax.text(c, r, f'{board_pc[r, c]:.2f}', ha='center', va='center', fontsize=7)
+        ax.set_xticks(range(8), [f'c{i}' for i in range(8)])
+        ax.set_yticks(range(8), [f'r{i}' for i in range(8)])
+        ax.set_title(f'PC{k+1} ({pca.explained_variance_ratio_[k]*100:.1f}%)')
+        fig.colorbar(im, ax=ax, shrink=0.8)
+    fig.suptitle('Position Embedding — PCA Heatmaps')
+    plt.tight_layout()
+    path = os.path.join(output_dir, 'emb_position_pca_heatmap.png')
+    fig.savefig(path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    console.print(f'    [dim]\\[saved] {path}[/dim]')
+
+    # 4e. 20×20 轨道余弦相似度矩阵
+    pos_norm = pos_w / pos_w.norm(dim=1, keepdim=True).clamp(min=1e-8)
+    cos_matrix = (pos_norm @ pos_norm.T).numpy()
+    orbit_labels = [_ORBIT_LABELS.get(i, str(i)) for i in range(20)]
+    fig, ax = plt.subplots(figsize=(9, 8))
+    im = ax.imshow(cos_matrix, cmap='RdBu_r', vmin=-1, vmax=1)
+    for r in range(20):
+        for c in range(20):
+            ax.text(c, r, f'{cos_matrix[r, c]:.1f}', ha='center', va='center', fontsize=5.5)
+    ax.set_xticks(range(20), orbit_labels, rotation=45, ha='right', fontsize=7)
+    ax.set_yticks(range(20), orbit_labels, fontsize=7)
+    ax.set_title('Position Embedding — Orbit Cosine Similarity')
+    fig.colorbar(im, ax=ax, shrink=0.8)
+    plt.tight_layout()
+    path = os.path.join(output_dir, 'emb_position_cos_matrix.png')
+    fig.savefig(path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    console.print(f'    [dim]\\[saved] {path}[/dim]')
+
+    # 4f. Piece (+ Player) Embedding PCA 散点图
+    if has_player:
+        all_emb = torch.cat([piece_w, player_w], dim=0)  # (5, d)
+        all_labels = PIECE_NAMES + PLAYER_NAMES
+        all_colors = ['#55A868', '#4C72B0', '#DD8452', '#8172B2', '#C44E52']
+        all_markers = ['o', 's', 's', '^', '^']
+        title = 'Piece & Player Embedding PCA'
+    else:
+        all_emb = piece_w  # (3, d)
+        all_labels = PIECE_NAMES
+        all_colors = ['#55A868', '#4C72B0', '#DD8452']
+        all_markers = ['o', 's', 's']
+        title = 'Piece Embedding PCA'
+
+    pca2 = PCA(n_components=2)
+    emb_2d = pca2.fit_transform(all_emb.numpy())
+    fig, ax = plt.subplots(figsize=(7, 5))
+    for i in range(len(all_labels)):
+        ax.scatter(emb_2d[i, 0], emb_2d[i, 1], s=200, c=all_colors[i],
+                   marker=all_markers[i], edgecolors='black', linewidths=0.5, zorder=5)
+        ax.annotate(all_labels[i], (emb_2d[i, 0], emb_2d[i, 1]),
+                    textcoords='offset points', xytext=(8, 8), fontsize=10, fontweight='bold')
+    ax.set_xlabel(f'PC1 ({pca2.explained_variance_ratio_[0]*100:.1f}%)')
+    ax.set_ylabel(f'PC2 ({pca2.explained_variance_ratio_[1]*100:.1f}%)')
+    ax.set_title(title)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    path = os.path.join(output_dir, 'emb_piece_player.png')
+    fig.savefig(path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    console.print(f'    [dim]\\[saved] {path}[/dim]')
+
+
 # ────────────────────────── NN ──────────────────────────
 
-def analyze_nn(model_path, gcfg, device='cpu'):
+def analyze_nn(model_path, gcfg, device='cpu', output_dir=None):
     """加载 NN 并返回每个 pattern 的 raw policy，同时打印摘要。"""
     console.print()
     console.print(Panel(f'[bold]{model_path}[/bold]', title='[bold]NN Model[/bold]', border_style='magenta'))
-
-    if not os.path.exists(model_path):
-        console.print(f'[bold red]  [!] 模型不存在: {model_path}[/bold red]')
-        return {}
 
     net_mod = importlib.import_module(gcfg['network_module'])
     utils_mod = importlib.import_module(gcfg['utils_module'])
@@ -614,6 +850,9 @@ def analyze_nn(model_path, gcfg, device='cpu'):
 
         console.print(Panel(nn_table, title=f'[bold]{desc} (turn={player})[/bold]', border_style='magenta'))
 
+    if hasattr(net, 'piece_emb'):
+        analyze_embeddings(net, output_dir)
+
     return nn_policies
 
 
@@ -627,7 +866,7 @@ def main():
     parser.add_argument('--best', action='store_true', help='Use best model')
     parser.add_argument('--device', default='cpu')
     parser.add_argument('--top', type=int, default=10)
-    parser.add_argument('--output', default='tools/figures', help='Output directory for plots')
+    parser.add_argument('--output', default=None, help='Output directory for plots (default: tools/figures/<timestamp>)')
     parser.add_argument('--font', default=None, help='Matplotlib font family name for Chinese')
     parser.add_argument('--font-path', default=None, help='Path to .ttf/.otf/.ttc font file')
     parser.add_argument('--no-buffer', action='store_true')
@@ -640,16 +879,26 @@ def main():
     elif args.best:
         args.model = gcfg['best_model']
 
+    if args.output is None:
+        args.output = os.path.join('tools', 'figures', datetime.now().strftime('%Y%m%d_%H%M%S'))
+
     os.chdir(ROOT)
     setup_matplotlib_font(args.font, args.font_path)
 
     # 先跑 NN，拿到 raw policy 供 buffer 绘图叠加
     nn_policies = {}
     if not args.no_nn:
-        nn_policies = analyze_nn(args.model, gcfg, args.device)
+        nn_policies = analyze_nn(args.model, gcfg, args.device, args.output)
 
     if not args.no_buffer:
         analyze_buffer(args.buffer, args.top, args.output, nn_policies, gcfg)
+
+    # 保存终端输出到文件
+    os.makedirs(args.output, exist_ok=True)
+    log_path = os.path.join(args.output, 'report.txt')
+    with open(log_path, 'w', encoding='utf-8') as f:
+        f.write(console.export_text())
+    console.print(f'[dim]\\[saved] {log_path}[/dim]')
 
 
 if __name__ == '__main__':

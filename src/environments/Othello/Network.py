@@ -1,9 +1,24 @@
+import math
 import numpy as np
 import torch
 import torch.nn as nn
 from copy import deepcopy
 from torch.optim.lr_scheduler import LinearLR, SequentialLR
 from ..NetworkBase import Base
+
+
+# Klein V4 对称群下 8x8 棋盘的 20 个轨道映射
+# 对称变换：恒等, 180°旋转, 主对角线反射, 副对角线反射
+_ORBIT_MAP = [
+     0,  1,  2,  3,  4,  5,  6,  7,
+     1,  8,  9, 10, 11, 12, 13,  6,
+     2,  9, 14, 15, 16, 17, 12,  5,
+     3, 10, 15, 18, 19, 16, 11,  4,
+     4, 11, 16, 19, 18, 15, 10,  3,
+     5, 12, 17, 16, 15, 14,  9,  2,
+     6, 13, 12, 11, 10,  9,  8,  1,
+     7,  6,  5,  4,  3,  2,  1,  0,
+]
 
 
 class ResidualBlock(nn.Module):
@@ -33,18 +48,24 @@ class ResidualBlock(nn.Module):
 class CNN(Base):
     aux_target_offset = 64
 
-    def __init__(self, lr, in_dim=3, h_dim=64, out_dim=65, dropout=0.2, device='cpu', num_res_blocks=4, policy_lr_scale=0.3):
+    def __init__(self, lr, embed_dim=32, h_dim=64, out_dim=65, dropout=0.2, device='cpu', num_res_blocks=4, policy_lr_scale=0.3):
         super().__init__()
-        self.in_dim = in_dim
+        self.embed_dim = embed_dim
+        self.in_dim = 3  # 保持与 server.py ReplayBuffer 的兼容性
         self.device = device
         self.n_actions = out_dim
+
+        # Embedding 层
+        self.piece_emb = nn.Embedding(3, embed_dim)    # 0=空, 1=己方, 2=对方
+        self.pos_emb = nn.Embedding(20, embed_dim)     # 20 个轨道
+        self.register_buffer('orbit_map', torch.tensor(_ORBIT_MAP, dtype=torch.long))
 
         # 8x8 board with padding=2 → 10x10 feature maps
         FLAT = h_dim * 10 * 10
 
         # Body: Stem + Residual Blocks
         self.hidden = nn.Sequential(
-            nn.Conv2d(in_dim, h_dim, kernel_size=3, padding=2, bias=False),
+            nn.Conv2d(embed_dim, h_dim, kernel_size=3, padding=2, bias=False),
             nn.BatchNorm2d(h_dim),
             nn.SiLU(inplace=True),
             *[ResidualBlock(h_dim, h_dim, dropout_rate=dropout) for _ in range(num_res_blocks)]
@@ -74,7 +95,6 @@ class CNN(Base):
             nn.LogSoftmax(dim=-1)
         )
 
-        # Steps-to-end head: max 60 placements possible (64-4=60) → 61 classes (0-60)
         # Auxiliary head: terminal disc diff from current-player perspective, in [-64, 64].
         self.steps_head = nn.Sequential(
             nn.Conv2d(h_dim, 5, kernel_size=1, bias=True),
@@ -91,13 +111,15 @@ class CNN(Base):
         nn.init.constant_(self.value_head[-2].weight, 0)
         nn.init.constant_(self.steps_head[-2].weight, 0)
 
-        self.opt = torch.optim.SGD([
+        self.opt = torch.optim.AdamW([
             {'params': self.hidden.parameters()},
             {'params': self.value_head.parameters()},
             {'params': self.steps_head.parameters()},
+            {'params': self.piece_emb.parameters(), 'weight_decay': 1e-4},
+            {'params': self.pos_emb.parameters(), 'weight_decay': 1e-4},
             {'params': self.policy_head_1.parameters(), 'lr': lr * policy_lr_scale},
             {'params': self.policy_head_2.parameters(), 'lr': lr * policy_lr_scale},
-        ], lr=lr, momentum=0.9, weight_decay=1e-4)
+        ], lr=lr, weight_decay=1e-2)
 
         scheduler_warmup = LinearLR(self.opt, start_factor=0.001, total_iters=100)
         scheduler_train = LinearLR(self.opt, start_factor=1, end_factor=0.1, total_iters=1000)
@@ -105,6 +127,18 @@ class CNN(Base):
         self.to(self.device)
 
     def init_weights(self, m):
+        if isinstance(m, nn.Embedding):
+            if m is self.piece_emb:
+                # 反对称: 空=零, 己方=+v, 对方=-v (L2 norm=1.0, 与 pos_emb 对齐)
+                v = torch.randn(self.embed_dim)
+                v = v / v.norm()
+                m.weight.data[0].zero_()
+                m.weight.data[1] = v
+                m.weight.data[2] = -v
+            elif m is self.pos_emb:
+                # 正交初始化: 20 个轨道最大程度彼此区分 (d=32 > 20)
+                nn.init.orthogonal_(m.weight)
+            return
         if isinstance(m, (nn.Conv2d, nn.Linear)):
             nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
             if m.bias is not None:
@@ -112,6 +146,18 @@ class CNN(Base):
 
     def name(self):
         return 'CNN'
+
+    def _embed_state(self, state):
+        """将 (B, 3, 8, 8) 状态转为 (B, embed_dim, 8, 8) embedding 表示。"""
+        B = state.size(0)
+        # ch0=1 → 己方棋子, ch1=1 → 对方棋子, 两者都为 0 → 空
+        piece_ids = (state[:, 0] + state[:, 1] * 2).long().view(B, 64)
+
+        pe = self.piece_emb(piece_ids)           # (B, 64, d)
+        po = self.pos_emb(self.orbit_map)        # (64, d)
+
+        x = pe + po.unsqueeze(0)                 # (B, 64, d)
+        return x.permute(0, 2, 1).view(B, self.embed_dim, 8, 8)
 
     def _route_policy(self, hidden, player):
         """Route each sample to its player's policy head."""
@@ -125,8 +171,10 @@ class CNN(Base):
         return log_prob
 
     def forward(self, x):
+        player = x[:, -1, 0, 0]
+        x = self._embed_state(x)
         hidden = self.hidden(x)
-        log_prob = self._route_policy(hidden, x[:, -1, 0, 0])
+        log_prob = self._route_policy(hidden, player)
         value = self.value_head(hidden)
         steps_pred = self.steps_head(hidden)
         return log_prob, value, steps_pred
@@ -135,12 +183,15 @@ class CNN(Base):
     def policy(self, state):
         if isinstance(state, np.ndarray):
             state = torch.from_numpy(state).float().to(self.device)
-        hidden = self.hidden(state)
-        return self._route_policy(hidden, state[:, -1, 0, 0]).exp().cpu().numpy()
+        player = state[:, -1, 0, 0]
+        x = self._embed_state(state)
+        hidden = self.hidden(x)
+        return self._route_policy(hidden, player).exp().cpu().numpy()
 
     @torch.no_grad()
     def value(self, state):
-        hidden = self.hidden(state)
+        x = self._embed_state(state)
+        hidden = self.hidden(x)
         return self.value_head(hidden).exp().cpu().numpy()
 
     @torch.no_grad()

@@ -400,6 +400,7 @@ class BoardWidget(QWidget):
         self._draw_hover_cell(qp)
         self._draw_grid(qp)
         self._draw_pieces(qp)
+        self._draw_valid_moves(qp)
         self._draw_last_move(qp)
         self._draw_overlay(qp)
         self._draw_ghost(qp)
@@ -514,6 +515,23 @@ class BoardWidget(QWidget):
         spec.setColorAt(1, QColor(255, 255, 255, 0))
         qp.setBrush(spec)
         qp.drawEllipse(QPointF(cx - rad * 0.2, cy - rad * 0.35), rad * 0.4, rad * 0.3)
+
+    def _draw_valid_moves(self, qp):
+        """Draw small dots on all legal move cells (always visible)."""
+        if not self.interactive or not self._valid_set:
+            return
+        # Skip if overlay is active — overlay already marks legal moves
+        if self.overlay_data is not None:
+            return
+        for action in self._valid_set:
+            if action >= 64:  # skip pass action
+                continue
+            r, c = action // 8, action % 8
+            cx = self.MARGIN + c * self.CELL + self.CELL // 2
+            cy = self.MARGIN + r * self.CELL + self.CELL // 2
+            qp.setBrush(QColor(167, 139, 250, 40))
+            qp.setPen(Qt.NoPen)
+            qp.drawEllipse(QPointF(cx, cy), 5, 5)
 
     def _draw_last_move(self, qp):
         if self.last_move is None or self.last_move == 'pass':

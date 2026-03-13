@@ -84,13 +84,13 @@ class CNN(Base):
         nn.init.constant_(self.value_head[-2].weight, 0)
         nn.init.constant_(self.steps_head[-2].weight, 0)
         
-        self.opt = torch.optim.SGD([
+        self.opt = torch.optim.AdamW([
             {'params': self.hidden.parameters()},
             {'params': self.value_head.parameters()},
             {'params': self.steps_head.parameters()},
             {'params': self.policy_head_1.parameters(), 'lr': lr * policy_lr_scale},
             {'params': self.policy_head_2.parameters(), 'lr': lr * policy_lr_scale},
-        ], lr=lr, momentum=0.9, weight_decay=1e-4)
+        ], lr=lr, weight_decay=0.01)
         
         scheduler_warmup = LinearLR(self.opt, start_factor=0.001, total_iters=100)
         scheduler_train = LinearLR(self.opt, start_factor=1, end_factor=0.1, total_iters=1000)

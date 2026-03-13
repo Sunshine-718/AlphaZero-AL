@@ -39,7 +39,7 @@ g_env.add_argument('-d', '--device', type=str,
 
 # ── MCTS Search ───────────────────────────────────────────────────────────────
 g_mcts = parser.add_argument_group('MCTS Search')
-g_mcts.add_argument('-n', type=int, default=400, help='Number of MCTS simulations per move')
+g_mcts.add_argument('-n', type=int, default=200, help='Number of MCTS simulations per move')
 g_mcts.add_argument('-c', '--c_init', type=float, default=1.4, help='PUCT exploration constant')
 g_mcts.add_argument('--c_base_factor', type=float, default=5,
                      help='PUCT base factor (c_base = n * c_base_factor)')
@@ -81,7 +81,7 @@ g_sp.add_argument('--actor', type=str, default='best',
 
 # ── Training ──────────────────────────────────────────────────────────────────
 g_train = parser.add_argument_group('Training')
-g_train.add_argument('--lr', type=float, default=0.01, help='Learning rate')
+g_train.add_argument('--lr', type=float, default=0.001, help='Learning rate')
 g_train.add_argument('-b', '--batch_size', type=int, default=512, help='Training batch size')
 g_train.add_argument('--buf', '--buffer_size', type=int, default=500000, help='Replay buffer size')
 g_train.add_argument('--q_size', type=int, default=1,
