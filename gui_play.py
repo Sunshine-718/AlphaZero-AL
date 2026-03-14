@@ -1620,9 +1620,16 @@ class ContinuousSearchWorker(QThread):
             self.progress.emit(stats_0, visits)
 
             if self._is_ai_turn and not self._ai_acted:
-                # Use per-tree root_N for threshold (all trees get same playouts)
                 per_tree_n = float(raw['root_N'][0])
                 if per_tree_n >= self._threshold:
+                    # 到达搜索次数后，检查是否收敛：
+                    # 最佳着法领先第二名超过每轮 CHUNK，第二名不可能追上
+                    sorted_v = np.sort(visits)[::-1]
+                    converged = (len(sorted_v) < 2 or sorted_v[1] == 0
+                                 or sorted_v[0] - sorted_v[1] > self.CHUNK * self._n_trees)
+                else:
+                    converged = False
+                if converged:
                     self._ai_acted = True
                     self._paused = True
                     elapsed = time.time() - self._t0

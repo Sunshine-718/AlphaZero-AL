@@ -70,8 +70,6 @@ class Def:
     cache = 10000
     n_trees = 1
     vl_batch = 4
-    mlh_slope = 0.0
-    mlh_cap = 0.2
     score_utility_factor = 0.15
     score_scale = 8.0
 
@@ -1256,7 +1254,7 @@ class ParameterConsole(QWidget):
 
         self._build_game_tab()
         self._build_mcts_tab()
-        self._build_mlh_tab()
+        self._build_aux_tab()
 
     def _wrap_scroll_tab(self, content):
         scroll = QScrollArea()
@@ -1356,21 +1354,17 @@ class ParameterConsole(QWidget):
         lay.addStretch()
         self.tabs.addTab(self._wrap_scroll_tab(content), "MCTS")
 
-    def _build_mlh_tab(self):
+    def _build_aux_tab(self):
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setSpacing(8)
 
         info = QLabel(f"<font color='{C.DIM}' style='font-family:Consolas;font-size:10px;'>"
-                      f"Moves-Left Head (LC0)</font>")
+                      f"Score Utility (KataGo-style)</font>")
         info.setTextFormat(Qt.RichText)
         lay.addWidget(info)
 
-        self.mlh_slope_sl = _make_slider(lay, "slope", 0, 1, 0.01, Def.mlh_slope,
-                                         tooltip="MLH strength (0=disabled)")
-        self.mlh_cap_sl = _make_slider(lay, "cap", 0, 1, 0.05, Def.mlh_cap,
-                                       tooltip="MLH max effect")
         self.score_factor_sl = _make_slider(lay, "score_factor", 0, 1, 0.05, Def.score_utility_factor,
                                              tooltip="KataGo-style score utility weight")
         self.score_scale_sl = _make_slider(lay, "score_scale", 1, 32, 1, Def.score_scale,
@@ -1392,8 +1386,6 @@ class ParameterConsole(QWidget):
         self.eps_sl.setValue(int(Def.noise_eps * self.eps_sl._scale))
         self.cache_sl.setValue(int(Def.cache * self.cache_sl._scale))
         self.sym_check.setChecked(Def.symmetry)
-        self.mlh_slope_sl.setValue(int(Def.mlh_slope * self.mlh_slope_sl._scale))
-        self.mlh_cap_sl.setValue(int(Def.mlh_cap * self.mlh_cap_sl._scale))
         self.score_factor_sl.setValue(int(Def.score_utility_factor * self.score_factor_sl._scale))
         self.score_scale_sl.setValue(int(Def.score_scale * self.score_scale_sl._scale))
 
@@ -1550,6 +1542,14 @@ class ContinuousSearchWorker(QThread):
             if self._is_ai_turn and not self._ai_acted:
                 per_tree_n = float(raw['root_N'][0])
                 if per_tree_n >= self._threshold:
+                    # 到达搜索次数后，检查是否收敛：
+                    # 最佳着法领先第二名超过每轮 CHUNK，第二名不可能追上
+                    sorted_v = np.sort(visits)[::-1]
+                    converged = (len(sorted_v) < 2 or sorted_v[1] == 0
+                                 or sorted_v[0] - sorted_v[1] > self.CHUNK * self._n_trees)
+                else:
+                    converged = False
+                if converged:
                     self._ai_acted = True
                     self._paused = True
                     elapsed = time.time() - self._t0
@@ -1579,7 +1579,6 @@ class OthelloGUI(QWidget):
             is_selfplay=0, cache_size=Def.cache,
             fpu_reduction=Def.fpu, use_symmetry=Def.symmetry,
             game_name='Othello',
-            mlh_slope=Def.mlh_slope, mlh_cap=Def.mlh_cap,
             score_utility_factor=Def.score_utility_factor,
             score_scale=Def.score_scale,
             vl_batch=Def.vl_batch)
@@ -1756,8 +1755,6 @@ class OthelloGUI(QWidget):
         self.console.eps_sl.valueChanged.connect(_param_delayed)
         self.console.cache_sl.valueChanged.connect(_param_delayed)
         self.console.sym_check.stateChanged.connect(_param_delayed)
-        self.console.mlh_slope_sl.valueChanged.connect(_param_delayed)
-        self.console.mlh_cap_sl.valueChanged.connect(_param_delayed)
         self.console.score_factor_sl.valueChanged.connect(_param_delayed)
         self.console.score_scale_sl.valueChanged.connect(_param_delayed)
         self.console.vl_batch_spin.valueChanged.connect(_param_delayed)
@@ -1889,8 +1886,6 @@ class OthelloGUI(QWidget):
         p.noise_eps_init = _sv(self.console.eps_sl)
         p._use_symmetry = self.console.sym_check.isChecked()
         p._cache_size = int(_sv(self.console.cache_sl))
-        p._mlh_slope = _sv(self.console.mlh_slope_sl)
-        p._mlh_cap = _sv(self.console.mlh_cap_sl)
         p._score_utility_factor = _sv(self.console.score_factor_sl)
         p._score_scale = _sv(self.console.score_scale_sl)
         p.n_trees = self.console.n_trees_spin.value()
@@ -1919,8 +1914,6 @@ class OthelloGUI(QWidget):
         m.set_fpu_reduction(_sv(self.console.fpu_sl))
         m.set_noise_epsilon(_sv(self.console.eps_sl))
         m.set_use_symmetry(self.console.sym_check.isChecked())
-        m.set_mlh_params(_sv(self.console.mlh_slope_sl),
-                         _sv(self.console.mlh_cap_sl))
         m.set_score_utility_params(_sv(self.console.score_factor_sl),
                                     _sv(self.console.score_scale_sl))
         new_cache = int(_sv(self.console.cache_sl))
