@@ -184,9 +184,12 @@ class Base(ABC, nn.Module):
         if path is not None:
             try:
                 checkpoint = torch.load(path, map_location=self.device, weights_only=True)
-                self.load_state_dict(checkpoint['model_state_dict'])
-                self.opt.load_state_dict(checkpoint['opt_state_dict'])
-                self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+                self.load_state_dict(checkpoint['model_state_dict'], strict=False)
+                try:
+                    self.opt.load_state_dict(checkpoint['opt_state_dict'])
+                    self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+                except (ValueError, KeyError) as e:
+                    print(f'Optimizer/scheduler state incompatible, using fresh state.\n{e}')
             except Exception as e:
                 print(f'Failed to load parameters.\n{e}')
         return self

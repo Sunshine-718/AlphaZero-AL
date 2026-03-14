@@ -300,7 +300,7 @@ class Actor:
 
             weights = pickle.loads(r.content)
             self.net.to('cpu')
-            self.net.load_state_dict(weights)
+            self.net.load_state_dict(weights, strict=False)
             self.net.to(args.device)
             self.mtime = float(r.headers['X-Timestamp'])
             self.az_player.mcts.refresh_cache(self.net)

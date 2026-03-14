@@ -2,7 +2,6 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
-from copy import deepcopy
 from torch.optim.lr_scheduler import LinearLR, SequentialLR
 from ..NetworkBase import Base
 
@@ -11,14 +10,14 @@ from ..NetworkBase import Base
 # 对称变换：4 旋转 (0°/90°/180°/270°) × 2 反射 (恒等/主对角线)
 # 位置的战略价值是 D4 对称的（角=角、X格=X格），与棋子颜色无关
 _ORBIT_MAP = [
-     0,  1,  2,  3,  3,  2,  1,  0,
-     1,  4,  5,  6,  6,  5,  4,  1,
-     2,  5,  7,  8,  8,  7,  5,  2,
-     3,  6,  8,  9,  9,  8,  6,  3,
-     3,  6,  8,  9,  9,  8,  6,  3,
-     2,  5,  7,  8,  8,  7,  5,  2,
-     1,  4,  5,  6,  6,  5,  4,  1,
-     0,  1,  2,  3,  3,  2,  1,  0,
+    0, 1, 2, 3, 3, 2, 1, 0,
+    1, 4, 5, 6, 6, 5, 4, 1,
+    2, 5, 7, 8, 8, 7, 5, 2,
+    3, 6, 8, 9, 9, 8, 6, 3,
+    3, 6, 8, 9, 9, 8, 6, 3,
+    2, 5, 7, 8, 8, 7, 5, 2,
+    1, 4, 5, 6, 6, 5, 4, 1,
+    0, 1, 2, 3, 3, 2, 1, 0,
 ]
 
 
@@ -27,6 +26,7 @@ class ResidualBlock(nn.Module):
     Standard Residual Block with BatchNorm, SiLU activation, and Dropout.
     Conv -> BN -> SiLU -> Dropout -> Conv -> BN -> Add -> SiLU
     """
+
     def __init__(self, in_channels, out_channels, dropout_rate=0.):
         super().__init__()
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False)
@@ -75,7 +75,7 @@ class CNN(Base):
 
         # Policy head: conv → flatten → linear → log_softmax
         policy_conv_flat = 5 * 10 * 10
-        self.policy_head_1 = nn.Sequential(
+        self.policy_head = nn.Sequential(
             nn.Conv2d(h_dim, 5, kernel_size=1, bias=True),
             nn.SiLU(inplace=True),
             nn.Flatten(),
@@ -83,7 +83,6 @@ class CNN(Base):
             nn.Linear(policy_conv_flat, out_dim),
             nn.LogSoftmax(dim=-1)
         )
-        self.policy_head_2 = deepcopy(self.policy_head_1)
 
         # Value head: WDL (draw, p1_win, p2_win)
         self.value_head = nn.Sequential(
@@ -108,8 +107,7 @@ class CNN(Base):
         )
 
         self.apply(self.init_weights)
-        nn.init.constant_(self.policy_head_1[-2].weight, 0)
-        nn.init.constant_(self.policy_head_2[-2].weight, 0)
+        nn.init.constant_(self.policy_head[-2].weight, 0)
         nn.init.constant_(self.value_head[-2].weight, 0)
         nn.init.constant_(self.steps_head[-2].weight, 0)
 
@@ -119,8 +117,7 @@ class CNN(Base):
             {'params': self.steps_head.parameters()},
             {'params': self.piece_emb.parameters(), 'weight_decay': 1e-4},
             {'params': self.pos_emb.parameters(), 'weight_decay': 1e-4},
-            {'params': self.policy_head_1.parameters(), 'lr': lr * policy_lr_scale},
-            {'params': self.policy_head_2.parameters(), 'lr': lr * policy_lr_scale},
+            {'params': self.policy_head.parameters(), 'lr': lr * policy_lr_scale},
         ], lr=lr, weight_decay=1e-2)
 
         scheduler_warmup = LinearLR(self.opt, start_factor=0.001, total_iters=100)
@@ -176,22 +173,10 @@ class CNN(Base):
         x = pe + po.unsqueeze(0)                 # (B, 64, d)
         return x.permute(0, 2, 1).view(B, self.embed_dim, 8, 8)
 
-    def _route_policy(self, hidden, player):
-        """Route each sample to its player's policy head."""
-        idx1 = (player > 0).nonzero(as_tuple=True)[0]
-        idx2 = (player < 0).nonzero(as_tuple=True)[0]
-        log_prob = hidden.new_zeros(hidden.size(0), self.n_actions)
-        if idx1.numel() > 0:
-            log_prob[idx1] = self.policy_head_1(hidden[idx1])
-        if idx2.numel() > 0:
-            log_prob[idx2] = self.policy_head_2(hidden[idx2])
-        return log_prob
-
     def forward(self, x):
-        player = x[:, -1, 0, 0]
         x = self._embed_state(x)
         hidden = self.hidden(x)
-        log_prob = self._route_policy(hidden, player)
+        log_prob = self.policy_head(hidden)
         value = self.value_head(hidden)
         steps_pred = self.steps_head(hidden)
         return log_prob, value, steps_pred
@@ -200,10 +185,9 @@ class CNN(Base):
     def policy(self, state):
         if isinstance(state, np.ndarray):
             state = torch.from_numpy(state).float().to(self.device)
-        player = state[:, -1, 0, 0]
         x = self._embed_state(state)
         hidden = self.hidden(x)
-        return self._route_policy(hidden, player).exp().cpu().numpy()
+        return self.policy_head(hidden).exp().cpu().numpy()
 
     @torch.no_grad()
     def value(self, state):

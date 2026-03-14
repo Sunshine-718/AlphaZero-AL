@@ -709,12 +709,13 @@ class WinRateBar(QWidget):
 
 
 class UtilBar(QWidget):
-    MAX_ABS_UTIL = 1.0  # atan-mapped score utility range [-1, 1]
+    MAX_DIFF = 64.0  # max disc diff for bar display
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(14)
-        self.util = 0.0
+        self.util = 0.0      # atan-mapped utility from MCTS
+        self.score_scale = 8.0
         self.player_color = 1
 
     def set_player_color(self, player_color):
@@ -722,13 +723,17 @@ class UtilBar(QWidget):
         self.update()
 
     def set_util(self, util):
-        self.util = max(-self.MAX_ABS_UTIL, min(float(util), self.MAX_ABS_UTIL))
+        self.util = max(-0.999, min(float(util), 0.999))
         self.update()
+
+    def _to_diff(self):
+        return self.score_scale * math.tan(self.util * math.pi / 2.0)
 
     def paintEvent(self, _):
         qp = QPainter(self)
         qp.setRenderHint(QPainter.Antialiasing)
-        text = f"{self.util:+.2f}"
+        diff = self._to_diff()
+        text = f"{diff:+.1f}"
         fm = qp.fontMetrics()
         tw = fm.horizontalAdvance(text) + 8
         bw = max(12, self.width() - tw)
@@ -739,10 +744,10 @@ class UtilBar(QWidget):
         qp.fillRect(0, 0, bw, h, QColor(255, 255, 255, 8))
         center = bw // 2
         qp.fillRect(center, 0, 1, h, QColor(255, 255, 255, 35))
-        ratio = min(abs(self.util) / self.MAX_ABS_UTIL, 1.0) if self.MAX_ABS_UTIL else 0.0
+        ratio = min(abs(diff) / self.MAX_DIFF, 1.0)
         fill_w = int(center * ratio)
         if fill_w > 0:
-            if self.util > 0:
+            if diff > 0:
                 base = C.BLACK if self.player_color == 1 else C.WHITE
                 x0, x1 = center, center + fill_w
             else:
@@ -753,9 +758,9 @@ class UtilBar(QWidget):
             grad.setColorAt(1, QColor(base.red() // 2, base.green() // 2, base.blue() // 2, 210))
             qp.fillRect(int(x0), 0, max(1, int(x1 - x0)), h, grad)
         qp.setClipping(False)
-        if self.util > 0:
+        if diff > 0:
             text_color = C.BLACK if self.player_color == 1 else C.WHITE
-        elif self.util < 0:
+        elif diff < 0:
             text_color = C.WHITE if self.player_color == 1 else C.BLACK
         else:
             text_color = QColor(C.ACCENT)
@@ -787,6 +792,13 @@ class RootStatsWidget(QWidget):
         self.wdl = None
         self.chosen = -1
         self.ai_turn = 1
+        self.score_scale = 8.0
+
+    @staticmethod
+    def _util_to_diff(util, scale):
+        """Inverse-atan: convert score utility back to approximate disc diff."""
+        clamped = max(-0.999, min(float(util), 0.999))
+        return scale * math.tan(clamped * math.pi / 2.0)
 
     def set_data(self, stats, chosen=-1, ai_turn=1):
         self.visits = stats['N'].copy()
@@ -833,7 +845,7 @@ class RootStatsWidget(QWidget):
                     root_n=self.root_n, per_tree_n=self.per_tree_n,
                     root_q=self.root_q, root_m=self.root_m,
                     wdl=self.wdl.copy(), chosen=self.chosen,
-                    ai_turn=self.ai_turn)
+                    ai_turn=self.ai_turn, score_scale=self.score_scale)
 
     def restore(self, snap):
         if snap is None:
@@ -853,6 +865,7 @@ class RootStatsWidget(QWidget):
         self.wdl = snap['wdl']
         self.chosen = snap['chosen']
         self.ai_turn = snap['ai_turn']
+        self.score_scale = snap.get('score_scale', 8.0)
         self.update()
 
     def paintEvent(self, _):
@@ -939,7 +952,7 @@ class RootStatsWidget(QWidget):
         parts = [
             (n_text, C.ACCENT),
             (f"Q:{self.root_q:+.2f}", C.GREEN_T),
-            (f"Df:{self.root_m:+.1f}", C.YEL_HEX),
+            (f"Df:{self._util_to_diff(self.root_m, self.score_scale):+.1f}", C.YEL_HEX),
             (f"W:{w_pct:.0f}", C.GREEN),
             (f"D:{d_pct:.0f}", C.DIM),
             (f"L:{l_pct:.0f}", C.RED_HEX),
@@ -1036,7 +1049,7 @@ class ChildStatsTable(QWidget):
             else:
                 w_pct = s.child_p2w[idx] * 100
                 l_pct = s.child_p1w[idx] * 100
-            m_val = s.child_m[idx]
+            m_val = s._util_to_diff(s.child_m[idx], s.score_scale)
             prior = s.prior[idx] * 100
 
             cells = [
@@ -1133,7 +1146,7 @@ class StatusPanel(QWidget):
         # ── Right: steps ──
         right = QVBoxLayout()
         right.setSpacing(2)
-        util_title = QLabel(f"<font color='{C.DIM}' style='font-family:Consolas;font-size:10px;'>SCORE UTIL</font>")
+        util_title = QLabel(f"<font color='{C.DIM}' style='font-family:Consolas;font-size:10px;'>DISC DIFF</font>")
         util_title.setAlignment(Qt.AlignCenter)
         util_title.setTextFormat(Qt.RichText)
         right.addWidget(util_title)
@@ -1888,6 +1901,9 @@ class OthelloGUI(QWidget):
         p._cache_size = int(_sv(self.console.cache_sl))
         p._score_utility_factor = _sv(self.console.score_factor_sl)
         p._score_scale = _sv(self.console.score_scale_sl)
+        self.ai_root_stats.score_scale = p._score_scale
+        self.hint_root_stats.score_scale = p._score_scale
+        self.status.util_bar.score_scale = p._score_scale
         p.n_trees = self.console.n_trees_spin.value()
         p._vl_batch = self.console.vl_batch_spin.value()
 
@@ -1914,8 +1930,11 @@ class OthelloGUI(QWidget):
         m.set_fpu_reduction(_sv(self.console.fpu_sl))
         m.set_noise_epsilon(_sv(self.console.eps_sl))
         m.set_use_symmetry(self.console.sym_check.isChecked())
-        m.set_score_utility_params(_sv(self.console.score_factor_sl),
-                                    _sv(self.console.score_scale_sl))
+        scale = _sv(self.console.score_scale_sl)
+        m.set_score_utility_params(_sv(self.console.score_factor_sl), scale)
+        self.ai_root_stats.score_scale = scale
+        self.hint_root_stats.score_scale = scale
+        self.status.util_bar.score_scale = scale
         new_cache = int(_sv(self.console.cache_sl))
         old_cache = getattr(m, 'cache_size', 0) or 0
         if new_cache != old_cache:
