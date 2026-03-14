@@ -7,17 +7,18 @@ from torch.optim.lr_scheduler import LinearLR, SequentialLR
 from ..NetworkBase import Base
 
 
-# Klein V4 对称群下 8x8 棋盘的 20 个轨道映射
-# 对称变换：恒等, 180°旋转, 主对角线反射, 副对角线反射
+# D4 对称群下 8x8 棋盘的 10 个轨道映射
+# 对称变换：4 旋转 (0°/90°/180°/270°) × 2 反射 (恒等/主对角线)
+# 位置的战略价值是 D4 对称的（角=角、X格=X格），与棋子颜色无关
 _ORBIT_MAP = [
-     0,  1,  2,  3,  4,  5,  6,  7,
-     1,  8,  9, 10, 11, 12, 13,  6,
-     2,  9, 14, 15, 16, 17, 12,  5,
-     3, 10, 15, 18, 19, 16, 11,  4,
-     4, 11, 16, 19, 18, 15, 10,  3,
-     5, 12, 17, 16, 15, 14,  9,  2,
-     6, 13, 12, 11, 10,  9,  8,  1,
-     7,  6,  5,  4,  3,  2,  1,  0,
+     0,  1,  2,  3,  3,  2,  1,  0,
+     1,  4,  5,  6,  6,  5,  4,  1,
+     2,  5,  7,  8,  8,  7,  5,  2,
+     3,  6,  8,  9,  9,  8,  6,  3,
+     3,  6,  8,  9,  9,  8,  6,  3,
+     2,  5,  7,  8,  8,  7,  5,  2,
+     1,  4,  5,  6,  6,  5,  4,  1,
+     0,  1,  2,  3,  3,  2,  1,  0,
 ]
 
 
@@ -57,7 +58,7 @@ class CNN(Base):
 
         # Embedding 层
         self.piece_emb = nn.Embedding(3, embed_dim)    # 0=空, 1=己方, 2=对方
-        self.pos_emb = nn.Embedding(20, embed_dim)     # 20 个轨道
+        self.pos_emb = nn.Embedding(10, embed_dim)     # 10 个轨道 (D4 对称)
         self.register_buffer('orbit_map', torch.tensor(_ORBIT_MAP, dtype=torch.long))
 
         # 8x8 board with padding=2 → 10x10 feature maps
@@ -136,8 +137,23 @@ class CNN(Base):
                 m.weight.data[1] = v
                 m.weight.data[2] = -v
             elif m is self.pos_emb:
-                # 正交初始化: 20 个轨道最大程度彼此区分 (d=32 > 20)
+                # 正交初始化 + 按战略价值缩放范数（从训练模型提取的比例）
+                # 轨道: 0=corner, 1=C-sq, 2=edge2, 3=edge3, 4=X-sq,
+                #        5=inner1, 6=inner2, 7=XX-sq, 8=near-ctr, 9=center
                 nn.init.orthogonal_(m.weight)
+                norm_scale = torch.tensor([
+                    1.00,  # 0 corner    — 最高战略价值，不可翻转
+                    0.63,  # 1 C-square  — 紧邻角落的边缘格
+                    0.56,  # 2 edge-2    — 边缘中段
+                    0.59,  # 3 edge-3    — 边缘靠中
+                    0.61,  # 4 X-square  — 对角邻角，高危格
+                    0.46,  # 5 inner-1   — 内圈
+                    0.45,  # 6 inner-2   — 内圈
+                    0.51,  # 7 XX-square — 次对角邻角
+                    0.58,  # 8 near-ctr  — 近中心
+                    0.61,  # 9 center    — 中心 4 格
+                ])
+                m.weight.data.mul_(norm_scale.unsqueeze(1))
             return
         if isinstance(m, (nn.Conv2d, nn.Linear)):
             nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')

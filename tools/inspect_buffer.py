@@ -563,12 +563,18 @@ def _cosine_sim(a, b):
     return float(torch.nn.functional.cosine_similarity(a.unsqueeze(0), b.unsqueeze(0)))
 
 
-# 轨道编号 → 位置语义标签
+# 轨道编号 → 位置语义标签 (D4 对称, 10 轨道)
 _ORBIT_LABELS = {
-    0: 'corner-A',   7: 'corner-B',
-    8: 'X-square',  14: 'XX-square',
-    1: 'C-edge-A',   6: 'C-edge-B',
-    18: 'center-A',  19: 'center-B',
+    0: 'corner',
+    1: 'C-square',
+    2: 'edge-2',
+    3: 'edge-3',
+    4: 'X-square',
+    5: 'inner-1',
+    6: 'inner-2',
+    7: 'XX-square',
+    8: 'near-center',
+    9: 'center',
 }
 
 
@@ -580,6 +586,7 @@ def analyze_embeddings(net, output_dir):
     if has_player:
         player_w = net.player_emb.weight.detach().cpu()  # (2, d)
     orbit_map = net.orbit_map.cpu().numpy()           # (64,)
+    n_orbits = pos_w.shape[0]
 
     PIECE_NAMES = ['Empty', 'Own', 'Opp']
     PLAYER_NAMES = ['P1 (Black)', 'P2 (White)']
@@ -644,8 +651,8 @@ def analyze_embeddings(net, output_dir):
     # 4-ref. 轨道参考图
     orbit_board = np.array(orbit_map).reshape(8, 8)
     fig, ax = plt.subplots(figsize=(6, 6))
-    cmap = plt.cm.get_cmap('tab20', 20)
-    im = ax.imshow(orbit_board, cmap=cmap, vmin=-0.5, vmax=19.5)
+    cmap = plt.cm.get_cmap('tab10' if n_orbits <= 10 else 'tab20', n_orbits)
+    im = ax.imshow(orbit_board, cmap=cmap, vmin=-0.5, vmax=n_orbits - 0.5)
     for r in range(8):
         for c in range(8):
             oid = orbit_board[r, c]
@@ -655,7 +662,7 @@ def analyze_embeddings(net, output_dir):
     ax.set_xticks(range(8), [f'c{i}' for i in range(8)])
     ax.set_yticks(range(8), [f'r{i}' for i in range(8)])
     ax.set_title('Orbit Map (Klein V4 symmetry, 20 orbits)')
-    fig.colorbar(im, ax=ax, shrink=0.8, ticks=range(20))
+    fig.colorbar(im, ax=ax, shrink=0.8, ticks=range(n_orbits))
     plt.tight_layout()
     path = os.path.join(output_dir, 'emb_orbit_map.png')
     fig.savefig(path, dpi=150, bbox_inches='tight')
@@ -706,7 +713,7 @@ def analyze_embeddings(net, output_dir):
     fig, ax = plt.subplots(figsize=(8, 6))
     ax.scatter(pos_2d[:, 0], pos_2d[:, 1], s=100, c=pos_norms.numpy(),
                cmap='YlOrRd', edgecolors='black', linewidths=0.5, zorder=5)
-    for i in range(20):
+    for i in range(n_orbits):
         label = _ORBIT_LABELS.get(i, str(i))
         ax.annotate(label if i in _ORBIT_LABELS else str(i),
                     (pos_2d[i, 0], pos_2d[i, 1]),
@@ -746,14 +753,14 @@ def analyze_embeddings(net, output_dir):
     # 4e. 20×20 轨道余弦相似度矩阵
     pos_norm = pos_w / pos_w.norm(dim=1, keepdim=True).clamp(min=1e-8)
     cos_matrix = (pos_norm @ pos_norm.T).numpy()
-    orbit_labels = [_ORBIT_LABELS.get(i, str(i)) for i in range(20)]
+    orbit_labels = [_ORBIT_LABELS.get(i, str(i)) for i in range(n_orbits)]
     fig, ax = plt.subplots(figsize=(9, 8))
     im = ax.imshow(cos_matrix, cmap='RdBu_r', vmin=-1, vmax=1)
-    for r in range(20):
-        for c in range(20):
+    for r in range(n_orbits):
+        for c in range(n_orbits):
             ax.text(c, r, f'{cos_matrix[r, c]:.1f}', ha='center', va='center', fontsize=5.5)
-    ax.set_xticks(range(20), orbit_labels, rotation=45, ha='right', fontsize=7)
-    ax.set_yticks(range(20), orbit_labels, fontsize=7)
+    ax.set_xticks(range(n_orbits), orbit_labels, rotation=45, ha='right', fontsize=7)
+    ax.set_yticks(range(n_orbits), orbit_labels, fontsize=7)
     ax.set_title('Position Embedding — Orbit Cosine Similarity')
     fig.colorbar(im, ax=ax, shrink=0.8)
     plt.tight_layout()
