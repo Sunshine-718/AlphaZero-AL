@@ -1,5 +1,6 @@
 #pragma once
 #include "GameContext.h"
+#include "MCTSNode.h"
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -222,14 +223,19 @@ namespace AlphaZero
             return n_pieces == Traits::ROWS * Traits::COLS;
         }
 
-        [[nodiscard]] float terminal_aux() const
+        [[nodiscard]] float terminal_aux(const SearchConfig& /*cfg*/) const
         {
             return 0.0f;
         }
 
-        [[nodiscard]] static float scale_aux_utility(float utility, float child_q)
+        [[nodiscard]] static float compute_aux_utility(
+            float child_M, float parent_M, float child_Q, const SearchConfig& cfg)
         {
-            return utility * child_q;
+            if (cfg.mlh_slope <= 0.0f) return 0.0f;
+            float m_diff = child_M - parent_M;
+            float m_utility = std::clamp(cfg.mlh_slope * m_diff,
+                                          -cfg.mlh_cap, cfg.mlh_cap);
+            return m_utility * child_Q;  // Q 符号决定方向：赢快输慢
         }
 
         /**

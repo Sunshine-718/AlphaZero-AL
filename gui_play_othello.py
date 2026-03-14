@@ -33,7 +33,6 @@ MODEL_NAME = 'AZ'
 PARAMS_PATH = './params/{name}_{env}_{net}_{type}.pt'
 N_ACTIONS = 65      # 64 squares + 1 pass
 BOARD_SIZE = 8
-MAX_DISC_DIFF = 64  # terminal disc diff range: black - white
 CHUNK = 50
 
 # Action ↔ board coordinate helpers
@@ -71,9 +70,10 @@ class Def:
     cache = 10000
     n_trees = 1
     vl_batch = 4
-    mlh_slope = 0.02
+    mlh_slope = 0.0
     mlh_cap = 0.2
-    mlh_thr = 0.
+    score_utility_factor = 0.15
+    score_scale = 8.0
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -710,27 +710,27 @@ class WinRateBar(QWidget):
         qp.drawLine(0, 0, w, 0)
 
 
-class DiffBar(QWidget):
-    MAX_ABS_DIFF = MAX_DISC_DIFF
+class UtilBar(QWidget):
+    MAX_ABS_UTIL = 1.0  # atan-mapped score utility range [-1, 1]
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(14)
-        self.diff = 0.0
+        self.util = 0.0
         self.player_color = 1
 
     def set_player_color(self, player_color):
         self.player_color = 1 if player_color == 1 else -1
         self.update()
 
-    def set_diff(self, diff):
-        self.diff = max(-self.MAX_ABS_DIFF, min(float(diff), self.MAX_ABS_DIFF))
+    def set_util(self, util):
+        self.util = max(-self.MAX_ABS_UTIL, min(float(util), self.MAX_ABS_UTIL))
         self.update()
 
     def paintEvent(self, _):
         qp = QPainter(self)
         qp.setRenderHint(QPainter.Antialiasing)
-        text = f"{self.diff:+.1f}"
+        text = f"{self.util:+.2f}"
         fm = qp.fontMetrics()
         tw = fm.horizontalAdvance(text) + 8
         bw = max(12, self.width() - tw)
@@ -741,10 +741,10 @@ class DiffBar(QWidget):
         qp.fillRect(0, 0, bw, h, QColor(255, 255, 255, 8))
         center = bw // 2
         qp.fillRect(center, 0, 1, h, QColor(255, 255, 255, 35))
-        ratio = min(abs(self.diff) / self.MAX_ABS_DIFF, 1.0) if self.MAX_ABS_DIFF else 0.0
+        ratio = min(abs(self.util) / self.MAX_ABS_UTIL, 1.0) if self.MAX_ABS_UTIL else 0.0
         fill_w = int(center * ratio)
         if fill_w > 0:
-            if self.diff > 0:
+            if self.util > 0:
                 base = C.BLACK if self.player_color == 1 else C.WHITE
                 x0, x1 = center, center + fill_w
             else:
@@ -755,9 +755,9 @@ class DiffBar(QWidget):
             grad.setColorAt(1, QColor(base.red() // 2, base.green() // 2, base.blue() // 2, 210))
             qp.fillRect(int(x0), 0, max(1, int(x1 - x0)), h, grad)
         qp.setClipping(False)
-        if self.diff > 0:
+        if self.util > 0:
             text_color = C.BLACK if self.player_color == 1 else C.WHITE
-        elif self.diff < 0:
+        elif self.util < 0:
             text_color = C.WHITE if self.player_color == 1 else C.BLACK
         else:
             text_color = QColor(C.ACCENT)
@@ -1135,14 +1135,14 @@ class StatusPanel(QWidget):
         # ── Right: steps ──
         right = QVBoxLayout()
         right.setSpacing(2)
-        diff_title = QLabel(f"<font color='{C.DIM}' style='font-family:Consolas;font-size:10px;'>FINAL DIFF</font>")
-        diff_title.setAlignment(Qt.AlignCenter)
-        diff_title.setTextFormat(Qt.RichText)
-        right.addWidget(diff_title)
-        self.diff_bar = DiffBar()
-        self.diff_bar.setMinimumWidth(100)
-        self.diff_bar.set_player_color(self.player_color)
-        right.addWidget(self.diff_bar)
+        util_title = QLabel(f"<font color='{C.DIM}' style='font-family:Consolas;font-size:10px;'>SCORE UTIL</font>")
+        util_title.setAlignment(Qt.AlignCenter)
+        util_title.setTextFormat(Qt.RichText)
+        right.addWidget(util_title)
+        self.util_bar = UtilBar()
+        self.util_bar.setMinimumWidth(100)
+        self.util_bar.set_player_color(self.player_color)
+        right.addWidget(self.util_bar)
         self.nn_diff_lbl = QLabel("")
         self.nn_diff_lbl.setAlignment(Qt.AlignCenter)
         self.nn_diff_lbl.setTextFormat(Qt.RichText)
@@ -1178,7 +1178,7 @@ class StatusPanel(QWidget):
     def set_player_color(self, player_color):
         self.player_color = 1 if player_color == 1 else -1
         self.wdl_bar.set_player_color(player_color)
-        self.diff_bar.set_player_color(player_color)
+        self.util_bar.set_player_color(player_color)
 
     def set_disc_count(self, black, white):
         if self.player_color == 1:
@@ -1201,13 +1201,13 @@ class StatusPanel(QWidget):
             f"<font color='{C.MUTED}' style='font-family:Consolas;font-size:9px;'>"
             f"nn {win:.1f} / {draw:.1f} / {lose:.1f}</font>")
 
-    def set_mcts_diff(self, diff):
-        self.diff_bar.set_diff(diff)
+    def set_mcts_util(self, util):
+        self.util_bar.set_util(util)
 
     def set_nn_diff(self, diff):
         self.nn_diff_lbl.setText(
             f"<font color='{C.MUTED}' style='font-family:Consolas;font-size:9px;'>"
-            f"nn {diff:+.1f}</font>")
+            f"nn disc {diff:+.1f}</font>")
 
     def clear_mcts(self):
         for lbl, prefix, color in [(self.win_lbl, 'WIN', C.GREEN),
@@ -1217,7 +1217,7 @@ class StatusPanel(QWidget):
                         f"font-size:10px;'>{prefix}</font><br>"
                         f"<font color='{color}'>--%</font>")
         self.wdl_bar.set_rates(0, 0, 0)
-        self.diff_bar.set_diff(0)
+        self.util_bar.set_util(0)
         self.nn_wdl_lbl.setText("")
         self.nn_diff_lbl.setText("")
 
@@ -1371,10 +1371,12 @@ class ParameterConsole(QWidget):
                                          tooltip="MLH strength (0=disabled)")
         self.mlh_cap_sl = _make_slider(lay, "cap", 0, 1, 0.05, Def.mlh_cap,
                                        tooltip="MLH max effect")
-        self.mlh_thr_sl = _make_slider(lay, "threshold", 0, 1, 0.05, Def.mlh_thr,
-                                       tooltip="MLH Q threshold")
+        self.score_factor_sl = _make_slider(lay, "score_factor", 0, 1, 0.05, Def.score_utility_factor,
+                                             tooltip="KataGo-style score utility weight")
+        self.score_scale_sl = _make_slider(lay, "score_scale", 1, 32, 1, Def.score_scale,
+                                            tooltip="Score atan mapping scale")
         lay.addStretch()
-        self.tabs.addTab(w, "MLH")
+        self.tabs.addTab(w, "Aux")
 
     def reset_defaults(self):
         self.network_cb.setCurrentText(Def.network)
@@ -1392,7 +1394,8 @@ class ParameterConsole(QWidget):
         self.sym_check.setChecked(Def.symmetry)
         self.mlh_slope_sl.setValue(int(Def.mlh_slope * self.mlh_slope_sl._scale))
         self.mlh_cap_sl.setValue(int(Def.mlh_cap * self.mlh_cap_sl._scale))
-        self.mlh_thr_sl.setValue(int(Def.mlh_thr * self.mlh_thr_sl._scale))
+        self.score_factor_sl.setValue(int(Def.score_utility_factor * self.score_factor_sl._scale))
+        self.score_scale_sl.setValue(int(Def.score_scale * self.score_scale_sl._scale))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1577,7 +1580,8 @@ class OthelloGUI(QWidget):
             fpu_reduction=Def.fpu, use_symmetry=Def.symmetry,
             game_name='Othello',
             mlh_slope=Def.mlh_slope, mlh_cap=Def.mlh_cap,
-            mlh_threshold=Def.mlh_thr,
+            score_utility_factor=Def.score_utility_factor,
+            score_scale=Def.score_scale,
             vl_batch=Def.vl_batch)
         self.player_color = 1    # 1 = Black (first player)
         self._n_trees = 1
@@ -1754,7 +1758,8 @@ class OthelloGUI(QWidget):
         self.console.sym_check.stateChanged.connect(_param_delayed)
         self.console.mlh_slope_sl.valueChanged.connect(_param_delayed)
         self.console.mlh_cap_sl.valueChanged.connect(_param_delayed)
-        self.console.mlh_thr_sl.valueChanged.connect(_param_delayed)
+        self.console.score_factor_sl.valueChanged.connect(_param_delayed)
+        self.console.score_scale_sl.valueChanged.connect(_param_delayed)
         self.console.vl_batch_spin.valueChanged.connect(_param_delayed)
 
         self.console.player_cb.currentIndexChanged.connect(
@@ -1886,7 +1891,8 @@ class OthelloGUI(QWidget):
         p._cache_size = int(_sv(self.console.cache_sl))
         p._mlh_slope = _sv(self.console.mlh_slope_sl)
         p._mlh_cap = _sv(self.console.mlh_cap_sl)
-        p._mlh_threshold = _sv(self.console.mlh_thr_sl)
+        p._score_utility_factor = _sv(self.console.score_factor_sl)
+        p._score_scale = _sv(self.console.score_scale_sl)
         p.n_trees = self.console.n_trees_spin.value()
         p._vl_batch = self.console.vl_batch_spin.value()
 
@@ -1914,8 +1920,9 @@ class OthelloGUI(QWidget):
         m.set_noise_epsilon(_sv(self.console.eps_sl))
         m.set_use_symmetry(self.console.sym_check.isChecked())
         m.set_mlh_params(_sv(self.console.mlh_slope_sl),
-                         _sv(self.console.mlh_cap_sl),
-                         _sv(self.console.mlh_thr_sl))
+                         _sv(self.console.mlh_cap_sl))
+        m.set_score_utility_params(_sv(self.console.score_factor_sl),
+                                    _sv(self.console.score_scale_sl))
         new_cache = int(_sv(self.console.cache_sl))
         old_cache = getattr(m, 'cache_size', 0) or 0
         if new_cache != old_cache:
@@ -2035,7 +2042,7 @@ class OthelloGUI(QWidget):
         if self.player_color != self.env.turn:
             m = -m
         self.status.set_mcts_rates(win_pct, d * 100, lose_pct)
-        self.status.set_mcts_diff(m)
+        self.status.set_mcts_util(m)
 
     # ── Scan-line animation ─────────────────────────────────────────────────
     def _start_scan(self):

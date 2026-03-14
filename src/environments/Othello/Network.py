@@ -48,6 +48,7 @@ class ResidualBlock(nn.Module):
 
 class CNN(Base):
     aux_target_offset = 64
+    score_scale = 8.0  # atan mapping scale, synced from SearchConfig at runtime
 
     def __init__(self, lr, embed_dim=32, h_dim=64, out_dim=65, dropout=0.2, device='cpu', num_res_blocks=4, policy_lr_scale=0.3):
         super().__init__()
@@ -222,10 +223,14 @@ class CNN(Base):
         wdl = value_log_prob.exp()  # (batch, 3)
 
         # Third head predicts terminal disc diff in current-player perspective.
+        # Compute E[atan(x/scale)] * (2/pi) — uncertainty-aware score utility.
         steps_prob = log_steps.exp()
         idx = torch.arange(log_steps.shape[-1], dtype=torch.float32, device=self.device)
-        expected_aux = (steps_prob * idx).sum(dim=1) - float(self.aux_target_offset)
+        disc_diff = idx - float(self.aux_target_offset)
+        score_scale = getattr(self, 'score_scale', 8.0)
+        atan_vals = torch.atan(disc_diff / score_scale) * (2.0 / math.pi)
+        expected_utility = (steps_prob * atan_vals).sum(dim=1)
 
         return (log_prob.exp().cpu().numpy(),
                 wdl.cpu().numpy(),
-                expected_aux.cpu().view(-1, 1).numpy())
+                expected_utility.cpu().view(-1, 1).numpy())

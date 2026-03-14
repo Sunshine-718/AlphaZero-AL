@@ -59,15 +59,17 @@ g_noise.add_argument('--noise_steps', type=int, default=0,
 g_noise.add_argument('--noise_eps_min', type=float, default=0.1, help='Minimum noise epsilon')
 
 # ── Moves Left Head (MLH) ────────────────────────────────────────────────────
-g_mlh = parser.add_argument_group('Moves Left Head (MLH)')
-g_mlh.add_argument('--mlh_slope', type=float, default=0.1,
-                    help='MLH slope for MCTS (0=disabled, LC0-style: scales child_M - parent_M)')
-g_mlh.add_argument('--mlh_cap', type=float, default=0.2,
-                    help='MLH max effect cap: clamp M_utility to [-cap, cap]')
-g_mlh.add_argument('--mlh_threshold', type=float, default=0.,
-                    help='MLH Q threshold: suppress M_utility when |Q| < threshold (0=no threshold)')
-g_mlh.add_argument('--mlh_warmup_loss', type=float, default=0,
-                    help='Steps-head loss threshold to activate MLH (0=disabled, MLH active from start)')
+g_aux = parser.add_argument_group('Auxiliary Utility')
+g_aux.add_argument('--mlh_slope', type=float, default=0.1,
+                    help='MLH slope for MCTS (0=disabled, Connect4 用)')
+g_aux.add_argument('--mlh_cap', type=float, default=0.2,
+                    help='MLH max effect cap')
+g_aux.add_argument('--score_utility_factor', type=float, default=0.1,
+                    help='KataGo-style score utility weight (0=disabled, Othello 用)')
+g_aux.add_argument('--score_scale', type=float, default=8.0,
+                    help='Score atan mapping scale denominator')
+g_aux.add_argument('--mlh_warmup_loss', type=float, default=0,
+                    help='Aux-head loss threshold to activate aux utility (0=active from start)')
 
 # ── Self-play ─────────────────────────────────────────────────────────────────
 g_sp = parser.add_argument_group('Self-play')
@@ -141,7 +143,8 @@ config = {"lr": args.lr,
           "noise_eps_min": args.noise_eps_min,
           "mlh_slope": args.mlh_slope,
           "mlh_cap": args.mlh_cap,
-          "mlh_threshold": args.mlh_threshold,
+          "score_utility_factor": args.score_utility_factor,
+          "score_scale": args.score_scale,
           "mlh_warmup_loss": args.mlh_warmup_loss,
           "distill_alpha": args.distill_alpha,
           "distill_temp": args.distill_temp,
@@ -182,10 +185,11 @@ def print_config():
             "noise_steps": args.noise_steps,
             "noise_eps_min": args.noise_eps_min,
         }),
-        ("Moves Left Head (MLH)", {
+        ("Auxiliary Utility", {
             "mlh_slope": args.mlh_slope,
             "mlh_cap": args.mlh_cap,
-            "mlh_threshold": args.mlh_threshold,
+            "score_utility_factor": args.score_utility_factor,
+            "score_scale": args.score_scale,
             "mlh_warmup_loss": args.mlh_warmup_loss,
         }),
         ("Self-play", {
@@ -235,9 +239,9 @@ def print_config():
                         subtitle=f"[dim]{args.env} / {args.model}[/dim]",
                         border_style="blue"))
 
-    if args.mlh_slope == 0 and args.mlh_warmup_loss == 0:
-        console.print("[bold yellow]WARNING:[/bold yellow] mlh_slope=0 and mlh_warmup_loss=0, "
-                      "Moves Left Head is completely disabled.")
+    if args.mlh_slope == 0 and args.score_utility_factor == 0 and args.mlh_warmup_loss == 0:
+        console.print("[bold yellow]WARNING:[/bold yellow] Auxiliary utility is completely disabled "
+                      "(mlh_slope=0, score_utility_factor=0, mlh_warmup_loss=0).")
 
     console.print()
 
@@ -356,7 +360,8 @@ def get_config():
         'use_symmetry': getattr(pipeline, 'use_symmetry', True),
         'mlh_slope': getattr(pipeline, 'mlh_slope', 0.0),
         'mlh_cap': getattr(pipeline, 'mlh_cap', 0.2),
-        'mlh_threshold': getattr(pipeline, 'mlh_threshold', 0.8),
+        'score_utility_factor': getattr(pipeline, 'score_utility_factor', 0.0),
+        'score_scale': getattr(pipeline, 'score_scale', 8.0),
         'value_decay': getattr(pipeline, 'value_decay', 1.0),
         'temp': getattr(pipeline, 'temp', args.temp),
         'temp_decay_moves': getattr(pipeline, 'temp_decay_moves', args.temp_decay_moves),
@@ -389,7 +394,7 @@ _TUNABLE_PARAMS = {
     'dirichlet_alpha', 'eps', 'noise_steps', 'noise_eps_min',
     # MCTS
     'c_puct', 'c_base', 'n_playout', 'fpu_reduction', 'vl_batch',
-    'use_symmetry', 'mlh_slope', 'mlh_cap', 'mlh_threshold',
+    'use_symmetry', 'mlh_slope', 'mlh_cap', 'score_utility_factor', 'score_scale',
     # Evaluation
     'interval', 'num_eval', 'win_rate_threshold', 'pure_mcts_n_playout',
 }
@@ -444,11 +449,15 @@ def _apply_pipeline_runtime_update(key):
         az_mcts.set_use_symmetry(getattr(pipeline, 'use_symmetry'))
     elif key == 'value_decay':
         az_mcts.set_value_decay(getattr(pipeline, 'value_decay'))
-    elif key in {'mlh_slope', 'mlh_cap', 'mlh_threshold'}:
+    elif key in {'mlh_slope', 'mlh_cap'}:
         az_mcts.set_mlh_params(
             getattr(pipeline, 'mlh_slope', 0.0),
             getattr(pipeline, 'mlh_cap', 0.2),
-            getattr(pipeline, 'mlh_threshold', 0.8),
+        )
+    elif key in {'score_utility_factor', 'score_scale'}:
+        az_mcts.set_score_utility_params(
+            getattr(pipeline, 'score_utility_factor', 0.0),
+            getattr(pipeline, 'score_scale', 8.0),
         )
 
 

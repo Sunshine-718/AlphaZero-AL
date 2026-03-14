@@ -51,9 +51,10 @@ namespace AlphaZero
         float dirichlet_alpha = 0.3f;   ///< Dirichlet 噪声 alpha（≤0 禁用噪声）
         float noise_epsilon = 0.25f;    ///< Dirichlet 噪声混合权重 ε
         float fpu_reduction = 0.4f;     ///< First Play Urgency 衰减系数
-        float mlh_slope = 0.0f;         ///< Moves Left Head 斜率（0=禁用）
+        float mlh_slope = 0.0f;         ///< Moves Left Head 斜率（0=禁用，Connect4 用）
         float mlh_cap = 0.2f;           ///< MLH 最大影响上限
-        float mlh_threshold = 0.8f;     ///< MLH Q 阈值
+        float score_utility_factor = 0.0f; ///< KataGo-style 分差 utility 权重（0=禁用，Othello 用）
+        float score_scale = 8.0f;       ///< 分差 atan 映射的缩放分母
         float value_decay = 1.0f;       ///< Backprop 逐层衰减（1.0=禁用）
         bool use_symmetry = true;       ///< 是否启用随机对称增强
         int vl_count = 1;              ///< Virtual loss 强度（每次 VL 模拟给子节点加的访问次数）

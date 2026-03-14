@@ -31,7 +31,8 @@ def _relative_wdl_to_absolute(wdl_rel, turns):
 class BatchedMCTS:
     def __init__(self, batch_size, c_init, c_base, alpha, n_playout,
                  game_name='Connect4', board_converter=None, cache_size=0, noise_epsilon=0.25, fpu_reduction=0.4,
-                 use_symmetry=True, mlh_slope=0.0, mlh_cap=0.2, mlh_threshold=0.8, value_decay=1.0):
+                 use_symmetry=True, mlh_slope=0.0, mlh_cap=0.2, value_decay=1.0,
+                 score_utility_factor=0.0, score_scale=8.0):
         backend_cls = _BACKENDS[game_name]
         self.mcts = backend_cls(batch_size)
 
@@ -45,7 +46,8 @@ class BatchedMCTS:
         cfg.use_symmetry = use_symmetry
         cfg.mlh_slope = mlh_slope
         cfg.mlh_cap = mlh_cap
-        cfg.mlh_threshold = mlh_threshold
+        cfg.score_utility_factor = score_utility_factor
+        cfg.score_scale = score_scale
         cfg.value_decay = value_decay
 
         self.n_playout = n_playout
@@ -68,6 +70,10 @@ class BatchedMCTS:
         current_boards = current_boards.astype(np.int8)
         turns = turns.astype(np.int32)
         n = n_playout if n_playout is not None else self.n_playout
+
+        # Sync score_scale to network so Python-side atan mapping matches C++ terminal_aux
+        if hasattr(pv_func, 'score_scale'):
+            pv_func.score_scale = self.mcts.config.score_scale
 
         if vl_batch <= 1:
             # === 原有路径（完全不变）===
@@ -279,6 +285,8 @@ class BatchedMCTS:
         """网络权重更新后调用，用新 NN 重新计算缓存中所有条目的 prob, wdl, moves_left"""
         if self.cache is None or len(self.cache) == 0:
             return self
+        if hasattr(pv_func, 'score_scale'):
+            pv_func.score_scale = self.mcts.config.score_scale
         od = self.cache._od
         keys = list(od.keys())
         states = np.concatenate([od[k]['state'] for k in keys], axis=0)
@@ -306,11 +314,19 @@ class BatchedMCTS:
     def set_noise_epsilon(self, eps):
         self.mcts.config.noise_epsilon = eps
 
-    def set_mlh_params(self, slope, cap, threshold):
+    def set_mlh_params(self, slope, cap):
         cfg = self.mcts.config
         cfg.mlh_slope = slope
         cfg.mlh_cap = cap
-        cfg.mlh_threshold = threshold
+
+    def set_score_utility_params(self, factor, scale):
+        cfg = self.mcts.config
+        old_scale = cfg.score_scale
+        cfg.score_utility_factor = factor
+        cfg.score_scale = scale
+        # score_scale 变更后缓存中的 aux 值失效（基于旧 scale 的 atan 映射）
+        if scale != old_scale and self.cache is not None and len(self.cache) > 0:
+            self.cache._od.clear()
 
     def set_c_init(self, val):
         self.mcts.config.c_init = val

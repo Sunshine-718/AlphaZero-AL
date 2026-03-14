@@ -117,7 +117,8 @@ class AlphaZeroPlayer(Player):
                  cache_size=0, noise_epsilon=0.25, fpu_reduction=0.4, use_symmetry=True,
                  game_name='Connect4', board_converter=None,
                  noise_steps=0, noise_eps_min=0.1,
-                 mlh_slope=0.0, mlh_cap=0.2, mlh_threshold=0.8,
+                 mlh_slope=0.0, mlh_cap=0.2,
+                 score_utility_factor=0.0, score_scale=8.0,
                  value_decay=1.0,
                  n_trees=1,
                  vl_batch=1,
@@ -143,7 +144,8 @@ class AlphaZeroPlayer(Player):
         self._board_converter = board_converter
         self._mlh_slope = mlh_slope
         self._mlh_cap = mlh_cap
-        self._mlh_threshold = mlh_threshold
+        self._score_utility_factor = score_utility_factor
+        self._score_scale = score_scale
         self._value_decay = value_decay
         self._vl_batch = max(1, vl_batch)
 
@@ -170,7 +172,8 @@ class AlphaZeroPlayer(Player):
             cache_size=self._cache_size, noise_epsilon=noise_eps,
             fpu_reduction=self._fpu_reduction, use_symmetry=self._use_symmetry,
             mlh_slope=self._mlh_slope, mlh_cap=self._mlh_cap,
-            mlh_threshold=self._mlh_threshold,
+            score_utility_factor=self._score_utility_factor,
+            score_scale=self._score_scale,
             value_decay=self._value_decay,
         )
 

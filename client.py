@@ -54,7 +54,8 @@ parser.add_argument('--temp_decay_moves', type=int, default=None, help='Temp dec
 parser.add_argument('--temp_endgame', type=float, default=None, help='Temp floor')
 parser.add_argument('--mlh_slope', type=float, default=None, help='MLH slope')
 parser.add_argument('--mlh_cap', type=float, default=None, help='MLH cap')
-parser.add_argument('--mlh_threshold', type=float, default=None, help='MLH Q threshold')
+parser.add_argument('--score_utility_factor', type=float, default=None, help='Score utility weight')
+parser.add_argument('--score_scale', type=float, default=None, help='Score atan scale')
 parser.add_argument('--value_decay', type=float, default=None, help='Value decay γ')
 parser.add_argument('--no_symmetry', action='store_true', help='Disable symmetry augmentation')
 parser.add_argument('--config', action='store_true', help='Display current config and exit')
@@ -67,7 +68,8 @@ _ARG_TO_CFG = {
     'eps': 'noise_eps', 'noise_steps': 'noise_steps', 'noise_eps_min': 'noise_eps_min',
     'fpu_reduction': 'fpu_reduction', 'vl_batch': 'vl_batch',
     'temp': 'temp', 'temp_decay_moves': 'temp_decay_moves', 'temp_endgame': 'temp_endgame',
-    'mlh_slope': 'mlh_slope', 'mlh_cap': 'mlh_cap', 'mlh_threshold': 'mlh_threshold',
+    'mlh_slope': 'mlh_slope', 'mlh_cap': 'mlh_cap',
+    'score_utility_factor': 'score_utility_factor', 'score_scale': 'score_scale',
     'value_decay': 'value_decay',
 }
 
@@ -110,10 +112,11 @@ def print_config(cfg):
             "noise_steps": cfg['noise_steps'],
             "noise_eps_min": cfg['noise_eps_min'],
         }),
-        ("MLH", {
+        ("Auxiliary Utility", {
             "mlh_slope": cfg['mlh_slope'],
             "mlh_cap": cfg['mlh_cap'],
-            "mlh_threshold": cfg['mlh_threshold'],
+            "score_utility_factor": cfg.get('score_utility_factor', 0.0),
+            "score_scale": cfg.get('score_scale', 8.0),
         }),
         ("Self-play", {
             "temp": cfg['temp'],
@@ -190,7 +193,8 @@ class Actor:
             noise_eps_min=self.cfg['noise_eps_min'],
             mlh_slope=self.cfg['mlh_slope'],
             mlh_cap=self.cfg['mlh_cap'],
-            mlh_threshold=self.cfg['mlh_threshold'],
+            score_utility_factor=self.cfg.get('score_utility_factor', 0.0),
+            score_scale=self.cfg.get('score_scale', 8.0),
             vl_batch=self.cfg.get('vl_batch', 1),
             value_decay=self.cfg.get('value_decay', 1.0))
         self.mtime = 0
@@ -258,20 +262,29 @@ class Actor:
                     apply_fn(new_val)
                 updated[cfg_key] = new_val
 
-        # MLH 三个参数一起更新
-        if not ({'mlh_slope', 'mlh_cap', 'mlh_threshold'} & _USER_OVERRIDES):
+        # MLH 参数一起更新
+        if not ({'mlh_slope', 'mlh_cap'} & _USER_OVERRIDES):
             new_slope = server_cfg.get('mlh_slope')
             new_cap = server_cfg.get('mlh_cap')
-            new_thresh = server_cfg.get('mlh_threshold')
             if (new_slope is not None and
                     (new_slope != self.cfg.get('mlh_slope') or
-                     new_cap != self.cfg.get('mlh_cap') or
-                     new_thresh != self.cfg.get('mlh_threshold'))):
+                     new_cap != self.cfg.get('mlh_cap'))):
                 self.cfg['mlh_slope'] = new_slope
                 self.cfg['mlh_cap'] = new_cap
-                self.cfg['mlh_threshold'] = new_thresh
-                self.az_player.mcts.set_mlh_params(new_slope, new_cap, new_thresh)
-                updated['mlh'] = (new_slope, new_cap, new_thresh)
+                self.az_player.mcts.set_mlh_params(new_slope, new_cap)
+                updated['mlh'] = (new_slope, new_cap)
+
+        # Score utility 参数一起更新
+        if not ({'score_utility_factor', 'score_scale'} & _USER_OVERRIDES):
+            new_factor = server_cfg.get('score_utility_factor')
+            new_scale = server_cfg.get('score_scale')
+            if (new_factor is not None and
+                    (new_factor != self.cfg.get('score_utility_factor') or
+                     new_scale != self.cfg.get('score_scale'))):
+                self.cfg['score_utility_factor'] = new_factor
+                self.cfg['score_scale'] = new_scale
+                self.az_player.mcts.set_score_utility_params(new_factor, new_scale)
+                updated['score_utility'] = (new_factor, new_scale)
 
         if updated:
             print(f'[SYNC] Updated from server: {updated}')

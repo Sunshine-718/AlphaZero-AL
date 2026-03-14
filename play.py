@@ -26,8 +26,10 @@ parser.add_argument('--mlh_slope', type=float, default=0.0,
                     help='MLH slope (0=disabled, LC0-style: scales child_M - parent_M)')
 parser.add_argument('--mlh_cap', type=float, default=0.2,
                     help='MLH max effect cap')
-parser.add_argument('--mlh_threshold', type=float, default=0.8,
-                    help='MLH Q threshold: suppress M_utility when |Q| < threshold (0=no threshold)')
+parser.add_argument('--score_utility_factor', type=float, default=0.0,
+                    help='KataGo-style score utility weight (Othello)')
+parser.add_argument('--score_scale', type=float, default=8.0,
+                    help='Score atan mapping scale')
 parser.add_argument('-t', '--trees', type=int, default=1,
                     help='Number of parallel MCTS trees (root-parallel). '
                          'Each tree searches the same position independently; '
@@ -61,7 +63,8 @@ if __name__ == '__main__':
                                         n_playout=args.n, alpha=args.alpha, is_selfplay=0,
                                         use_symmetry=not args.no_symmetry,
                                         mlh_slope=args.mlh_slope, mlh_cap=args.mlh_cap,
-                                        mlh_threshold=args.mlh_threshold,
+                                        score_utility_factor=args.score_utility_factor,
+                                        score_scale=args.score_scale,
                                         n_trees=args.trees,
                                         vl_batch=args.vl_batch)
         az_player.eval()

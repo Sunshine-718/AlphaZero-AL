@@ -1,5 +1,6 @@
 #pragma once
 #include "GameContext.h"
+#include "MCTSNode.h"
 #include <array>
 #include <bit>
 #include <cmath>
@@ -256,15 +257,20 @@ namespace AlphaZero
             return 0;
         }
 
-        [[nodiscard]] float terminal_aux() const
+        [[nodiscard]] float terminal_aux(const SearchConfig& cfg) const
         {
             int diff = std::popcount(bb[0]) - std::popcount(bb[1]);
-            return static_cast<float>(diff * turn);
+            float raw = static_cast<float>(diff * turn);
+            // 终局确定值：atan 映射到 [-1, 1]，与 NN predict 一致
+            return std::atan(raw / cfg.score_scale) * (2.0f / 3.14159265f);
         }
 
-        [[nodiscard]] static float scale_aux_utility(float utility, float child_q)
+        [[nodiscard]] static float compute_aux_utility(
+            float child_M, float /*parent_M*/, float /*child_Q*/, const SearchConfig& cfg)
         {
-            return utility * std::abs(child_q);
+            // child_M 已经是 E[atan(x/scale)] * (2/pi)，直接乘权重
+            if (cfg.score_utility_factor <= 0.0f) return 0.0f;
+            return cfg.score_utility_factor * child_M;
         }
 
         /**

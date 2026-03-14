@@ -215,21 +215,12 @@ namespace AlphaZero
                 float u_score = c_puct * effective_prior *
                     std::sqrt(parent_n) / (1.0f + child_visits_total);
 
-                // MLH 偏好项（只对有真实访问的子节点生效）
+                // Auxiliary utility（游戏特定：Connect4=MLH，Othello=KataGo 分差）
                 float m_utility = 0.0f;
-                if (config_->mlh_slope > 0.0f && e.child != -1 && pool_.node(e.child).n_visits > 0)
+                if (e.child != -1 && pool_.node(e.child).n_visits > 0)
                 {
-                    float abs_q = std::abs(child_Q);
-                    if (config_->mlh_threshold <= 0.0f || abs_q >= config_->mlh_threshold)
-                    {
-                        float m_diff = child_M - parent_M;
-                        m_utility = std::clamp(config_->mlh_slope * m_diff,
-                                               -config_->mlh_cap, config_->mlh_cap);
-                        m_utility = Game::scale_aux_utility(m_utility, child_Q);
-                        if (config_->mlh_threshold > 0.0f && config_->mlh_threshold < 1.0f)
-                            m_utility *= (abs_q - config_->mlh_threshold) /
-                                         (1.0f - config_->mlh_threshold);
-                    }
+                    m_utility = Game::compute_aux_utility(
+                        child_M, parent_M, child_Q, *config_);
                 }
 
                 float score = q_value + u_score + m_utility;
@@ -418,7 +409,7 @@ namespace AlphaZero
             if (current_leaf_idx == -1) return;
             if (!is_terminal)
                 expand_leaf(policy_logits);
-            propagate(wdl, is_terminal ? sim_env.terminal_aux() : moves_left);
+            propagate(wdl, is_terminal ? sim_env.terminal_aux(*config_) : moves_left);
         }
 
         // ======== Virtual Loss 方法 ========
@@ -614,7 +605,7 @@ namespace AlphaZero
                     expand_leaf(policy_logits);
                 // 若已被之前的 backprop_vl 展开，跳过展开
             }
-            propagate(wdl, is_terminal ? sim_env.terminal_aux() : moves_left);
+            propagate(wdl, is_terminal ? sim_env.terminal_aux(*config_) : moves_left);
         }
 
         // ======== 统计查询 ========

@@ -49,7 +49,8 @@ class Def:
     vl_batch = 4
     mlh_slope = 0.1
     mlh_cap = 0.15
-    mlh_thr = 0.
+    score_utility_factor = 0.0
+    score_scale = 8.0
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1425,10 +1426,12 @@ class ParameterConsole(QWidget):
                                          tooltip="MLH strength (0=disabled)")
         self.mlh_cap_sl = _make_slider(lay, "cap", 0, 1, 0.05, Def.mlh_cap,
                                        tooltip="MLH max effect")
-        self.mlh_thr_sl = _make_slider(lay, "threshold", 0, 1, 0.05, Def.mlh_thr,
-                                       tooltip="MLH Q threshold")
+        self.score_factor_sl = _make_slider(lay, "score_factor", 0, 1, 0.05, Def.score_utility_factor,
+                                             tooltip="KataGo-style score utility weight")
+        self.score_scale_sl = _make_slider(lay, "score_scale", 1, 32, 1, Def.score_scale,
+                                            tooltip="Score atan mapping scale")
         lay.addStretch()
-        self.tabs.addTab(w, "MLH")
+        self.tabs.addTab(w, "Aux")
 
     def reset_defaults(self):
         self.network_cb.setCurrentText(Def.network)
@@ -1446,7 +1449,8 @@ class ParameterConsole(QWidget):
         self.sym_check.setChecked(Def.symmetry)
         self.mlh_slope_sl.setValue(int(Def.mlh_slope * self.mlh_slope_sl._scale))
         self.mlh_cap_sl.setValue(int(Def.mlh_cap * self.mlh_cap_sl._scale))
-        self.mlh_thr_sl.setValue(int(Def.mlh_thr * self.mlh_thr_sl._scale))
+        self.score_factor_sl.setValue(int(Def.score_utility_factor * self.score_factor_sl._scale))
+        self.score_scale_sl.setValue(int(Def.score_scale * self.score_scale_sl._scale))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1648,7 +1652,8 @@ class Connect4GUI(QWidget):
             is_selfplay=0, cache_size=Def.cache,
             fpu_reduction=Def.fpu, use_symmetry=Def.symmetry,
             mlh_slope=Def.mlh_slope, mlh_cap=Def.mlh_cap,
-            mlh_threshold=Def.mlh_thr,
+            score_utility_factor=Def.score_utility_factor,
+            score_scale=Def.score_scale,
             vl_batch=Def.vl_batch)
         self.player_color = 1
         self._n_trees = 1
@@ -1818,7 +1823,8 @@ class Connect4GUI(QWidget):
         self.console.sym_check.stateChanged.connect(_param_delayed)
         self.console.mlh_slope_sl.valueChanged.connect(_param_delayed)
         self.console.mlh_cap_sl.valueChanged.connect(_param_delayed)
-        self.console.mlh_thr_sl.valueChanged.connect(_param_delayed)
+        self.console.score_factor_sl.valueChanged.connect(_param_delayed)
+        self.console.score_scale_sl.valueChanged.connect(_param_delayed)
 
         self.console.player_cb.currentIndexChanged.connect(
             lambda _: self.reload_timer.start(100))
@@ -1951,7 +1957,8 @@ class Connect4GUI(QWidget):
         p._cache_size = int(_sv(self.console.cache_sl))
         p._mlh_slope = _sv(self.console.mlh_slope_sl)
         p._mlh_cap = _sv(self.console.mlh_cap_sl)
-        p._mlh_threshold = _sv(self.console.mlh_thr_sl)
+        p._score_utility_factor = _sv(self.console.score_factor_sl)
+        p._score_scale = _sv(self.console.score_scale_sl)
         p.n_trees = self.console.n_trees_spin.value()
         p._vl_batch = self.console.vl_batch_spin.value()
 
@@ -1979,8 +1986,9 @@ class Connect4GUI(QWidget):
         m.set_noise_epsilon(_sv(self.console.eps_sl))
         m.set_use_symmetry(self.console.sym_check.isChecked())
         m.set_mlh_params(_sv(self.console.mlh_slope_sl),
-                         _sv(self.console.mlh_cap_sl),
-                         _sv(self.console.mlh_thr_sl))
+                         _sv(self.console.mlh_cap_sl))
+        m.set_score_utility_params(_sv(self.console.score_factor_sl),
+                                    _sv(self.console.score_scale_sl))
         new_cache = int(_sv(self.console.cache_sl))
         old_cache = getattr(m, 'cache_size', 0) or 0
         if new_cache != old_cache:

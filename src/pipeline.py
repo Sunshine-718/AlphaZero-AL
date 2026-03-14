@@ -52,12 +52,15 @@ class TrainPipeline(ABC):
         else:
             self.ddp_net = None
 
-        # MLH warmup：steps_head loss 下降到阈值后才激活 MLH
+        # Aux warmup：steps_head loss 下降到阈值后才激活 auxiliary utility
         warmup = getattr(self, 'mlh_warmup_loss', 0.0)
         target_slope = getattr(self, 'mlh_slope', 0.0)
-        if warmup > 0 and target_slope > 0:
+        target_score_factor = getattr(self, 'score_utility_factor', 0.0)
+        if warmup > 0 and (target_slope > 0 or target_score_factor > 0):
             self._mlh_target_slope = target_slope
+            self._score_target_factor = target_score_factor
             self.mlh_slope = 0.0  # 初始禁用
+            self.score_utility_factor = 0.0
             self._mlh_active = False
             self._s_loss_ema = None
         else:
@@ -70,7 +73,8 @@ class TrainPipeline(ABC):
                                          game_name=self.env_name,
                                          mlh_slope=self.mlh_slope,
                                          mlh_cap=getattr(self, 'mlh_cap', 0.2),
-                                         mlh_threshold=getattr(self, 'mlh_threshold', 0.8),
+                                         score_utility_factor=getattr(self, 'score_utility_factor', 0.0),
+                                         score_scale=getattr(self, 'score_scale', 8.0),
                                          value_decay=getattr(self, 'value_decay', 1.0))
         self.update_best_net()
         self.elo = Elo(self.init_elo, 1500)
@@ -161,7 +165,8 @@ class TrainPipeline(ABC):
                              game_name=self.env_name,
                              mlh_slope=getattr(self, 'mlh_slope', 0.0),
                              mlh_cap=getattr(self, 'mlh_cap', 0.2),
-                             mlh_threshold=getattr(self, 'mlh_threshold', 0.8),
+                             score_utility_factor=getattr(self, 'score_utility_factor', 0.0),
+                             score_scale=getattr(self, 'score_scale', 8.0),
                              value_decay=getattr(self, 'value_decay', 1.0),
                              vl_batch=getattr(self, 'vl_batch', 1))
         az.eval()
@@ -213,18 +218,19 @@ class TrainPipeline(ABC):
         use_sym = getattr(self, 'use_symmetry', True)
         mlh_sl = getattr(self, 'mlh_slope', 0.0)
         mlh_cp = getattr(self, 'mlh_cap', 0.2)
-        mlh_th = getattr(self, 'mlh_threshold', 0.8)
+        suf = getattr(self, 'score_utility_factor', 0.0)
+        ssc = getattr(self, 'score_scale', 8.0)
         vd = getattr(self, 'value_decay', 1.0)
+        aux_kw = dict(mlh_slope=mlh_sl, mlh_cap=mlh_cp,
+                      score_utility_factor=suf, score_scale=ssc, value_decay=vd)
         mcts_p1 = PyBatchedMCTS(
             n_envs, c_init=self.c_puct, c_base=500,
             alpha=self.dirichlet_alpha, n_playout=n_playout, game_name=self.env_name,
-            noise_epsilon=eval_noise_eps, use_symmetry=use_sym,
-            mlh_slope=mlh_sl, mlh_cap=mlh_cp, mlh_threshold=mlh_th, value_decay=vd)
+            noise_epsilon=eval_noise_eps, use_symmetry=use_sym, **aux_kw)
         mcts_p2 = PyBatchedMCTS(
             n_envs, c_init=self.c_puct, c_base=500,
             alpha=self.dirichlet_alpha, n_playout=n_playout, game_name=self.env_name,
-            noise_epsilon=eval_noise_eps, use_symmetry=use_sym,
-            mlh_slope=mlh_sl, mlh_cap=mlh_cp, mlh_threshold=mlh_th, value_decay=vd)
+            noise_epsilon=eval_noise_eps, use_symmetry=use_sym, **aux_kw)
 
         envs = [self.env.copy() for _ in range(n_envs)]
         for e in envs:
@@ -288,7 +294,7 @@ class TrainPipeline(ABC):
         self.best_net = deepcopy(self.net)
 
     def _check_mlh_warmup(self, s_loss):
-        """检查 steps_head loss 是否已降到阈值以下，达标后一次性激活 MLH。"""
+        """检查 aux head loss 是否已降到阈值以下，达标后一次性激活 auxiliary utility。"""
         if self._mlh_active:
             return
         if self._s_loss_ema is None:
@@ -297,13 +303,16 @@ class TrainPipeline(ABC):
             self._s_loss_ema = 0.9 * self._s_loss_ema + 0.1 * s_loss
         if self._s_loss_ema <= self.mlh_warmup_loss:
             self.mlh_slope = self._mlh_target_slope
+            self.score_utility_factor = self._score_target_factor
             self._mlh_active = True
             self.az_player.mcts.set_mlh_params(
                 self.mlh_slope,
-                getattr(self, 'mlh_cap', 0.2),
-                getattr(self, 'mlh_threshold', 0.8))
-            print(f'[MLH] Activated: s_loss EMA={self._s_loss_ema:.4f} <= {self.mlh_warmup_loss}, '
-                  f'mlh_slope={self.mlh_slope}')
+                getattr(self, 'mlh_cap', 0.2))
+            self.az_player.mcts.set_score_utility_params(
+                self.score_utility_factor,
+                getattr(self, 'score_scale', 8.0))
+            print(f'[AUX] Activated: s_loss EMA={self._s_loss_ema:.4f} <= {self.mlh_warmup_loss}, '
+                  f'mlh_slope={self.mlh_slope}, score_utility_factor={self.score_utility_factor}')
             swanlab.log({'Event/MLH_activated': 1}, step=self.global_step)
 
     def _log_train_step(self, p_loss, v_loss, s_loss, entropy, grad_norm, f1):

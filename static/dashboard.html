@@ -284,7 +284,7 @@
       MCTS: ['n_playout', 'c_puct', 'c_base', 'fpu_reduction', 'vl_batch', 'use_symmetry'],
       'Self-play': ['temp', 'temp_decay_moves', 'temp_endgame', 'eps'],
       Noise: ['dirichlet_alpha', 'noise_steps', 'noise_eps_min'],
-      MLH: ['mlh_slope', 'mlh_cap', 'mlh_threshold'],
+      'Aux Utility': ['mlh_slope', 'mlh_cap', 'score_utility_factor', 'score_scale'],
       Evaluation: ['interval', 'num_eval', 'win_rate_threshold', 'pure_mcts_n_playout'],
     };
     const BOOLEAN_PARAMS = new Set(['use_symmetry']);
