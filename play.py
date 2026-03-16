@@ -37,6 +37,9 @@ parser.add_argument('-t', '--trees', type=int, default=1,
 parser.add_argument('--vl_batch', type=int, default=1,
                     help='Virtual Loss batch size per tree per iteration. '
                          '>1 enables VL tree parallelism for faster NN batching.')
+parser.add_argument('--time_budget', type=float, default=None,
+                    help='Time budget per move in seconds. Overrides -n for time-based search. '
+                         '-n becomes max cap.')
 
 args = parser.parse_args()
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -67,6 +70,8 @@ if __name__ == '__main__':
                                         score_scale=args.score_scale,
                                         n_trees=args.trees,
                                         vl_batch=args.vl_batch)
+            if args.time_budget is not None:
+                az_player._time_budget = args.time_budget
         az_player.eval()
 
         human = Human()

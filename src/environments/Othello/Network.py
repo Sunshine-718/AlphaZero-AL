@@ -128,12 +128,8 @@ class CNN(Base):
     def init_weights(self, m):
         if isinstance(m, nn.Embedding):
             if m is self.piece_emb:
-                # 反对称: 空=零, 己方=+v, 对方=-v (L2 norm=1.0, 与 pos_emb 对齐)
-                v = torch.randn(self.embed_dim)
-                v = v / v.norm()
-                m.weight.data[0].zero_()
-                m.weight.data[1] = v
-                m.weight.data[2] = -v
+                # 正交初始化: 空/己方/对方 三向量两两正交，等距分布
+                nn.init.orthogonal_(m.weight)
             elif m is self.pos_emb:
                 # 正交初始化 + 按战略价值缩放范数（从训练模型提取的比例）
                 # 轨道: 0=corner, 1=C-sq, 2=edge2, 3=edge3, 4=X-sq,

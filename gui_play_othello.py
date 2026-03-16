@@ -18,7 +18,7 @@ from PyQt5.QtGui import (
     QRadialGradient, QPainterPath, QLinearGradient, QConicalGradient)
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QSpinBox, QComboBox, QSlider,
+    QLabel, QSpinBox, QDoubleSpinBox, QComboBox, QSlider,
     QPushButton, QCheckBox, QFrame, QTabWidget,
     QSizePolicy, QScrollArea, QTextEdit,
     QGraphicsBlurEffect)
@@ -34,6 +34,36 @@ PARAMS_PATH = './params/{name}_{env}_{net}_{type}.pt'
 N_ACTIONS = 65      # 64 squares + 1 pass
 BOARD_SIZE = 8
 CHUNK = 50
+PARAMS_DIR = './params'
+
+
+def _scan_weight_files(env_name=ENV_NAME, model_name=MODEL_NAME):
+    """Scan params/ and return a sorted list of .pt filenames for this env.
+    'current' and 'best' variants are placed first."""
+    prefix = f"{model_name}_{env_name}_"
+    files = []
+    if os.path.isdir(PARAMS_DIR):
+        for fn in os.listdir(PARAMS_DIR):
+            if fn.startswith(prefix) and fn.endswith('.pt'):
+                files.append(fn)
+    # Sort: current first, best second, then alphabetical
+    def _sort_key(f):
+        if '_current.' in f:
+            return (0, f)
+        if '_best.' in f:
+            return (1, f)
+        return (2, f)
+    files.sort(key=_sort_key)
+    return files
+
+
+def _net_type_from_filename(filename, env_name=ENV_NAME, model_name=MODEL_NAME):
+    """Extract network type from weight filename.
+    E.g. 'AZ_Othello_CNN_current.pt' → 'CNN'."""
+    prefix = f"{model_name}_{env_name}_"
+    mid = filename[len(prefix):-3]  # 'CNN_current'
+    return mid.split('_', 1)[0]
+
 
 # Action ↔ board coordinate helpers
 
@@ -60,7 +90,7 @@ def action_label(action):
 class Def:
     network = 'CNN'
     model_type = 'current'
-    n_playout = 10000
+    n_playout = 40000
     c_init = 1.4
     c_base = 2000
     fpu = 0.2
@@ -72,6 +102,12 @@ class Def:
     vl_batch = 4
     score_utility_factor = 0.15
     score_scale = 8.0
+    time_budget = 0.0  # 秒，0=禁用（按 sims 停），>0 时间到即落子
+
+# Game modes
+MODE_HVA = 0  # Human vs AI
+MODE_HVH = 1  # Human vs Human
+MODE_AVA = 2  # AI vs AI
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -769,6 +805,118 @@ class UtilBar(QWidget):
         qp.drawText(bw + 4, 0, tw, h, Qt.AlignVCenter | Qt.AlignLeft, text)
 
 
+class WinRateTrend(QWidget):
+    """Q 值趋势图：按手数绘制 Q = (win-lose)/100 曲线，范围 [-1, 1]。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(80)
+        self.player_color = 1
+        # 每个元素: (move_num, win%, draw%, lose%)  — 均为玩家视角 0~100
+        self._data = []
+
+    def set_player_color(self, c):
+        self.player_color = 1 if c == 1 else -1
+        self.update()
+
+    def record(self, move_num, win_pct, draw_pct, lose_pct):
+        self._data.append((move_num, win_pct, draw_pct, lose_pct))
+        self.update()
+
+    def truncate(self, move_num):
+        """回退到 move_num（undo 用）。"""
+        self._data = [d for d in self._data if d[0] <= move_num]
+        self.update()
+
+    def clear(self):
+        self._data.clear()
+        self.update()
+
+    def paintEvent(self, _):
+        qp = QPainter(self)
+        qp.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+
+        # 背景
+        _draw_glass(qp, self.rect(), radius=8, fill_alpha=10, border_alpha=22)
+
+        n = len(self._data)
+        margin_l, margin_r, margin_t, margin_b = 28, 6, 10, 14
+        cw = w - margin_l - margin_r
+        ch = h - margin_t - margin_b
+
+        if cw < 10 or ch < 10:
+            return
+
+        # Q 值 [-1, 1] → Y 坐标
+        def y_of_q(q):
+            return margin_t + (1.0 - q) / 2.0 * ch
+
+        # 0 参考线（均势）
+        qp.setPen(QPen(QColor(255, 255, 255, 20), 1, Qt.DashLine))
+        y0 = y_of_q(0)
+        qp.drawLine(margin_l, int(y0), margin_l + cw, int(y0))
+
+        # Y 轴刻度
+        qp.setPen(QColor(255, 255, 255, 40))
+        qp.setFont(QFont("Consolas", 7))
+        qp.drawText(0, margin_t - 2, margin_l - 4, 12, Qt.AlignRight | Qt.AlignVCenter, "+1")
+        qp.drawText(0, int(y0) - 6, margin_l - 4, 12, Qt.AlignRight | Qt.AlignVCenter, "0")
+        qp.drawText(0, margin_t + ch - 10, margin_l - 4, 12, Qt.AlignRight | Qt.AlignVCenter, "-1")
+
+        if n == 0:
+            qp.setPen(QColor(255, 255, 255, 30))
+            qp.setFont(QFont("Consolas", 9))
+            qp.drawText(self.rect(), Qt.AlignCenter, "Q VALUE TREND")
+            return
+
+        # X 轴坐标映射
+        max_move = max(d[0] for d in self._data)
+        def x_of(mv):
+            if max_move <= 1:
+                return margin_l + cw // 2
+            return margin_l + int((mv / max_move) * cw)
+
+        # Q = (win% - lose%) / 100，范围 [-1, 1]
+        line_clr = QColor(C.CYAN)
+        pts = [QPointF(x_of(d[0]), y_of_q((d[1] - d[3]) / 100.0)) for d in self._data]
+
+        if n == 1:
+            # 单点：画圆点
+            qp.setPen(Qt.NoPen)
+            qp.setBrush(line_clr)
+            qp.drawEllipse(pts[0], 3, 3)
+        else:
+            # 曲线与零线之间半透明填充
+            fill_path = QPainterPath()
+            fill_path.moveTo(QPointF(pts[0].x(), y_of_q(0)))
+            for pt in pts:
+                fill_path.lineTo(pt)
+            fill_path.lineTo(QPointF(pts[-1].x(), y_of_q(0)))
+            fill_path.closeSubpath()
+            qp.fillPath(fill_path, QColor(line_clr.red(), line_clr.green(), line_clr.blue(), 25))
+
+            # Q 值曲线
+            qp.setPen(QPen(line_clr, 1.5))
+            for i in range(n - 1):
+                qp.drawLine(pts[i], pts[i + 1])
+
+        # 末端圆点
+        qp.setPen(Qt.NoPen)
+        qp.setBrush(line_clr)
+        qp.drawEllipse(pts[-1], 2.5, 2.5)
+
+        # X 轴标签
+        qp.setPen(QColor(255, 255, 255, 40))
+        qp.setFont(QFont("Consolas", 7))
+        if n > 0:
+            qp.drawText(x_of(self._data[0][0]) - 8, margin_t + ch + 1, 20, 12,
+                         Qt.AlignCenter, str(self._data[0][0]))
+        if n > 1:
+            qp.drawText(x_of(max_move) - 8, margin_t + ch + 1, 20, 12,
+                         Qt.AlignCenter, str(max_move))
+
+
 class RootStatsWidget(QWidget):
     """MCTS root node statistics — visit distribution, Q values, WDL.
     For Othello: shows top-N moves as horizontal bars instead of 7-column chart."""
@@ -1285,21 +1433,54 @@ class ParameterConsole(QWidget):
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setSpacing(10)
 
-        for label_text, attr_name, items in [
-            ("NETWORK", "network_cb", ["CNN"]),
-            ("WEIGHTS", "model_type_cb", ["current", "best"]),
-            ("PLAYER", "player_cb", ["Human Black (first)", "Human White (second)"]),
-        ]:
-            lay.addWidget(QLabel(
+        def _label(text):
+            lbl = QLabel(
                 f"<font color='{C.DIM}' style='font-family:Consolas;font-size:10px;"
-                f"letter-spacing:1px;'>{label_text}</font>"))
-            cb = NoWheelComboBox()
-            cb.addItems(items)
-            setattr(self, attr_name, cb)
-            lay.addWidget(cb)
+                f"letter-spacing:1px;'>{text}</font>")
+            return lbl
+
+        # MODE
+        lay.addWidget(_label("MODE"))
+        self.mode_cb = NoWheelComboBox()
+        self.mode_cb.addItems(["Human vs AI", "Human vs Human", "AI vs AI"])
+        lay.addWidget(self.mode_cb)
+
+        # PLAYER (hidden in AvA)
+        self._player_label = _label("PLAYER")
+        lay.addWidget(self._player_label)
+        self.player_cb = NoWheelComboBox()
+        self.player_cb.addItems(["Human Black (first)", "Human White (second)"])
+        lay.addWidget(self.player_cb)
+
+        # WEIGHTS (primary — full filename from params/)
+        self._weights_label = _label("WEIGHTS")
+        lay.addWidget(self._weights_label)
+        self.model_type_cb = NoWheelComboBox()
+        self.model_type_cb.addItems(_scan_weight_files())
+        lay.addWidget(self.model_type_cb)
+
+        # ⚪ WEIGHTS (second — only shown in AvA for White AI)
+        self._weights2_label = _label("⚪ WEIGHTS")
+        lay.addWidget(self._weights2_label)
+        self.model_type_cb2 = NoWheelComboBox()
+        self.model_type_cb2.addItems(_scan_weight_files())
+        lay.addWidget(self.model_type_cb2)
+        self._weights2_label.hide()
+        self.model_type_cb2.hide()
 
         lay.addStretch()
         self.tabs.addTab(w, "GAME")
+
+    def _update_game_visibility(self, mode):
+        """Show/hide GAME tab widgets based on mode."""
+        is_ava = (mode == MODE_AVA)
+        self._player_label.setVisible(not is_ava)
+        self.player_cb.setVisible(not is_ava)
+        self._weights_label.setText(
+            f"<font color='{C.DIM}' style='font-family:Consolas;font-size:10px;"
+            f"letter-spacing:1px;'>{'⚫ WEIGHTS' if is_ava else 'WEIGHTS'}</font>")
+        self._weights2_label.setVisible(is_ava)
+        self.model_type_cb2.setVisible(is_ava)
 
     def _build_mcts_tab(self):
         content = QWidget()
@@ -1318,6 +1499,24 @@ class ParameterConsole(QWidget):
         self.n_playout_spin.setValue(Def.n_playout)
         row.addWidget(self.n_playout_spin)
         lay.addLayout(row)
+
+        row_tb = QHBoxLayout()
+        lbl_tb = QLabel("time(s)")
+        lbl_tb.setFixedWidth(76)
+        lbl_tb.setStyleSheet(f"color: {C.DIM}; font-size: 11px; font-family: Consolas;")
+        lbl_tb.setToolTip("Time budget per AI move in seconds.\n"
+                          "0 = disabled (use sims count).\n"
+                          "When set, AI moves after this many seconds\n"
+                          "or when sims reached, whichever comes first.")
+        row_tb.addWidget(lbl_tb)
+        self.time_budget_spin = QDoubleSpinBox()
+        self.time_budget_spin.setRange(0, 9999)
+        self.time_budget_spin.setDecimals(1)
+        self.time_budget_spin.setSingleStep(0.5)
+        self.time_budget_spin.setValue(Def.time_budget)
+        self.time_budget_spin.setSpecialValueText("off")
+        row_tb.addWidget(self.time_budget_spin)
+        lay.addLayout(row_tb)
 
         row2 = QHBoxLayout()
         lbl2 = QLabel("trees")
@@ -1386,10 +1585,12 @@ class ParameterConsole(QWidget):
         self.tabs.addTab(w, "Aux")
 
     def reset_defaults(self):
-        self.network_cb.setCurrentText(Def.network)
-        self.model_type_cb.setCurrentText(Def.model_type)
+        self.mode_cb.setCurrentIndex(MODE_HVA)
+        self.model_type_cb.setCurrentIndex(0)
+        self.model_type_cb2.setCurrentIndex(0)
         self.player_cb.setCurrentIndex(0)
         self.n_playout_spin.setValue(Def.n_playout)
+        self.time_budget_spin.setValue(Def.time_budget)
         self.n_trees_spin.setValue(Def.n_trees)
         self.vl_batch_spin.setValue(Def.vl_batch)
         self.c_init_sl.setValue(int(Def.c_init * self.c_init_sl._scale))
@@ -1480,6 +1681,7 @@ class ContinuousSearchWorker(QThread):
         self._threshold = 500
         self._n_trees = 1
         self._vl_batch = 1
+        self._time_budget = 0.0
         self._t0 = 0.0
         self._ai_acted = False
         self._paused = True
@@ -1488,7 +1690,8 @@ class ContinuousSearchWorker(QThread):
         self._idle = threading.Event()
         self._idle.set()
 
-    def set_position(self, bmcts, pv_fn, board, turns, is_ai_turn, threshold, n_trees=1, vl_batch=1):
+    def set_position(self, bmcts, pv_fn, board, turns, is_ai_turn, threshold,
+                     n_trees=1, vl_batch=1, time_budget=0.0):
         self._bmcts = bmcts
         self._pv_fn = pv_fn
         self._board = np.ascontiguousarray(board, dtype=np.int8)
@@ -1497,6 +1700,7 @@ class ContinuousSearchWorker(QThread):
         self._threshold = threshold
         self._n_trees = n_trees
         self._vl_batch = vl_batch
+        self._time_budget = time_budget
         self._t0 = time.time()
         self._ai_acted = False
 
@@ -1554,14 +1758,29 @@ class ContinuousSearchWorker(QThread):
 
             if self._is_ai_turn and not self._ai_acted:
                 per_tree_n = float(raw['root_N'][0])
+                elapsed = time.time() - self._t0
+
+                # 时间预算触发：到时间即落子（至少搜索 8 步）
+                time_up = (self._time_budget > 0
+                           and elapsed >= self._time_budget
+                           and per_tree_n >= 8)
+
+                # Visit gap 收敛：最佳着法领先第二名超过剩余搜索量
+                sorted_v = np.sort(visits)[::-1]
+                only_one = len(sorted_v) < 2 or sorted_v[1] == 0
                 if per_tree_n >= self._threshold:
-                    # 到达搜索次数后，检查是否收敛：
-                    # 最佳着法领先第二名超过每轮 CHUNK，第二名不可能追上
-                    sorted_v = np.sort(visits)[::-1]
-                    converged = (len(sorted_v) < 2 or sorted_v[1] == 0
-                                 or sorted_v[0] - sorted_v[1] > self.CHUNK * self._n_trees)
+                    # 已达目标搜索量：只需领先一个 CHUNK 即可收敛
+                    visit_converged = (only_one
+                                       or sorted_v[0] - sorted_v[1] > self.CHUNK * self._n_trees)
+                elif per_tree_n >= 8:
+                    # 未达目标但搜索量足够：领先差距 > 剩余搜索量才提前停止
+                    remaining = (self._threshold - per_tree_n) * self._n_trees
+                    visit_converged = (only_one
+                                       or sorted_v[0] - sorted_v[1] > remaining)
                 else:
-                    converged = False
+                    visit_converged = False
+
+                converged = visit_converged or time_up
                 if converged:
                     self._ai_acted = True
                     self._paused = True
@@ -1596,12 +1815,15 @@ class OthelloGUI(QWidget):
             score_scale=Def.score_scale,
             vl_batch=Def.vl_batch)
         self.player_color = 1    # 1 = Black (first player)
+        self.mode = MODE_HVA
+        self.net2 = None         # second network for AvA white side
         self._n_trees = 1
         self.move_count = 0
 
         # ── Widgets ─────────────────────────────────────────────────────────
         self.board = BoardWidget(self.env)
         self.status = StatusPanel()
+        self.trend = WinRateTrend()
         self.console = ParameterConsole()
 
         self.ai_root_stats = RootStatsWidget()
@@ -1672,6 +1894,9 @@ class OthelloGUI(QWidget):
         # Status (full width)
         main_layout.addWidget(self.status)
 
+        # Win rate trend chart
+        main_layout.addWidget(self.trend)
+
         # Bottom row: AI panel | Hint panel
         bottom_row = QHBoxLayout()
         bottom_row.setSpacing(12)
@@ -1718,9 +1943,9 @@ class OthelloGUI(QWidget):
         # Window size — calculate from content
         total_w = self.board.width() + 320 + 48
         # top_margin(12) + board(480) + spacing(8) + status(~80) + spacing(8)
-        # + bottom_panels(~300) + bottom_margin(12) ≈ 900
+        # + trend(80) + spacing(8) + bottom_panels(~300) + bottom_margin(12)
         total_h = (12 + self.board.height() + 8 + 85 + 8
-                   + 20 + 125 + 150 + 12)
+                   + 80 + 8 + 20 + 125 + 150 + 12)
         self.setFixedSize(total_w, total_h)
 
         # MoveLog overlay drawer
@@ -1753,7 +1978,6 @@ class OthelloGUI(QWidget):
 
         # ── Connect signals ─────────────────────────────────────────────────
         def _model_delayed(_=None): return self.settings_timer.start(400)
-        self.console.network_cb.currentIndexChanged.connect(_model_delayed)
         self.console.model_type_cb.currentIndexChanged.connect(_model_delayed)
 
         def _trees_delayed(_=None): return self.settings_timer.start(400)
@@ -1761,6 +1985,7 @@ class OthelloGUI(QWidget):
 
         def _param_delayed(_=None): return self.param_timer.start(150)
         self.console.n_playout_spin.valueChanged.connect(self._on_sims_changed)
+        self.console.time_budget_spin.valueChanged.connect(self._on_sims_changed)
         self.console.c_init_sl.valueChanged.connect(_param_delayed)
         self.console.c_base_sl.valueChanged.connect(_param_delayed)
         self.console.fpu_sl.valueChanged.connect(_param_delayed)
@@ -1772,8 +1997,10 @@ class OthelloGUI(QWidget):
         self.console.score_scale_sl.valueChanged.connect(_param_delayed)
         self.console.vl_batch_spin.valueChanged.connect(_param_delayed)
 
-        self.console.player_cb.currentIndexChanged.connect(
-            lambda _: self.reload_timer.start(100))
+        self.console.mode_cb.currentIndexChanged.connect(self._on_mode_changed)
+        self.console.player_cb.currentIndexChanged.connect(self._on_player_changed)
+        self.console.model_type_cb2.currentIndexChanged.connect(
+            lambda _: self._reload_net2_delayed())
         self.restart_btn.clicked.connect(self._reload_and_restart)
         self.undo_btn.clicked.connect(self._undo)
         self.pass_btn.clicked.connect(self._human_pass)
@@ -1879,14 +2106,13 @@ class OthelloGUI(QWidget):
     # ═══════════════════════════════════════════════════════════════════════
 
     def _reload_model(self):
-        network = self.console.network_cb.currentText()
-        model_type = self.console.model_type_cb.currentText()
+        wt_file = self.console.model_type_cb.currentText()
+        network = _net_type_from_filename(wt_file)
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         net = getattr(self.env_module, network)(lr=0, device=device)
         net.eval()
         self.net = net
-        path = PARAMS_PATH.format(name=MODEL_NAME, env=ENV_NAME,
-                                  net=network, type=model_type)
+        path = os.path.join(PARAMS_DIR, wt_file)
         try:
             self.net.load(path)
         except Exception:
@@ -1915,6 +2141,10 @@ class OthelloGUI(QWidget):
         p.eval()
         self._n_trees = p.n_trees
         self.player_color = 1 if self.console.player_cb.currentIndex() == 0 else -1
+        self.mode = self.console.mode_cb.currentIndex()
+        self.console._update_game_visibility(self.mode)
+        if self.mode == MODE_AVA:
+            self._ensure_net2()
 
     def _reload_and_restart(self):
         self.worker.pause_and_wait()
@@ -1947,6 +2177,111 @@ class OthelloGUI(QWidget):
             self.worker.resume()
 
     # ═══════════════════════════════════════════════════════════════════════
+    # Mode / Player switching (no board reset)
+    # ═══════════════════════════════════════════════════════════════════════
+
+    def _is_ai_turn(self):
+        """Return True if the current turn should be played by AI."""
+        if self.mode == MODE_HVH:
+            return False
+        if self.mode == MODE_AVA:
+            return True
+        return self.env.turn != self.player_color   # MODE_HVA
+
+    def _pv_fn_for_turn(self):
+        """Return the correct pv_fn for the current turn, considering AvA."""
+        if self.mode == MODE_AVA and self.net2 is not None and self.env.turn == -1:
+            return self.net2
+        return self.az_player.pv_fn
+
+    def _on_mode_changed(self):
+        new_mode = self.console.mode_cb.currentIndex()
+        if new_mode == self.mode:
+            return
+        self.worker.pause_and_wait()
+        self._stop_scan()
+        self.mode = new_mode
+        self.console._update_game_visibility(new_mode)
+
+        if new_mode == MODE_AVA:
+            self._ensure_net2()
+
+        # Reset MCTS trees — fresh search from current position
+        for i in range(self._n_trees):
+            self.az_player.mcts.reset_env(i)
+
+        self._update_turn_label()
+        self._update_pass_btn()
+        self._update_analysis()
+
+        if self.env.done():
+            return
+
+        next_ai = self._is_ai_turn()
+        if next_ai:
+            self._start_scan()
+        self._resume_search(is_ai_turn=next_ai)
+
+    def _on_player_changed(self):
+        """Swap human side without restarting. Only effective in HvA / HvH."""
+        new_color = 1 if self.console.player_cb.currentIndex() == 0 else -1
+        if new_color == self.player_color:
+            return
+        self.worker.pause_and_wait()
+        self._stop_scan()
+        self.player_color = new_color
+
+        self.board.ghost_color = QColor(C.BLACK) if new_color == 1 else QColor(C.WHITE)
+        self.status.set_player_color(new_color)
+        self.trend.set_player_color(new_color)
+
+        # Reset MCTS trees for fresh search
+        for i in range(self._n_trees):
+            self.az_player.mcts.reset_env(i)
+
+        self._update_turn_label()
+        self._update_pass_btn()
+        self._update_analysis()
+
+        if self.env.done():
+            return
+
+        next_ai = self._is_ai_turn()
+        if next_ai:
+            self._start_scan()
+        self._resume_search(is_ai_turn=next_ai)
+
+    def _ensure_net2(self):
+        """Load (or reload) the second network for AvA White side."""
+        wt_file2 = self.console.model_type_cb2.currentText()
+        network = _net_type_from_filename(wt_file2)
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        net2 = getattr(self.env_module, network)(lr=0, device=device)
+        net2.eval()
+        path = os.path.join(PARAMS_DIR, wt_file2)
+        try:
+            net2.load(path)
+        except Exception:
+            self.status.set_result("MODEL2 ERROR", C.RED_HEX)
+        self.net2 = net2
+
+    def _reload_net2_delayed(self):
+        """Reload White AI network without restart (AvA only)."""
+        if self.mode != MODE_AVA:
+            return
+        self.worker.pause_and_wait()
+        self._stop_scan()
+        self._ensure_net2()
+        # Reset trees — cached evaluations are stale
+        for i in range(self._n_trees):
+            self.az_player.mcts.reset_env(i)
+        if not self.env.done():
+            next_ai = self._is_ai_turn()
+            if next_ai:
+                self._start_scan()
+            self._resume_search(is_ai_turn=next_ai)
+
+    # ═══════════════════════════════════════════════════════════════════════
     # Game Flow
     # ═══════════════════════════════════════════════════════════════════════
 
@@ -1966,6 +2301,7 @@ class OthelloGUI(QWidget):
         self.board.update()
 
         self.status.set_player_color(self.player_color)
+        self.trend.set_player_color(self.player_color)
         self.status.set_result("")
         self.status.set_thinking(-1)
         self.status.clear_mcts()
@@ -1975,6 +2311,7 @@ class OthelloGUI(QWidget):
         self.hint_child_table.update()
         self.move_count = 0
         self.move_log.clear_log()
+        self.trend.clear()
         self._history.clear()
         self.undo_btn.setEnabled(False)
         self._update_pass_btn()
@@ -1985,7 +2322,7 @@ class OthelloGUI(QWidget):
         self.pause_btn.setChecked(False)
         self.pause_btn.setText("PAUSE")
 
-        is_ai_first = (self.env.turn != self.player_color)
+        is_ai_first = self._is_ai_turn()
         if is_ai_first:
             self._start_scan()
         self._resume_search(is_ai_turn=is_ai_first)
@@ -1993,20 +2330,33 @@ class OthelloGUI(QWidget):
     def _update_turn_label(self):
         if self.env.done():
             return
-        if self.env.turn == self.player_color:
-            color = C.TEXT if self.player_color == 1 else C.DIM
-            self.status.set_turn("YOUR TURN", color)
+        if self.mode == MODE_HVH:
+            if self.env.turn == 1:
+                self.status.set_turn("BLACK'S TURN", C.TEXT)
+            else:
+                self.status.set_turn("WHITE'S TURN", C.DIM)
             self.board.interactive = True
-        else:
-            self.status.set_turn("AI ACTIVE", C.ACCENT)
+        elif self.mode == MODE_AVA:
+            if self.env.turn == 1:
+                self.status.set_turn("BLACK AI", C.TEXT)
+            else:
+                self.status.set_turn("WHITE AI", C.DIM)
             self.board.interactive = False
+        else:  # MODE_HVA
+            if self.env.turn == self.player_color:
+                color = C.TEXT if self.player_color == 1 else C.DIM
+                self.status.set_turn("YOUR TURN", color)
+                self.board.interactive = True
+            else:
+                self.status.set_turn("AI ACTIVE", C.ACCENT)
+                self.board.interactive = False
 
     def _update_pass_btn(self):
-        """Enable PASS only when it's human's turn and pass is the only valid move."""
-        if self.env.done():
+        """Enable PASS only when it's a human's turn and pass is the only valid move."""
+        if self.env.done() or self.mode == MODE_AVA:
             self.pass_btn.setEnabled(False)
             return
-        if self.env.turn != self.player_color:
+        if self.mode == MODE_HVA and self.env.turn != self.player_color:
             self.pass_btn.setEnabled(False)
             return
         valid = self.env.valid_move()
@@ -2082,9 +2432,11 @@ class OthelloGUI(QWidget):
         board = np.tile(self.env.board, (K, 1, 1))
         turns = np.full(K, self.env.turn, dtype=np.int32)
         threshold = self.console.n_playout_spin.value()
-        self.worker.set_position(p.mcts, p.pv_fn, board, turns,
+        tb = self.console.time_budget_spin.value()
+        pv_fn = self._pv_fn_for_turn()
+        self.worker.set_position(p.mcts, pv_fn, board, turns,
                                  is_ai_turn, threshold, n_trees=K,
-                                 vl_batch=p._vl_batch)
+                                 vl_batch=p._vl_batch, time_budget=tb)
         if not self._search_paused:
             self.worker.resume()
 
@@ -2097,8 +2449,8 @@ class OthelloGUI(QWidget):
         else:
             self.pause_btn.setText("PAUSE")
             if not self.env.done():
-                is_ai = (self.env.turn != self.player_color)
-                if is_ai:
+                next_ai = self._is_ai_turn()
+                if next_ai:
                     self._start_scan()
                 self.worker.resume()
 
@@ -2132,6 +2484,7 @@ class OthelloGUI(QWidget):
         new_thr = self.console.n_playout_spin.value()
         self.worker.pause_and_wait()
         self.worker._threshold = new_thr
+        self.worker._time_budget = self.console.time_budget_spin.value()
         if self.worker._is_ai_turn and not self.worker._ai_acted:
             raw = self.az_player.mcts.get_root_stats()
             root_n = float(raw['root_N'][0])
@@ -2156,7 +2509,10 @@ class OthelloGUI(QWidget):
     # ── Continuous search callbacks ────────────────────────────────────────
     def _on_progress(self, stats_0, visits):
         self._update_status_mcts(stats_0)
-        if self.env.turn != self.player_color:
+        # In AvA, always show as AI panel; in HvH, always show as hint panel
+        show_ai = (self.mode == MODE_AVA
+                    or (self.mode == MODE_HVA and self.env.turn != self.player_color))
+        if show_ai:
             self.board.overlay_data = None
             ai_turn = self.env.turn
             self.ai_root_stats.set_data(stats_0, chosen=-1, ai_turn=ai_turn)
@@ -2197,41 +2553,54 @@ class OthelloGUI(QWidget):
 
         self.az_player.mcts.prune_roots(np.full(K, action, dtype=np.int32))
 
-        # Pre-compute hint for next position
-        hint_raw = self.az_player.mcts.get_root_stats()
-        all_hint_v = self.az_player.mcts.get_visits_count()
-        if K > 1:
-            hint_s0 = _aggregate_root_stats(hint_raw)
-            hint_v = all_hint_v.sum(axis=0).copy()
+        # In AvA, reset trees when switching to the other network
+        # to avoid stale NN evaluations from the previous player's network
+        if self.mode == MODE_AVA and self.net2 is not None:
+            for i in range(K):
+                self.az_player.mcts.reset_env(i)
         else:
-            hint_s0 = {}
-            for k, v in hint_raw.items():
-                val = v[0]
-                hint_s0[k] = val.copy() if hasattr(val, 'copy') else float(val)
-            hint_v = all_hint_v[0].copy()
-        human_turn = -ai_turn
-        if hint_s0['root_N'] > 0:
-            best_hint = int(np.argmax(hint_v))
-            self.hint_root_stats.set_data(hint_s0, chosen=best_hint,
-                                          ai_turn=human_turn)
-            self._update_status_mcts(hint_s0)
-            if self._hint_visible:
-                total = hint_v.sum()
-                if total > 0:
-                    n_pct = hint_v / total * 100
-                    q_arr = hint_s0['Q'].copy()
-                    p1w = hint_s0['P1W'].copy()
-                    p2w = hint_s0['P2W'].copy()
-                    w_arr = p1w * 100 if self.player_color == 1 else p2w * 100
-                    self.board.overlay_data = {'N': n_pct, 'Q': q_arr, 'W': w_arr}
-                    self.board.overlay_best = best_hint
-        else:
-            self.hint_root_stats.clear_data()
-            self.board.overlay_data = None
-        self.hint_child_table.update()
+            # Pre-compute hint for next position (reuse pruned subtree)
+            hint_raw = self.az_player.mcts.get_root_stats()
+            all_hint_v = self.az_player.mcts.get_visits_count()
+            if K > 1:
+                hint_s0 = _aggregate_root_stats(hint_raw)
+                hint_v = all_hint_v.sum(axis=0).copy()
+            else:
+                hint_s0 = {}
+                for k, v in hint_raw.items():
+                    val = v[0]
+                    hint_s0[k] = val.copy() if hasattr(val, 'copy') else float(val)
+                hint_v = all_hint_v[0].copy()
+            human_turn = -ai_turn
+            if hint_s0['root_N'] > 0:
+                best_hint = int(np.argmax(hint_v))
+                self.hint_root_stats.set_data(hint_s0, chosen=best_hint,
+                                              ai_turn=human_turn)
+                self._update_status_mcts(hint_s0)
+                if self._hint_visible:
+                    total = hint_v.sum()
+                    if total > 0:
+                        n_pct = hint_v / total * 100
+                        q_arr = hint_s0['Q'].copy()
+                        p1w = hint_s0['P1W'].copy()
+                        p2w = hint_s0['P2W'].copy()
+                        w_arr = p1w * 100 if self.player_color == 1 else p2w * 100
+                        self.board.overlay_data = {'N': n_pct, 'Q': q_arr, 'W': w_arr}
+                        self.board.overlay_best = best_hint
+            else:
+                self.hint_root_stats.clear_data()
+                self.board.overlay_data = None
+            self.hint_child_table.update()
 
         # Apply AI move
         self._apply_move(action, ai_turn, is_ai=True)
+
+    def _record_trend(self):
+        """Record current WDL from status bar into trend chart."""
+        bar = self.status.wdl_bar
+        if bar.w_rate + bar.d_rate + bar.l_rate > 0:
+            self.trend.record(self.move_count,
+                              bar.w_rate * 100, bar.d_rate * 100, bar.l_rate * 100)
 
     def _apply_move(self, action, current_player, is_ai):
         """Apply a move, update board, and handle game flow."""
@@ -2242,6 +2611,7 @@ class OthelloGUI(QWidget):
 
         self.env.step(action)
         self.move_count += 1
+        self._record_trend()
         self.move_log.add_move(self.move_count, current_player, action)
         self.board.update_valid()
         self._update_analysis()
@@ -2256,23 +2626,11 @@ class OthelloGUI(QWidget):
         self._update_turn_label()
         self._update_pass_btn()
 
-        if is_ai:
-            # After AI move, start searching for human's turn
-            K = self._n_trees
-            env_copy_board = np.tile(self.env.board, (K, 1, 1))
-            env_copy_turns = np.full(K, self.env.turn, dtype=np.int32)
-            threshold = self.console.n_playout_spin.value()
-            self.worker.set_position(self.az_player.mcts, self.az_player.pv_fn,
-                                     env_copy_board, env_copy_turns,
-                                     is_ai_turn=False, threshold=threshold,
-                                     n_trees=K,
-                                     vl_batch=self.az_player._vl_batch)
-            if not self._search_paused:
-                self.worker.resume()
-        else:
-            # After human move, AI's turn
+        # Determine next step based on mode
+        next_ai = self._is_ai_turn()
+        if next_ai:
             self._start_scan()
-            self._resume_search(is_ai_turn=True)
+        self._resume_search(is_ai_turn=next_ai)
 
     def _show_result(self):
         winner = self.env.winPlayer()
@@ -2280,15 +2638,38 @@ class OthelloGUI(QWidget):
         self._update_pass_btn()
         self.board.update()
 
-        if winner == self.player_color:
-            self.status.set_turn("VICTORY", C.GREEN)
-            self.status.set_result("YOU WIN", C.GREEN)
-        elif winner == -self.player_color:
-            self.status.set_turn("DEFEATED", C.RED_HEX)
-            self.status.set_result("YOU LOSE", C.RED_HEX)
+        # 终局：用确定结果替换最后一个 MCTS 估计值
+        end_move = self.move_count
+        if self.trend._data and self.trend._data[-1][0] == end_move:
+            self.trend._data.pop()
+        if self.mode == MODE_AVA:
+            # AI vs AI — neutral result text
+            if winner == 1:
+                self.trend.record(end_move, 100, 0, 0)
+                self.status.set_turn("BLACK WINS", C.TEXT)
+                self.status.set_result("BLACK WINS", C.TEXT)
+            elif winner == -1:
+                self.trend.record(end_move, 0, 0, 100)
+                self.status.set_turn("WHITE WINS", C.DIM)
+                self.status.set_result("WHITE WINS", C.DIM)
+            else:
+                self.trend.record(end_move, 0, 100, 0)
+                self.status.set_turn("STALEMATE", C.YEL_HEX)
+                self.status.set_result("DRAW", C.YEL_HEX)
         else:
-            self.status.set_turn("STALEMATE", C.YEL_HEX)
-            self.status.set_result("DRAW", C.YEL_HEX)
+            # HvA / HvH — from player's perspective
+            if winner == self.player_color:
+                self.trend.record(end_move, 100, 0, 0)
+                self.status.set_turn("VICTORY", C.GREEN)
+                self.status.set_result("YOU WIN", C.GREEN)
+            elif winner == -self.player_color:
+                self.trend.record(end_move, 0, 0, 100)
+                self.status.set_turn("DEFEATED", C.RED_HEX)
+                self.status.set_result("YOU LOSE", C.RED_HEX)
+            else:
+                self.trend.record(end_move, 0, 100, 0)
+                self.status.set_turn("STALEMATE", C.YEL_HEX)
+                self.status.set_result("DRAW", C.YEL_HEX)
 
     # ═══════════════════════════════════════════════════════════════════════
     # Human Input
@@ -2296,7 +2677,9 @@ class OthelloGUI(QWidget):
 
     def _human_pass(self):
         """Handle human pressing the PASS button."""
-        if self.env.done() or self.env.turn != self.player_color:
+        if self.env.done() or self.mode == MODE_AVA:
+            return
+        if self.mode == MODE_HVA and self.env.turn != self.player_color:
             return
         valid = self.env.valid_move()
         if 64 not in valid:
@@ -2310,9 +2693,9 @@ class OthelloGUI(QWidget):
         self._apply_move(64, self.env.turn, is_ai=False)
 
     def mousePressEvent(self, event):
-        if self.env.done():
+        if self.env.done() or self.mode == MODE_AVA:
             return
-        if self.env.turn != self.player_color:
+        if self.mode == MODE_HVA and self.env.turn != self.player_color:
             return
         local = self.board.mapFromParent(event.pos())
         cell = self.board.cell_at(local.x(), local.y())
@@ -2344,7 +2727,8 @@ class OthelloGUI(QWidget):
     def _undo(self):
         if not self._history:
             return
-        if self.env.turn != self.player_color and not self.env.done():
+        # In HvA, undo only when it's human's turn (or game is done)
+        if self.mode == MODE_HVA and self.env.turn != self.player_color and not self.env.done():
             return
         self.worker.pause_and_wait()
         self._stop_scan()
@@ -2358,6 +2742,7 @@ class OthelloGUI(QWidget):
         self.board.update_valid()
         self.board.update()
         self.move_count = saved_count
+        self.trend.truncate(saved_count)
         self.status.set_result("")
         self.ai_root_stats.restore(saved_ai)
         self.ai_child_table.update()
@@ -2369,10 +2754,10 @@ class OthelloGUI(QWidget):
         self._update_turn_label()
         self._update_pass_btn()
         if not self.env.done():
-            is_ai = (self.env.turn != self.player_color)
-            if is_ai:
+            next_ai = self._is_ai_turn()
+            if next_ai:
                 self._start_scan()
-            self._resume_search(is_ai_turn=is_ai)
+            self._resume_search(is_ai_turn=next_ai)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

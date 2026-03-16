@@ -90,6 +90,25 @@ def _make_oth_first_move():
     return b
 
 
+# 轨道编号 → 位置语义标签
+_OTHELLO_ORBIT_LABELS = {
+    0: 'corner',
+    1: 'C-square',
+    2: 'edge-2',
+    3: 'edge-3',
+    4: 'X-square',
+    5: 'inner-1',
+    6: 'inner-2',
+    7: 'XX-square',
+    8: 'near-center',
+    9: 'center',
+}
+
+_COL_NAMES = ['edge', 'near', 'inner', 'center']
+_C4_ORBIT_LABELS = {
+    r * 4 + c: f'r{r}-{_COL_NAMES[c]}' for r in range(6) for c in range(4)
+}
+
 GAME_CONFIGS = {
     'Connect4': dict(
         action_size=7,
@@ -105,6 +124,7 @@ GAME_CONFIGS = {
         network_module='src.environments.Connect4.Network',
         utils_module='src.environments.Connect4.utils',
         plot_top_k=7,
+        orbit_labels=_C4_ORBIT_LABELS,
     ),
     'Othello': dict(
         action_size=65,
@@ -120,6 +140,7 @@ GAME_CONFIGS = {
         network_module='src.environments.Othello.Network',
         utils_module='src.environments.Othello.utils',
         plot_top_k=10,
+        orbit_labels=_OTHELLO_ORBIT_LABELS,
     ),
 }
 
@@ -563,30 +584,17 @@ def _cosine_sim(a, b):
     return float(torch.nn.functional.cosine_similarity(a.unsqueeze(0), b.unsqueeze(0)))
 
 
-# 轨道编号 → 位置语义标签 (D4 对称, 10 轨道)
-_ORBIT_LABELS = {
-    0: 'corner',
-    1: 'C-square',
-    2: 'edge-2',
-    3: 'edge-3',
-    4: 'X-square',
-    5: 'inner-1',
-    6: 'inner-2',
-    7: 'XX-square',
-    8: 'near-center',
-    9: 'center',
-}
-
-
-def analyze_embeddings(net, output_dir):
+def analyze_embeddings(net, output_dir, gcfg):
     """分析并可视化 Piece / Position Embedding。"""
     piece_w = net.piece_emb.weight.detach().cpu()    # (3, d)
-    pos_w = net.pos_emb.weight.detach().cpu()        # (20, d)
+    pos_w = net.pos_emb.weight.detach().cpu()        # (n_orbits, d)
     has_player = hasattr(net, 'player_emb')
     if has_player:
         player_w = net.player_emb.weight.detach().cpu()  # (2, d)
-    orbit_map = net.orbit_map.cpu().numpy()           # (64,)
+    orbit_map = net.orbit_map.cpu().numpy()
     n_orbits = pos_w.shape[0]
+    rows, cols = gcfg['board_shape']
+    orbit_labels_dict = gcfg.get('orbit_labels', {})
 
     PIECE_NAMES = ['Empty', 'Own', 'Opp']
     PLAYER_NAMES = ['P1 (Black)', 'P2 (White)']
@@ -628,20 +636,21 @@ def analyze_embeddings(net, output_dir):
         console.print(player_table)
 
     # ── 3. Position Embedding 表格（关键轨道） ──
-    pos_norms = pos_w.norm(dim=1)  # (20,)
-    corner_a = pos_w[0]
+    pos_norms = pos_w.norm(dim=1)
+    ref_orbit = pos_w[0]
 
     pos_table = Table(title='Position Embedding (key orbits)', show_header=True, header_style='bold')
     pos_table.add_column('Orbit', justify='right', style='bold')
     pos_table.add_column('Label')
     pos_table.add_column('L2 Norm', justify='right')
-    pos_table.add_column('cos(corner-A)', justify='right')
+    ref_label = orbit_labels_dict.get(0, 'orbit-0')
+    pos_table.add_column(f'cos({ref_label})', justify='right')
 
     sorted_orbits = torch.argsort(pos_norms, descending=True).tolist()
     for orbit_id in sorted_orbits:
-        label = _ORBIT_LABELS.get(orbit_id, '')
+        label = orbit_labels_dict.get(orbit_id, '')
         norm_val = f'{pos_norms[orbit_id]:.4f}'
-        cos_val = f'{_cosine_sim(pos_w[orbit_id], corner_a):+.4f}'
+        cos_val = f'{_cosine_sim(pos_w[orbit_id], ref_orbit):+.4f}'
         pos_table.add_row(str(orbit_id), label, norm_val, cos_val)
     console.print(pos_table)
 
@@ -649,19 +658,19 @@ def analyze_embeddings(net, output_dir):
     os.makedirs(output_dir, exist_ok=True)
 
     # 4-ref. 轨道参考图
-    orbit_board = np.array(orbit_map).reshape(8, 8)
-    fig, ax = plt.subplots(figsize=(6, 6))
+    orbit_board = np.array(orbit_map).reshape(rows, cols)
+    fig, ax = plt.subplots(figsize=(max(6, cols * 0.8), max(5, rows * 0.8)))
     cmap = plt.cm.get_cmap('tab10' if n_orbits <= 10 else 'tab20', n_orbits)
     im = ax.imshow(orbit_board, cmap=cmap, vmin=-0.5, vmax=n_orbits - 0.5)
-    for r in range(8):
-        for c in range(8):
+    for r in range(rows):
+        for c in range(cols):
             oid = orbit_board[r, c]
-            label = _ORBIT_LABELS.get(oid, '')
+            label = orbit_labels_dict.get(oid, '')
             txt = f'{oid}\n{label}' if label else str(oid)
             ax.text(c, r, txt, ha='center', va='center', fontsize=7, fontweight='bold')
-    ax.set_xticks(range(8), [f'c{i}' for i in range(8)])
-    ax.set_yticks(range(8), [f'r{i}' for i in range(8)])
-    ax.set_title('Orbit Map (Klein V4 symmetry, 20 orbits)')
+    ax.set_xticks(range(cols), [f'c{i}' for i in range(cols)])
+    ax.set_yticks(range(rows), [f'r{i}' for i in range(rows)])
+    ax.set_title(f'Orbit Map ({n_orbits} orbits)')
     fig.colorbar(im, ax=ax, shrink=0.8, ticks=range(n_orbits))
     plt.tight_layout()
     path = os.path.join(output_dir, 'emb_orbit_map.png')
@@ -670,14 +679,14 @@ def analyze_embeddings(net, output_dir):
     console.print(f'    [dim]\\[saved] {path}[/dim]')
 
     # 4a. Position L2 Norm 热力图
-    board_norms = pos_norms[orbit_map].reshape(8, 8).numpy()
-    fig, ax = plt.subplots(figsize=(6, 6))
+    board_norms = pos_norms[orbit_map].reshape(rows, cols).numpy()
+    fig, ax = plt.subplots(figsize=(max(6, cols * 0.8), max(5, rows * 0.8)))
     im = ax.imshow(board_norms, cmap='YlOrRd')
-    for r in range(8):
-        for c in range(8):
+    for r in range(rows):
+        for c in range(cols):
             ax.text(c, r, f'{board_norms[r, c]:.2f}', ha='center', va='center', fontsize=8)
-    ax.set_xticks(range(8), [f'c{i}' for i in range(8)])
-    ax.set_yticks(range(8), [f'r{i}' for i in range(8)])
+    ax.set_xticks(range(cols), [f'c{i}' for i in range(cols)])
+    ax.set_yticks(range(rows), [f'r{i}' for i in range(rows)])
     ax.set_title('Position Embedding L2 Norm')
     fig.colorbar(im, ax=ax, shrink=0.8)
     plt.tight_layout()
@@ -686,19 +695,19 @@ def analyze_embeddings(net, output_dir):
     plt.close(fig)
     console.print(f'    [dim]\\[saved] {path}[/dim]')
 
-    # 4b. Position cosine similarity to corner-A 热力图
-    cos_to_corner = torch.nn.functional.cosine_similarity(
-        pos_w, corner_a.unsqueeze(0), dim=1
+    # 4b. Position cosine similarity to orbit-0 热力图
+    cos_to_ref = torch.nn.functional.cosine_similarity(
+        pos_w, ref_orbit.unsqueeze(0), dim=1
     )
-    board_cos = cos_to_corner[orbit_map].reshape(8, 8).numpy()
-    fig, ax = plt.subplots(figsize=(6, 6))
+    board_cos = cos_to_ref[orbit_map].reshape(rows, cols).numpy()
+    fig, ax = plt.subplots(figsize=(max(6, cols * 0.8), max(5, rows * 0.8)))
     im = ax.imshow(board_cos, cmap='RdBu_r', vmin=-1, vmax=1)
-    for r in range(8):
-        for c in range(8):
+    for r in range(rows):
+        for c in range(cols):
             ax.text(c, r, f'{board_cos[r, c]:.2f}', ha='center', va='center', fontsize=8)
-    ax.set_xticks(range(8), [f'c{i}' for i in range(8)])
-    ax.set_yticks(range(8), [f'r{i}' for i in range(8)])
-    ax.set_title('Position Embedding cos(orbit, corner-A)')
+    ax.set_xticks(range(cols), [f'c{i}' for i in range(cols)])
+    ax.set_yticks(range(rows), [f'r{i}' for i in range(rows)])
+    ax.set_title(f'Position Embedding cos(orbit, {ref_label})')
     fig.colorbar(im, ax=ax, shrink=0.8)
     plt.tight_layout()
     path = os.path.join(output_dir, 'emb_position_cosine.png')
@@ -714,8 +723,8 @@ def analyze_embeddings(net, output_dir):
     ax.scatter(pos_2d[:, 0], pos_2d[:, 1], s=100, c=pos_norms.numpy(),
                cmap='YlOrRd', edgecolors='black', linewidths=0.5, zorder=5)
     for i in range(n_orbits):
-        label = _ORBIT_LABELS.get(i, str(i))
-        ax.annotate(label if i in _ORBIT_LABELS else str(i),
+        label = orbit_labels_dict.get(i, str(i))
+        ax.annotate(label,
                     (pos_2d[i, 0], pos_2d[i, 1]),
                     textcoords='offset points', xytext=(6, 6), fontsize=8)
     ax.set_xlabel(f'PC1 ({pca.explained_variance_ratio_[0]*100:.1f}%)')
@@ -728,19 +737,19 @@ def analyze_embeddings(net, output_dir):
     plt.close(fig)
     console.print(f'    [dim]\\[saved] {path}[/dim]')
 
-    # 4d. PCA 前两个主成分的 8×8 热力图
+    # 4d. PCA 前两个主成分的棋盘热力图
     orbit_map_t = torch.tensor(orbit_map, dtype=torch.long)
-    fig, axes = plt.subplots(1, 2, figsize=(13, 6))
+    fig, axes = plt.subplots(1, 2, figsize=(13, max(5, rows * 0.8)))
     for k, ax in enumerate(axes):
-        pc_vals = torch.from_numpy(pos_2d[:, k])      # (20,)
-        board_pc = pc_vals[orbit_map_t].reshape(8, 8).numpy()
+        pc_vals = torch.from_numpy(pos_2d[:, k])
+        board_pc = pc_vals[orbit_map_t].reshape(rows, cols).numpy()
         vmax = max(abs(board_pc.min()), abs(board_pc.max()))
         im = ax.imshow(board_pc, cmap='RdBu_r', vmin=-vmax, vmax=vmax)
-        for r in range(8):
-            for c in range(8):
+        for r in range(rows):
+            for c in range(cols):
                 ax.text(c, r, f'{board_pc[r, c]:.2f}', ha='center', va='center', fontsize=7)
-        ax.set_xticks(range(8), [f'c{i}' for i in range(8)])
-        ax.set_yticks(range(8), [f'r{i}' for i in range(8)])
+        ax.set_xticks(range(cols), [f'c{i}' for i in range(cols)])
+        ax.set_yticks(range(rows), [f'r{i}' for i in range(rows)])
         ax.set_title(f'PC{k+1} ({pca.explained_variance_ratio_[k]*100:.1f}%)')
         fig.colorbar(im, ax=ax, shrink=0.8)
     fig.suptitle('Position Embedding — PCA Heatmaps')
@@ -750,17 +759,18 @@ def analyze_embeddings(net, output_dir):
     plt.close(fig)
     console.print(f'    [dim]\\[saved] {path}[/dim]')
 
-    # 4e. 20×20 轨道余弦相似度矩阵
+    # 4e. 轨道余弦相似度矩阵
     pos_norm = pos_w / pos_w.norm(dim=1, keepdim=True).clamp(min=1e-8)
     cos_matrix = (pos_norm @ pos_norm.T).numpy()
-    orbit_labels = [_ORBIT_LABELS.get(i, str(i)) for i in range(n_orbits)]
-    fig, ax = plt.subplots(figsize=(9, 8))
+    orbit_labels = [orbit_labels_dict.get(i, str(i)) for i in range(n_orbits)]
+    font_size = max(4, min(7, 120 // n_orbits))
+    fig, ax = plt.subplots(figsize=(max(9, n_orbits * 0.5), max(8, n_orbits * 0.45)))
     im = ax.imshow(cos_matrix, cmap='RdBu_r', vmin=-1, vmax=1)
     for r in range(n_orbits):
         for c in range(n_orbits):
-            ax.text(c, r, f'{cos_matrix[r, c]:.1f}', ha='center', va='center', fontsize=5.5)
-    ax.set_xticks(range(n_orbits), orbit_labels, rotation=45, ha='right', fontsize=7)
-    ax.set_yticks(range(n_orbits), orbit_labels, fontsize=7)
+            ax.text(c, r, f'{cos_matrix[r, c]:.1f}', ha='center', va='center', fontsize=font_size)
+    ax.set_xticks(range(n_orbits), orbit_labels, rotation=45, ha='right', fontsize=max(5, font_size))
+    ax.set_yticks(range(n_orbits), orbit_labels, fontsize=max(5, font_size))
     ax.set_title('Position Embedding — Orbit Cosine Similarity')
     fig.colorbar(im, ax=ax, shrink=0.8)
     plt.tight_layout()
@@ -858,7 +868,7 @@ def analyze_nn(model_path, gcfg, device='cpu', output_dir=None):
         console.print(Panel(nn_table, title=f'[bold]{desc} (turn={player})[/bold]', border_style='magenta'))
 
     if hasattr(net, 'piece_emb'):
-        analyze_embeddings(net, output_dir)
+        analyze_embeddings(net, output_dir, gcfg)
 
     return nn_policies
 

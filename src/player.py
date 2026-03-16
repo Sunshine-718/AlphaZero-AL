@@ -148,6 +148,7 @@ class AlphaZeroPlayer(Player):
         self._score_scale = score_scale
         self._value_decay = value_decay
         self._vl_batch = max(1, vl_batch)
+        self._time_budget = None  # 秒；None 表示按 n_playout 固定次数搜索
 
         # 噪声衰减（批量自对弈用）
         self.noise_eps_init = self._noise_eps
@@ -219,7 +220,8 @@ class AlphaZeroPlayer(Player):
         board = np.tile(env.board, (K, 1, 1))    # (K, H, W)
         turns = np.full(K, env.turn, dtype=np.int32)
 
-        self.mcts.batch_playout(self.pv_fn, board, turns, vl_batch=self._vl_batch)
+        self.mcts.batch_playout(self.pv_fn, board, turns,
+                                vl_batch=self._vl_batch, time_budget=self._time_budget)
         all_visits = self.mcts.get_visits_count()  # (K, action_size)
         visits = all_visits.sum(axis=0) if K > 1 else all_visits[0]
 
@@ -254,7 +256,8 @@ class AlphaZeroPlayer(Player):
         if temps is None:
             temps = [0 for _ in range(self.n_envs)]
 
-        self.mcts.batch_playout(self.pv_fn, current_boards, turns, vl_batch=self._vl_batch)
+        self.mcts.batch_playout(self.pv_fn, current_boards, turns,
+                                vl_batch=self._vl_batch, time_budget=self._time_budget)
         visits = self.mcts.get_visits_count()
         # 获取根节点 WDL 分布（绝对视角：draw, p1_win, p2_win）
         root_stats = self.mcts.get_root_stats()

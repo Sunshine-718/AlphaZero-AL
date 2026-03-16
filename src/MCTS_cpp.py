@@ -1,3 +1,5 @@
+import time
+
 import numpy as np
 from src import mcts_cpp
 from src.Cache import LRUCache
@@ -62,22 +64,50 @@ class BatchedMCTS:
         self._game_name = game_name
         self._rollout_eval = None
 
-    def batch_playout(self, pv_func, current_boards, turns, n_playout=None, vl_batch=1):
-        """ current_boards: shape [batch_size, *board_shape], X: 1, O: -1
-            turns: shape [batch_size, ], 1, -1
-            n_playout: override self.n_playout if provided
-            vl_batch: Virtual Loss 批量大小（1=原路径，>1=VL 树并行）"""
+    def _should_early_exit(self, step, remaining_steps):
+        """判断搜索是否已收敛：最优动作的访问数领先第二名超过剩余步数。
+
+        Args:
+            step: 已完成的模拟步数
+            remaining_steps: 剩余可用模拟步数（float，可以是估算值）
+        Returns:
+            True if best action is unreachable by runner-up
+        """
+        if step < 8:
+            return False
+        counts = np.array(self.mcts.get_all_counts()).reshape(self.batch_size, self.action_size)
+        # 对每个 env 取 top-2 访问数
+        top2_idx = np.argpartition(counts, -2, axis=1)[:, -2:]
+        top2 = np.take_along_axis(counts, top2_idx, axis=1)
+        best = top2.max(axis=1)
+        second = top2.min(axis=1)
+        return bool(np.all(best - second > remaining_steps))
+
+    def batch_playout(self, pv_func, current_boards, turns, n_playout=None,
+                      vl_batch=1, time_budget=None):
+        """批量 MCTS 搜索。
+
+        Args:
+            pv_func: 神经网络 predict 函数
+            current_boards: shape [batch_size, *board_shape], X=1, O=-1
+            turns: shape [batch_size,], 1 or -1
+            n_playout: 固定模拟次数（与 time_budget 二选一）
+            vl_batch: Virtual Loss 批量大小（1=原路径，>1=VL 树并行）
+            time_budget: 搜索时间预算（秒）。设置后按时间搜索，n_playout 作为上限
+        """
         current_boards = current_boards.astype(np.int8)
         turns = turns.astype(np.int32)
-        n = n_playout if n_playout is not None else self.n_playout
+        max_n = n_playout if n_playout is not None else self.n_playout
+        use_time = time_budget is not None and time_budget > 0
 
         # Sync score_scale to network so Python-side atan mapping matches C++ terminal_aux
         if hasattr(pv_func, 'score_scale'):
             pv_func.score_scale = self.mcts.config.score_scale
 
         if vl_batch <= 1:
-            # === 原有路径（完全不变）===
-            for _ in range(n):
+            # === 非 VL 路径 ===
+            t0 = time.perf_counter() if use_time else 0.0
+            for step in range(max_n):
                 leaf_boards, term_d, term_p1w, term_p2w, is_term, leaf_turns = self.mcts.search_batch(current_boards, turns)
 
                 term_mask = is_term.astype(bool)
@@ -155,10 +185,23 @@ class BatchedMCTS:
                     np.ascontiguousarray(moves_left, dtype=np.float32),
                     is_term
                 )
+
+                # Early exit check
+                if use_time:
+                    done = step + 1
+                    elapsed = time.perf_counter() - t0
+                    if elapsed >= time_budget:
+                        break
+                    avg_step = elapsed / done
+                    remaining_steps = (time_budget - elapsed) / avg_step
+                    if self._should_early_exit(done, remaining_steps):
+                        break
         else:
             # === VL 路径：K 次 VL 模拟 × N 棵树 = N*K 个叶节点/迭代 ===
             K = vl_batch
-            remaining = n
+            remaining = max_n
+            t0 = time.perf_counter() if use_time else 0.0
+            total_sims = 0  # 已完成的模拟数（含 warm-up）
 
             # Warm-up：先做 1 次非 VL 迭代确保所有根节点已展开
             # 避免 VL 首批 K 次模拟全部落在未展开的根节点上浪费 K-1 次
@@ -189,8 +232,21 @@ class BatchedMCTS:
                     np.ascontiguousarray(moves_left, dtype=np.float32),
                     is_term)
                 remaining -= 1
+                total_sims += 1
 
             while remaining > 0:
+                # 时间预算模式：检查是否已超时
+                if use_time:
+                    elapsed = time.perf_counter() - t0
+                    if elapsed >= time_budget:
+                        break
+                    # 估算剩余可用模拟数用于 early exit
+                    if total_sims > 0:
+                        avg_sim = elapsed / total_sims
+                        remaining_by_time = (time_budget - elapsed) / avg_sim
+                        if self._should_early_exit(total_sims, remaining_by_time):
+                            break
+
                 cur_K = min(K, remaining)
                 remaining -= cur_K
                 cur_total = self.batch_size * cur_K
@@ -278,6 +334,8 @@ class BatchedMCTS:
                     # 手动清除所有残留的 VL (n_inflight)，防止树状态永久污染
                     self.mcts.remove_all_vl(cur_K)
                     raise
+
+                total_sims += cur_K
 
         return self
 
