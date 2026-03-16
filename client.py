@@ -57,6 +57,7 @@ parser.add_argument('--mlh_cap', type=float, default=None, help='MLH cap')
 parser.add_argument('--score_utility_factor', type=float, default=None, help='Score utility weight')
 parser.add_argument('--score_scale', type=float, default=None, help='Score atan scale')
 parser.add_argument('--value_decay', type=float, default=None, help='Value decay γ')
+parser.add_argument('--td_steps', type=int, default=None, help='N-step TD: steps k for S_{t+k}')
 parser.add_argument('--no_symmetry', action='store_true', help='Disable symmetry augmentation')
 parser.add_argument('--config', action='store_true', help='Display current config and exit')
 
@@ -71,6 +72,7 @@ _ARG_TO_CFG = {
     'mlh_slope': 'mlh_slope', 'mlh_cap': 'mlh_cap',
     'score_utility_factor': 'score_utility_factor', 'score_scale': 'score_scale',
     'value_decay': 'value_decay',
+    'td_steps': 'td_steps',
 }
 
 # 记录用户手动设置的参数（不会被 server 同步覆盖）
@@ -122,6 +124,7 @@ def print_config(cfg):
             "temp": cfg['temp'],
             "temp_decay_moves": cfg['temp_decay_moves'],
             "temp_endgame": cfg['temp_endgame'],
+            "td_steps": cfg.get('td_steps', 0),
         }),
     ]
 
@@ -247,6 +250,7 @@ class Actor:
             'vl_batch':       lambda v: setattr(self.az_player, '_vl_batch', v),
             'use_symmetry':   lambda v: self.az_player.mcts.set_use_symmetry(v),
             'value_decay':    lambda v: self.az_player.mcts.set_value_decay(v),
+            'td_steps':       None,  # 每轮 data_collector 从 self.cfg 读
             'temp':           None,  # 每轮 data_collector 从 self.cfg 读
             'temp_decay_moves': None,
             'temp_endgame':   None,
@@ -322,8 +326,10 @@ class Actor:
             temp = self.cfg['temp']
             temp_decay_moves = self.cfg['temp_decay_moves']
             temp_endgame = self.cfg['temp_endgame']
+            td_steps = self.cfg.get('td_steps', 0)
             results = self.game.batch_self_play(self.az_player, self.batch_size,
-                                                temp, temp_decay_moves, temp_endgame)
+                                                temp, temp_decay_moves, temp_endgame,
+                                                td_steps=td_steps)
             for _, play_data in results:
                 data.append(play_data)
             duration = time.time() - start_time

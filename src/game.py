@@ -64,7 +64,8 @@ class Game:
         t = temp_init * max(0.0, 1.0 - step / temp_decay_moves)
         return max(t, temp_endgame)
 
-    def batch_self_play(self, player, n_games, temperature, temp_decay_moves, temp_endgame=0):
+    def batch_self_play(self, player, n_games, temperature, temp_decay_moves, temp_endgame=0,
+                        td_steps=0):
         envs = [self.env.copy() for _ in range(n_games)]
         for env in envs:
             env.reset()
@@ -104,26 +105,41 @@ class Game:
                 env.step(action)
                 if env.done():
                     winner = env.winPlayer()
-                    
+
                     # 构建回放数据
                     states = traj['states']
-                    # next_states 是 states 错位，最后补一个终止状态特征
                     end_state_feature = env.current_state()[0].astype(np.int8)
-                    next_states = states[1:] + [end_state_feature]
-                    
+
                     T = len(traj['players'])
                     winner_z = np.full(T, winner, dtype=np.int32)
                     steps_to_end = np.arange(T, 0, -1, dtype=np.int32)
                     aux_targets = self._make_aux_targets(traj['players'], env, steps_to_end)
 
-                    # 此时 states 的 list 元素形状为 (3, 6, 7)，符合 dataset 预期
-                    play_data = list(zip(states, traj['probs'], winner_z,
-                                         steps_to_end, aux_targets, traj['root_wdls']))
+                    # 构建 future_state: S_{t+k}，超出轨迹范围则用终局状态
+                    k = td_steps
+                    if k > 0:
+                        future_states = []
+                        for t in range(T):
+                            ft = t + k
+                            if ft < T:
+                                future_states.append(states[ft])
+                            else:
+                                future_states.append(end_state_feature)
+                        play_data = list(zip(states, traj['probs'], winner_z,
+                                             steps_to_end, aux_targets, traj['root_wdls'],
+                                             future_states))
+                    else:
+                        play_data = list(zip(states, traj['probs'], winner_z,
+                                             steps_to_end, aux_targets, traj['root_wdls']))
+
                     # 追加终局状态: steps_to_end=0, prob 全零, root_wdl 全零
                     zero_prob = np.zeros_like(traj['probs'][0])
                     zero_wdl = np.zeros(3, dtype=np.float32)
-                    play_data.append((end_state_feature, zero_prob, winner, 0,
-                                      self._terminal_aux_target(env), zero_wdl))
+                    terminal_tuple = [end_state_feature, zero_prob, winner, 0,
+                                      self._terminal_aux_target(env), zero_wdl]
+                    if k > 0:
+                        terminal_tuple.append(end_state_feature)
+                    play_data.append(tuple(terminal_tuple))
                     completed_data[i] = (winner, tuple(play_data))
                     
                     # 游戏结束，重置该环境的 MCTS 树

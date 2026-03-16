@@ -48,7 +48,11 @@ def inspect(net, board=None):
 
 
 def augment(batch):
-    state, prob, winner, steps_to_end, aux_target, root_wdl = batch
+    if len(batch) == 7:
+        state, prob, winner, steps_to_end, aux_target, root_wdl, future_state = batch
+    else:
+        state, prob, winner, steps_to_end, aux_target, root_wdl = batch
+        future_state = None
 
     state_flipped = torch.flip(state, dims=[3])
     prob_flipped = torch.flip(prob, dims=[1])
@@ -60,6 +64,9 @@ def augment(batch):
     aux_target = torch.cat([aux_target, aux_target], dim=0)
     root_wdl = torch.cat([root_wdl, root_wdl], dim=0)
 
+    if future_state is not None:
+        future_state = torch.cat([future_state, torch.flip(future_state, dims=[3])], dim=0)
+        return state, prob, winner, steps_to_end, aux_target, root_wdl, future_state
     return state, prob, winner, steps_to_end, aux_target, root_wdl
 
 

@@ -107,6 +107,11 @@ g_train.add_argument('--psw_beta', type=float, default=0.3,
 g_train.add_argument('--entropy_lambda', type=float, default=0.01,
                       help='Entropy regularization λ: subtracts λ×H(p) from policy loss to discourage '
                            'policy collapse (0=disabled)')
+g_train.add_argument('--td_steps', type=int, default=5,
+                      help='N-step TD: number of steps k for future state S_{t+k} (0=disabled)')
+g_train.add_argument('--td_alpha', type=float, default=0.5,
+                      help='N-step TD consistency weight: v_loss = (1-α)×base + α×KL(v(S_{t+k})||v(S_t)) '
+                           '(0=disabled)')
 
 # ── Evaluation ────────────────────────────────────────────────────────────────
 g_eval = parser.add_argument_group('Evaluation')
@@ -150,7 +155,9 @@ config = {"lr": args.lr,
           "distill_temp": args.distill_temp,
           "value_decay": args.value_decay,
           "psw_beta": args.psw_beta,
-          "entropy_lambda": args.entropy_lambda}
+          "entropy_lambda": args.entropy_lambda,
+          "td_steps": args.td_steps,
+          "td_alpha": args.td_alpha}
 
 
 def print_config():
@@ -212,6 +219,8 @@ def print_config():
             "value_decay": args.value_decay,
             "psw_beta": args.psw_beta,
             "entropy_lambda": args.entropy_lambda,
+            "td_steps": args.td_steps,
+            "td_alpha": args.td_alpha,
         }),
         ("Evaluation", {
             "interval": args.interval,
@@ -379,6 +388,8 @@ def get_config():
         'pure_mcts_n_playout': getattr(pipeline, 'pure_mcts_n_playout', args.mcts_n),
         'c_puct': pipeline.c_puct,
         'eps': pipeline.eps,
+        'td_steps': getattr(pipeline, 'td_steps', 0),
+        'td_alpha': getattr(pipeline, 'td_alpha', 0.0),
     })
 
 
@@ -388,7 +399,7 @@ _BOOL_PARAMS = {'use_symmetry'}
 _TUNABLE_PARAMS = {
     # Training
     'batch_size', 'entropy_lambda', 'psw_beta', 'distill_alpha',
-    'distill_temp', 'value_decay', 'n_epochs',
+    'distill_temp', 'value_decay', 'n_epochs', 'td_alpha',
     # Self-play (clients pull via GET /config)
     'temp', 'temp_decay_moves', 'temp_endgame',
     'dirichlet_alpha', 'eps', 'noise_steps', 'noise_eps_min',

@@ -72,14 +72,21 @@ def augment(batch):
     Othello 初始局面只在 Klein 四元群 {恒等, 180°旋转, 主对角线翻转, 副对角线翻转} 下不变。
     90°/270° 旋转和水平/垂直翻转会交换初始黑白子位置，不是合法对称。
     """
-    state, prob, winner, steps_to_end, aux_target, root_wdl = batch
+    if len(batch) == 7:
+        state, prob, winner, steps_to_end, aux_target, root_wdl, future_state = batch
+    else:
+        state, prob, winner, steps_to_end, aux_target, root_wdl = batch
+        future_state = None
 
     states_all = [state]
     probs_all = [prob]
+    future_all = [future_state] if future_state is not None else None
 
     for sym_id in (2, 6, 7):  # 180°旋转, 主对角线翻转, 副对角线翻转
         states_all.append(_apply_sym_state(state, sym_id))
         probs_all.append(_apply_sym_policy(prob, sym_id))
+        if future_all is not None:
+            future_all.append(_apply_sym_state(future_state, sym_id))
 
     state = torch.cat(states_all, dim=0)
     prob = torch.cat(probs_all, dim=0)
@@ -88,6 +95,9 @@ def augment(batch):
     aux_target = aux_target.repeat(4, 1)
     root_wdl = root_wdl.repeat(4, 1)
 
+    if future_all is not None:
+        future_state = torch.cat(future_all, dim=0)
+        return state, prob, winner, steps_to_end, aux_target, root_wdl, future_state
     return state, prob, winner, steps_to_end, aux_target, root_wdl
 
 

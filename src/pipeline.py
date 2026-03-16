@@ -101,6 +101,7 @@ class TrainPipeline(ABC):
             steps_to_end = dataset.tensors[3].to(self.device).contiguous().float()
             aux_target = dataset.tensors[4].to(self.device).contiguous().float()
             root_wdl = dataset.tensors[5].to(self.device).contiguous()
+            future_state = dataset.tensors[6].to(self.device).contiguous()
             meta = torch.tensor([state.shape[0], state.shape[1], state.shape[2],
                                  state.shape[3], prob.shape[1]],
                                 dtype=torch.long, device=self.device)
@@ -118,6 +119,7 @@ class TrainPipeline(ABC):
             steps_to_end = torch.empty((N, 1), dtype=torch.float32, device=self.device)
             aux_target = torch.empty((N, 1), dtype=torch.float32, device=self.device)
             root_wdl = torch.empty((N, 3), dtype=torch.float32, device=self.device)
+            future_state = torch.empty((N, C, H, W), dtype=torch.float32, device=self.device)
 
         dist.broadcast(state, src=0)
         dist.broadcast(prob, src=0)
@@ -125,11 +127,13 @@ class TrainPipeline(ABC):
         dist.broadcast(steps_to_end, src=0)
         dist.broadcast(aux_target, src=0)
         dist.broadcast(root_wdl, src=0)
+        dist.broadcast(future_state, src=0)
 
         winner = winner.to(torch.int8)
         steps_to_end = steps_to_end.to(torch.int16)
         aux_target = aux_target.to(torch.int16)
-        dataset = TensorDataset(state, prob, winner, steps_to_end, aux_target, root_wdl)
+        dataset = TensorDataset(state, prob, winner, steps_to_end, aux_target, root_wdl,
+                                future_state)
         return DataLoader(dataset, self.batch_size, shuffle=True)
 
     def policy_update(self):
@@ -147,7 +151,9 @@ class TrainPipeline(ABC):
             value_decay=getattr(self, 'value_decay', 1.0),
             distill_temp=getattr(self, 'distill_temp', 1.0),
             psw_beta=getattr(self, 'psw_beta', 0.3),
-            entropy_lambda=getattr(self, 'entropy_lambda', 0.01))
+            entropy_lambda=getattr(self, 'entropy_lambda', 0.01),
+            td_alpha=getattr(self, 'td_alpha', 0.0),
+            td_steps=getattr(self, 'td_steps', 5))
 
         if self.is_ddp:
             dist.barrier()

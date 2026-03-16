@@ -35,9 +35,14 @@ class Base(ABC, nn.Module):
         return value_class, turn_sign
 
     def _prepare_training_batch(self, batch, augment):
-        state, prob, winner, steps_to_end, aux_target, root_wdl = augment(batch)
+        augmented = augment(batch)
+        if len(augmented) == 7:
+            state, prob, winner, steps_to_end, aux_target, root_wdl, future_state = augmented
+        else:
+            state, prob, winner, steps_to_end, aux_target, root_wdl = augmented
+            future_state = None
         value_class, turn_sign = self._value_class_from_batch(state, winner)
-        return {
+        result = {
             'state': state,
             'prob': prob,
             'steps_to_end': steps_to_end,
@@ -47,6 +52,9 @@ class Base(ABC, nn.Module):
             'turn_sign': turn_sign,
             'policy_mask': (prob.sum(dim=1) > 0).float(),
         }
+        if future_state is not None:
+            result['future_state'] = future_state
+        return result
 
     @staticmethod
     def _soft_value_targets(value_class, steps_to_end, value_decay):
@@ -124,8 +132,46 @@ class Base(ABC, nn.Module):
         aux_target = aux_target.clamp(0, steps_pred.shape[-1] - 1)
         return F.nll_loss(steps_pred, aux_target)
 
+    @staticmethod
+    def _td_consistency_loss(value_pred, future_wdl_target, batch_data, td_steps):
+        """N-step TD consistency: KL(stopgrad(v(S_{t+k})) || v(S_t)).
+
+        Only applies to positions with steps_to_end > td_steps (non-terminal bootstrap).
+        future_wdl_target is already perspective-adjusted and detached.
+        """
+        # Mask: only bootstrap from positions far enough from terminal
+        td_mask = (batch_data['steps_to_end'].view(-1) > td_steps).float()
+        n_valid = td_mask.sum().clamp(min=1)
+
+        # KL(future_target || current_pred)
+        kl = F.kl_div(value_pred, future_wdl_target, reduction='none').sum(dim=1)
+        return (kl * td_mask).sum() / n_valid
+
+    def _prepare_future_wdl(self, model, batch_data):
+        """在主前向传播之前计算 future state 的 WDL target（避免 inplace op 冲突）。"""
+        future_state = batch_data['future_state']
+        with torch.no_grad():
+            _, future_value_log, _ = model(future_state)
+            future_wdl = future_value_log.exp()  # (B, 3) [draw, win, loss]
+
+        # Determine perspective: compare turn plane of current vs future state
+        current_turn = batch_data['state'][:, 2, 0, 0]
+        future_turn = future_state[:, 2, 0, 0]
+        diff_perspective = (current_turn * future_turn) < 0
+
+        # Swap win/loss for different perspective
+        future_wdl_adj = future_wdl.clone()
+        future_wdl_adj[diff_perspective, 1] = future_wdl[diff_perspective, 2]
+        future_wdl_adj[diff_perspective, 2] = future_wdl[diff_perspective, 1]
+        return future_wdl_adj
+
     def _optimize_batch(self, model, batch_data, use_soft, value_decay, distill_alpha, distill_temp,
-                        psw_beta=0.0, entropy_lambda=0.0):
+                        psw_beta=0.0, entropy_lambda=0.0, td_alpha=0.0, td_steps=5):
+        # 先计算 future state WDL（在主前向传播之前，避免 inplace op 破坏计算图）
+        future_wdl_target = None
+        if td_alpha > 0 and 'future_state' in batch_data:
+            future_wdl_target = self._prepare_future_wdl(model, batch_data)
+
         self.opt.zero_grad()
         log_p_pred, value_pred, steps_pred = model(batch_data['state'])
         p_loss = self._policy_loss(log_p_pred, batch_data['prob'], batch_data['policy_mask'],
@@ -138,6 +184,12 @@ class Base(ABC, nn.Module):
             distill_alpha,
             distill_temp,
         )
+
+        # N-step TD consistency loss
+        if future_wdl_target is not None:
+            td_loss = self._td_consistency_loss(value_pred, future_wdl_target, batch_data, td_steps)
+            v_loss = (1 - td_alpha) * v_loss + td_alpha * td_loss
+
         s_loss = self._aux_loss(steps_pred, batch_data['aux_target'])
         loss = p_loss + v_loss + 0.1 * s_loss
         loss.backward()
@@ -284,7 +336,7 @@ class Base(ABC, nn.Module):
 
     def train_step(self, dataloader, augment, ddp_model=None, n_epochs=10,
                    distill_alpha=0.0, value_decay=1.0, distill_temp=1.0,
-                   psw_beta=0.0, entropy_lambda=0.0):
+                   psw_beta=0.0, entropy_lambda=0.0, td_alpha=0.0, td_steps=5):
         model = ddp_model if ddp_model is not None else self
         p_l, v_l, s_l = [], [], []
         use_soft = value_decay < 1.0 or distill_alpha > 0
@@ -304,6 +356,8 @@ class Base(ABC, nn.Module):
                     distill_temp,
                     psw_beta,
                     entropy_lambda,
+                    td_alpha,
+                    td_steps,
                 )
                 p_l.append(p_loss.item())
                 v_l.append(v_loss.item())
