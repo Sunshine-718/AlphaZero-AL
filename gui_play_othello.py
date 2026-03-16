@@ -102,6 +102,8 @@ class Def:
     vl_batch = 4
     score_utility_factor = 0.15
     score_scale = 8.0
+    reuse_tree = True
+    no_search = False
     time_budget = 0.0  # 秒，0=禁用（按 sims 停），>0 时间到即落子
 
 # Game modes
@@ -1563,6 +1565,16 @@ class ParameterConsole(QWidget):
         self.sym_check.setToolTip("Random symmetry transform on leaf nodes")
         lay.addWidget(self.sym_check)
 
+        self.reuse_tree_check = QCheckBox("REUSE TREE")
+        self.reuse_tree_check.setChecked(Def.reuse_tree)
+        self.reuse_tree_check.setToolTip("Reuse subtree from previous move (prune) vs fresh tree each move (reset)")
+        lay.addWidget(self.reuse_tree_check)
+
+        self.no_search_check = QCheckBox("NO SEARCH")
+        self.no_search_check.setChecked(Def.no_search)
+        self.no_search_check.setToolTip("Use raw NN policy without MCTS search (single root expansion only)")
+        lay.addWidget(self.no_search_check)
+
         lay.addStretch()
         self.tabs.addTab(self._wrap_scroll_tab(content), "MCTS")
 
@@ -1600,6 +1612,8 @@ class ParameterConsole(QWidget):
         self.eps_sl.setValue(int(Def.noise_eps * self.eps_sl._scale))
         self.cache_sl.setValue(int(Def.cache * self.cache_sl._scale))
         self.sym_check.setChecked(Def.symmetry)
+        self.reuse_tree_check.setChecked(Def.reuse_tree)
+        self.no_search_check.setChecked(Def.no_search)
         self.score_factor_sl.setValue(int(Def.score_utility_factor * self.score_factor_sl._scale))
         self.score_scale_sl.setValue(int(Def.score_scale * self.score_scale_sl._scale))
 
@@ -2426,7 +2440,52 @@ class OthelloGUI(QWidget):
         self.board.update()
 
     # ── Continuous search helpers ──────────────────────────────────────────
+    def _nn_direct_eval(self, is_ai_turn):
+        """NO SEARCH 模式：单次 NN 前向 + 合法 mask，绕过 MCTS。"""
+        pv_fn = self._pv_fn_for_turn()
+        state = self.env.current_state()               # (1, 3, R, C)
+        probs, wdl, ml = pv_fn.predict(state)           # probs (1, A), wdl (1, 3), ml (1, 1)
+        probs = probs[0]                                 # (A,)
+        wdl = wdl[0]                                     # (3,) = [draw, win, loss] relative
+        mask = np.array(self.env.valid_mask(), dtype=bool)
+        probs[~mask] = 0.0
+        total = probs.sum()
+        if total > 0:
+            probs /= total
+
+        # 转换 WDL：相对 [draw, win_tomove, loss_tomove] → 绝对 [p1w, p2w]
+        d, w_rel, l_rel = float(wdl[0]), float(wdl[1]), float(wdl[2])
+        if self.env.turn == 1:
+            p1w, p2w = w_rel, l_rel
+        else:
+            p1w, p2w = l_rel, w_rel
+        if self.player_color == 1:
+            win_pct, lose_pct = p1w * 100, p2w * 100
+        else:
+            win_pct, lose_pct = p2w * 100, p1w * 100
+        self.status.set_mcts_rates(win_pct, d * 100, lose_pct)
+
+        action = int(np.argmax(probs))
+
+        if is_ai_turn:
+            self._prune_or_reset(action)
+            self._apply_move(action, self.env.turn, is_ai=True)
+        else:
+            # Hint: 显示 NN 原始策略在棋盘上
+            if self._hint_visible:
+                n_pct = probs * 100
+                self.board.overlay_data = {
+                    'N': n_pct,
+                    'Q': np.full_like(probs, float(wdl[1] - wdl[2])),
+                    'W': np.where(mask, win_pct, 0.0),
+                }
+                self.board.overlay_best = action
+                self.board.update()
+
     def _resume_search(self, is_ai_turn):
+        if self.console.no_search_check.isChecked():
+            self._nn_direct_eval(is_ai_turn)
+            return
         p = self.az_player
         K = self._n_trees
         board = np.tile(self.env.board, (K, 1, 1))
@@ -2551,14 +2610,14 @@ class OthelloGUI(QWidget):
         self.ai_root_stats.set_data(stats_0, chosen=action, ai_turn=ai_turn)
         self.ai_child_table.update()
 
-        self.az_player.mcts.prune_roots(np.full(K, action, dtype=np.int32))
+        self._prune_or_reset(action)
 
         # In AvA, reset trees when switching to the other network
         # to avoid stale NN evaluations from the previous player's network
         if self.mode == MODE_AVA and self.net2 is not None:
             for i in range(K):
                 self.az_player.mcts.reset_env(i)
-        else:
+        elif self.console.reuse_tree_check.isChecked():
             # Pre-compute hint for next position (reuse pruned subtree)
             hint_raw = self.az_player.mcts.get_root_stats()
             all_hint_v = self.az_player.mcts.get_visits_count()
@@ -2594,6 +2653,15 @@ class OthelloGUI(QWidget):
 
         # Apply AI move
         self._apply_move(action, ai_turn, is_ai=True)
+
+    def _prune_or_reset(self, action):
+        """Prune tree to action's subtree, or reset if reuse is disabled."""
+        K = self._n_trees
+        if self.console.reuse_tree_check.isChecked():
+            self.az_player.mcts.prune_roots(np.full(K, action, dtype=np.int32))
+        else:
+            for i in range(K):
+                self.az_player.mcts.reset_env(i)
 
     def _record_trend(self):
         """Record current WDL from status bar into trend chart."""
@@ -2688,8 +2756,7 @@ class OthelloGUI(QWidget):
         self.worker.pause_and_wait()
         self.board.overlay_data = None
         self._save_history()
-        K = self._n_trees
-        self.az_player.mcts.prune_roots(np.full(K, 64, dtype=np.int32))
+        self._prune_or_reset(64)
         self._apply_move(64, self.env.turn, is_ai=False)
 
     def mousePressEvent(self, event):
@@ -2709,8 +2776,7 @@ class OthelloGUI(QWidget):
         self.worker.pause_and_wait()
         self.board.overlay_data = None
         self._save_history()
-        K = self._n_trees
-        self.az_player.mcts.prune_roots(np.full(K, action, dtype=np.int32))
+        self._prune_or_reset(action)
         self._apply_move(action, self.env.turn, is_ai=False)
 
     def _save_history(self):

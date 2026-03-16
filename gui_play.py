@@ -78,6 +78,8 @@ class Def:
     mlh_cap = 0.15
     score_utility_factor = 0.0
     score_scale = 8.0
+    reuse_tree = True
+    no_search = False
     time_budget = 0.0
 
 # Game modes
@@ -859,6 +861,118 @@ class StepsBar(QWidget):
         qp.drawText(bw + 4, 0, tw, h, Qt.AlignVCenter | Qt.AlignLeft, text)
 
 
+class WinRateTrend(QWidget):
+    """Q 值趋势图：按手数绘制 Q = (win-lose)/100 曲线，范围 [-1, 1]。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(80)
+        self.player_color = 1
+        # 每个元素: (move_num, win%, draw%, lose%)  — 均为玩家视角 0~100
+        self._data = []
+
+    def set_player_color(self, c):
+        self.player_color = 1 if c == 1 else -1
+        self.update()
+
+    def record(self, move_num, win_pct, draw_pct, lose_pct):
+        self._data.append((move_num, win_pct, draw_pct, lose_pct))
+        self.update()
+
+    def truncate(self, move_num):
+        """回退到 move_num（undo 用）。"""
+        self._data = [d for d in self._data if d[0] <= move_num]
+        self.update()
+
+    def clear(self):
+        self._data.clear()
+        self.update()
+
+    def paintEvent(self, _):
+        qp = QPainter(self)
+        qp.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+
+        # 背景
+        _draw_glass(qp, self.rect(), radius=8, fill_alpha=10, border_alpha=22)
+
+        n = len(self._data)
+        margin_l, margin_r, margin_t, margin_b = 28, 6, 10, 14
+        cw = w - margin_l - margin_r
+        ch = h - margin_t - margin_b
+
+        if cw < 10 or ch < 10:
+            return
+
+        # Q 值 [-1, 1] → Y 坐标
+        def y_of_q(q):
+            return margin_t + (1.0 - q) / 2.0 * ch
+
+        # 0 参考线（均势）
+        qp.setPen(QPen(QColor(255, 255, 255, 20), 1, Qt.DashLine))
+        y0 = y_of_q(0)
+        qp.drawLine(margin_l, int(y0), margin_l + cw, int(y0))
+
+        # Y 轴刻度
+        qp.setPen(QColor(255, 255, 255, 40))
+        qp.setFont(QFont("Consolas", 7))
+        qp.drawText(0, margin_t - 2, margin_l - 4, 12, Qt.AlignRight | Qt.AlignVCenter, "+1")
+        qp.drawText(0, int(y0) - 6, margin_l - 4, 12, Qt.AlignRight | Qt.AlignVCenter, "0")
+        qp.drawText(0, margin_t + ch - 10, margin_l - 4, 12, Qt.AlignRight | Qt.AlignVCenter, "-1")
+
+        if n == 0:
+            qp.setPen(QColor(255, 255, 255, 30))
+            qp.setFont(QFont("Consolas", 9))
+            qp.drawText(self.rect(), Qt.AlignCenter, "Q VALUE TREND")
+            return
+
+        # X 轴坐标映射
+        max_move = max(d[0] for d in self._data)
+        def x_of(mv):
+            if max_move <= 1:
+                return margin_l + cw // 2
+            return margin_l + int((mv / max_move) * cw)
+
+        # Q = (win% - lose%) / 100，范围 [-1, 1]
+        line_clr = QColor(C.CYAN)
+        pts = [QPointF(x_of(d[0]), y_of_q((d[1] - d[3]) / 100.0)) for d in self._data]
+
+        if n == 1:
+            # 单点：画圆点
+            qp.setPen(Qt.NoPen)
+            qp.setBrush(line_clr)
+            qp.drawEllipse(pts[0], 3, 3)
+        else:
+            # 曲线与零线之间半透明填充
+            fill_path = QPainterPath()
+            fill_path.moveTo(QPointF(pts[0].x(), y_of_q(0)))
+            for pt in pts:
+                fill_path.lineTo(pt)
+            fill_path.lineTo(QPointF(pts[-1].x(), y_of_q(0)))
+            fill_path.closeSubpath()
+            qp.fillPath(fill_path, QColor(line_clr.red(), line_clr.green(), line_clr.blue(), 25))
+
+            # Q 值曲线
+            qp.setPen(QPen(line_clr, 1.5))
+            for i in range(n - 1):
+                qp.drawLine(pts[i], pts[i + 1])
+
+        # 末端圆点
+        qp.setPen(Qt.NoPen)
+        qp.setBrush(line_clr)
+        qp.drawEllipse(pts[-1], 2.5, 2.5)
+
+        # X 轴标签
+        qp.setPen(QColor(255, 255, 255, 40))
+        qp.setFont(QFont("Consolas", 7))
+        if n > 0:
+            qp.drawText(x_of(self._data[0][0]) - 8, margin_t + ch + 1, 20, 12,
+                         Qt.AlignCenter, str(self._data[0][0]))
+        if n > 1:
+            qp.drawText(x_of(max_move) - 8, margin_t + ch + 1, 20, 12,
+                         Qt.AlignCenter, str(max_move))
+
+
 class RootStatsWidget(QWidget):
     """MCTS root node statistics — visit distribution, Q values, WDL."""
     def __init__(self, parent=None):
@@ -1491,6 +1605,16 @@ class ParameterConsole(QWidget):
         self.sym_check.setToolTip("Random symmetry transform on leaf nodes")
         lay.addWidget(self.sym_check)
 
+        self.reuse_tree_check = QCheckBox("REUSE TREE")
+        self.reuse_tree_check.setChecked(Def.reuse_tree)
+        self.reuse_tree_check.setToolTip("Reuse subtree from previous move (prune) vs fresh tree each move (reset)")
+        lay.addWidget(self.reuse_tree_check)
+
+        self.no_search_check = QCheckBox("NO SEARCH")
+        self.no_search_check.setChecked(Def.no_search)
+        self.no_search_check.setToolTip("Use raw NN policy without MCTS search (single root expansion only)")
+        lay.addWidget(self.no_search_check)
+
         lay.addStretch()
         self.tabs.addTab(self._wrap_scroll_tab(content), "MCTS")
 
@@ -1532,6 +1656,8 @@ class ParameterConsole(QWidget):
         self.eps_sl.setValue(int(Def.noise_eps * self.eps_sl._scale))
         self.cache_sl.setValue(int(Def.cache * self.cache_sl._scale))
         self.sym_check.setChecked(Def.symmetry)
+        self.reuse_tree_check.setChecked(Def.reuse_tree)
+        self.no_search_check.setChecked(Def.no_search)
         self.mlh_slope_sl.setValue(int(Def.mlh_slope * self.mlh_slope_sl._scale))
         self.mlh_cap_sl.setValue(int(Def.mlh_cap * self.mlh_cap_sl._scale))
         self.score_factor_sl.setValue(int(Def.score_utility_factor * self.score_factor_sl._scale))
@@ -1774,6 +1900,7 @@ class Connect4GUI(QWidget):
         # ── Widgets ─────────────────────────────────────────────────────────
         self.board = BoardWidget(self.env)
         self.status = StatusPanel()
+        self.trend = WinRateTrend()
         self.console = ParameterConsole()
 
         self.ai_root_stats = RootStatsWidget()
@@ -1834,6 +1961,7 @@ class Connect4GUI(QWidget):
 
         # Status (full width)
         main_layout.addWidget(self.status)
+        main_layout.addWidget(self.trend)
 
         # Bottom row: AI panel | Hint panel
         bottom_row = QHBoxLayout()
@@ -1880,7 +2008,7 @@ class Connect4GUI(QWidget):
 
         # Window size
         total_w = self.board.width() + 320 + 48
-        self.setFixedSize(total_w, 960)
+        self.setFixedSize(total_w, 1048)
 
         # MoveLog overlay drawer
         self._build_log_drawer()
@@ -2082,6 +2210,7 @@ class Connect4GUI(QWidget):
         p.eval()
         self._n_trees = p.n_trees
         self.player_color = 1 if self.console.player_cb.currentIndex() == 0 else -1
+        self.trend.set_player_color(self.player_color)
         self.mode = self.console.mode_cb.currentIndex()
         self.console._update_game_visibility(self.mode)
         if self.mode == MODE_AVA:
@@ -2169,6 +2298,7 @@ class Connect4GUI(QWidget):
         self.worker.pause_and_wait()
         self._stop_scan()
         self.player_color = new_color
+        self.trend.set_player_color(new_color)
 
         self.board.ghost_color = QColor(C.RED) if new_color == 1 else QColor(C.YEL)
 
@@ -2246,6 +2376,7 @@ class Connect4GUI(QWidget):
         self.hint_root_stats.clear_data()
         self.hint_child_table.update()
         self.move_count = 0
+        self.trend.clear()
         self.move_log.clear_log()
         self._history.clear()
         self.undo_btn.setEnabled(False)
@@ -2337,7 +2468,58 @@ class Connect4GUI(QWidget):
         self.board.update()
 
     # ── Continuous search helpers ──────────────────────────────────────────
+    def _nn_direct_eval(self, is_ai_turn):
+        """NO SEARCH 模式：单次 NN 前向 + 合法 mask，绕过 MCTS。"""
+        pv_fn = self._pv_fn_for_turn()
+        state = self.env.current_state()               # (1, 3, R, C)
+        probs, wdl, ml = pv_fn.predict(state)           # probs (1, A), wdl (1, 3)
+        probs = probs[0]                                 # (A,)
+        wdl = wdl[0]                                     # (3,) = [draw, win, loss] relative
+        mask = np.array(self.env.valid_mask(), dtype=bool)
+        probs[~mask] = 0.0
+        total = probs.sum()
+        if total > 0:
+            probs /= total
+
+        # 转换 WDL：相对 [draw, win_tomove, loss_tomove] → 绝对 [p1w, p2w]
+        d, w_rel, l_rel = float(wdl[0]), float(wdl[1]), float(wdl[2])
+        if self.env.turn == 1:
+            p1w, p2w = w_rel, l_rel
+        else:
+            p1w, p2w = l_rel, w_rel
+        if self.player_color == 1:
+            win_pct, lose_pct = p1w * 100, p2w * 100
+        else:
+            win_pct, lose_pct = p2w * 100, p1w * 100
+        self.status.set_mcts_rates(win_pct, d * 100, lose_pct)
+
+        action = int(np.argmax(probs))
+
+        if is_ai_turn:
+            ai_turn = self.env.turn
+            self._prune_or_reset(action)
+            row = self.board.find_drop_row(action)
+            if row >= 0:
+                self.board.last_move = (row, action)
+                color = C.RED if ai_turn == 1 else C.YEL
+                self._start_anim(row, action, color,
+                                 lambda a=action: self._after_ai_anim(a))
+        else:
+            # Hint: 显示 NN 原始策略在棋盘上
+            if self._hint_visible:
+                n_pct = probs * 100
+                self.board.overlay_data = {
+                    'N': n_pct,
+                    'Q': np.full_like(probs, float(wdl[1] - wdl[2])),
+                    'W': np.where(mask, win_pct, 0.0),
+                }
+                self.board.overlay_best = action
+                self.board.update()
+
     def _resume_search(self, is_ai_turn):
+        if self.console.no_search_check.isChecked():
+            self._nn_direct_eval(is_ai_turn)
+            return
         p = self.az_player
         K = self._n_trees
         board = np.tile(self.env.board, (K, 1, 1))
@@ -2463,13 +2645,13 @@ class Connect4GUI(QWidget):
         self.ai_root_stats.set_data(stats_0, chosen=action, ai_turn=ai_turn)
         self.ai_child_table.update()
 
-        self.az_player.mcts.prune_roots(np.full(K, action, dtype=np.int32))
+        self._prune_or_reset(action)
 
         # In AvA, reset trees when switching to the other network
         if self.mode == MODE_AVA and self.net2 is not None:
             for i in range(K):
                 self.az_player.mcts.reset_env(i)
-        else:
+        elif self.console.reuse_tree_check.isChecked():
             hint_raw = self.az_player.mcts.get_root_stats()
             all_hint_v = self.az_player.mcts.get_visits_count()
             if K > 1:
@@ -2539,10 +2721,27 @@ class Connect4GUI(QWidget):
             self._start_anim(row, action, color,
                              lambda a=action: self._after_ai_anim(a))
 
+    def _prune_or_reset(self, action):
+        """Prune tree to action's subtree, or reset if reuse is disabled."""
+        K = self._n_trees
+        if self.console.reuse_tree_check.isChecked():
+            self.az_player.mcts.prune_roots(np.full(K, action, dtype=np.int32))
+        else:
+            for i in range(K):
+                self.az_player.mcts.reset_env(i)
+
+    def _record_trend(self):
+        """Record current WDL from status bar into trend chart."""
+        bar = self.status.wdl_bar
+        if bar.w_rate + bar.d_rate + bar.l_rate > 0:
+            self.trend.record(self.move_count,
+                              bar.w_rate * 100, bar.d_rate * 100, bar.l_rate * 100)
+
     def _after_ai_anim(self, action):
         current_player = self.env.turn
         self.env.step(action)
         self.move_count += 1
+        self._record_trend()
         self.move_log.add_move(self.move_count, current_player, action)
         self._update_analysis()
         self.board.update()
@@ -2559,10 +2758,10 @@ class Connect4GUI(QWidget):
 
     def _after_human_anim(self, col):
         current_player = self.env.turn
-        K = self._n_trees
-        self.az_player.mcts.prune_roots(np.full(K, col, dtype=np.int32))
+        self._prune_or_reset(col)
         self.env.step(col)
         self.move_count += 1
+        self._record_trend()
         self.move_log.add_move(self.move_count, current_player, col)
         self._update_analysis()
         self.board.update()
@@ -2583,24 +2782,35 @@ class Connect4GUI(QWidget):
         self.board.win_cells = self.board.find_win_line()
         self.board.update()
 
+        # 终局：用确定结果替换最后一个 MCTS 估计值
+        end_move = self.move_count
+        if self.trend._data and self.trend._data[-1][0] == end_move:
+            self.trend._data.pop()
+
         if self.mode == MODE_AVA:
             if winner == 1:
+                self.trend.record(end_move, 100, 0, 0)
                 self.status.set_turn("P1 WINS", C.RED_HEX)
                 self.status.set_result("P1 WINS (X)", C.RED_HEX)
             elif winner == -1:
+                self.trend.record(end_move, 0, 0, 100)
                 self.status.set_turn("P2 WINS", C.YEL_HEX)
                 self.status.set_result("P2 WINS (O)", C.YEL_HEX)
             else:
+                self.trend.record(end_move, 0, 100, 0)
                 self.status.set_turn("STALEMATE", C.YEL_HEX)
                 self.status.set_result("DRAW", C.YEL_HEX)
         else:
             if winner == self.player_color:
+                self.trend.record(end_move, 100, 0, 0)
                 self.status.set_turn("VICTORY", C.GREEN)
                 self.status.set_result("YOU WIN", C.GREEN)
             elif winner == -self.player_color:
+                self.trend.record(end_move, 0, 0, 100)
                 self.status.set_turn("DEFEATED", C.RED_HEX)
                 self.status.set_result("YOU LOSE", C.RED_HEX)
             else:
+                self.trend.record(end_move, 0, 100, 0)
                 self.status.set_turn("STALEMATE", C.YEL_HEX)
                 self.status.set_result("DRAW", C.YEL_HEX)
 
@@ -2652,6 +2862,7 @@ class Connect4GUI(QWidget):
         self.board.overlay_data = None
         self.board.update()
         self.move_count = saved_count
+        self.trend.truncate(saved_count)
         self.status.set_result("")
         self.ai_root_stats.restore(saved_ai)
         self.ai_child_table.update()
