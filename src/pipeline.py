@@ -153,7 +153,8 @@ class TrainPipeline(ABC):
             psw_beta=getattr(self, 'psw_beta', 0.3),
             entropy_lambda=getattr(self, 'entropy_lambda', 0.01),
             td_alpha=getattr(self, 'td_alpha', 0.0),
-            td_steps=getattr(self, 'td_steps', 5))
+            td_steps=getattr(self, 'td_steps', 5),
+            target_tau=getattr(self, 'target_tau', 0.97))
 
         if self.is_ddp:
             dist.barrier()

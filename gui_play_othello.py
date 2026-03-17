@@ -30,11 +30,12 @@ from PyQt5.QtWidgets import (
 
 ENV_NAME = 'Othello'
 MODEL_NAME = 'AZ'
+PARAMS_DIR = './params'
 PARAMS_PATH = './params/{name}_{env}_{net}_{type}.pt'
 N_ACTIONS = 65      # 64 squares + 1 pass
 BOARD_SIZE = 8
 CHUNK = 50
-PARAMS_DIR = './params'
+
 
 
 def _scan_weight_files(env_name=ENV_NAME, model_name=MODEL_NAME):

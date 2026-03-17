@@ -2752,9 +2752,12 @@ class Connect4GUI(QWidget):
             return
 
         self._update_turn_label()
-        # In AvA, scanning is already handled by pre-set worker in _on_ai_ready
-        if self._is_ai_turn():
+        next_ai = self._is_ai_turn()
+        if next_ai:
             self._start_scan()
+        # NO SEARCH 模式下需要显式触发下一步（正常模式下 worker 已在动画前预启动）
+        if self.console.no_search_check.isChecked():
+            self._resume_search(is_ai_turn=next_ai)
 
     def _after_human_anim(self, col):
         current_player = self.env.turn

@@ -112,6 +112,8 @@ g_train.add_argument('--td_steps', type=int, default=5,
 g_train.add_argument('--td_alpha', type=float, default=0.5,
                       help='N-step TD consistency weight: v_loss = (1-α)×base + α×KL(v(S_{t+k})||v(S_t)) '
                            '(0=disabled)')
+g_train.add_argument('--target_tau', type=float, default=0.97,
+                      help='EMA decay for target network used in TD consistency (higher=slower update)')
 
 # ── Evaluation ────────────────────────────────────────────────────────────────
 g_eval = parser.add_argument_group('Evaluation')
@@ -157,7 +159,8 @@ config = {"lr": args.lr,
           "psw_beta": args.psw_beta,
           "entropy_lambda": args.entropy_lambda,
           "td_steps": args.td_steps,
-          "td_alpha": args.td_alpha}
+          "td_alpha": args.td_alpha,
+          "target_tau": args.target_tau}
 
 
 def print_config():
@@ -221,6 +224,7 @@ def print_config():
             "entropy_lambda": args.entropy_lambda,
             "td_steps": args.td_steps,
             "td_alpha": args.td_alpha,
+            "target_tau": args.target_tau,
         }),
         ("Evaluation", {
             "interval": args.interval,
@@ -399,7 +403,7 @@ _BOOL_PARAMS = {'use_symmetry'}
 _TUNABLE_PARAMS = {
     # Training
     'batch_size', 'entropy_lambda', 'psw_beta', 'distill_alpha',
-    'distill_temp', 'value_decay', 'n_epochs', 'td_alpha',
+    'distill_temp', 'value_decay', 'n_epochs', 'td_alpha', 'target_tau',
     # Self-play (clients pull via GET /config)
     'temp', 'temp_decay_moves', 'temp_endgame',
     'dirichlet_alpha', 'eps', 'noise_steps', 'noise_eps_min',

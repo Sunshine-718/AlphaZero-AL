@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 # Written by: Sunshine
 # Created on: 09/Sep/2024  04:20
+import copy
 import time
 import torch
 import torch.nn as nn
@@ -133,25 +134,50 @@ class Base(ABC, nn.Module):
         return F.nll_loss(steps_pred, aux_target)
 
     @staticmethod
-    def _td_consistency_loss(value_pred, future_wdl_target, batch_data, td_steps):
-        """N-step TD consistency: KL(stopgrad(v(S_{t+k})) || v(S_t)).
+    def _td_consistency_loss(value_pred, future_wdl_target, batch_data, td_steps,
+                             value_decay=1.0):
+        """N-step TD consistency: KL(stopgrad(γ^k·v(S_{t+k})+(1-γ^k)·U) || v(S_t)).
 
         Only applies to positions with steps_to_end > td_steps (non-terminal bootstrap).
         future_wdl_target is already perspective-adjusted and detached.
+        When value_decay < 1, the bootstrap target is discounted to match the
+        decayed value targets used by the main value loss.
         """
         # Mask: only bootstrap from positions far enough from terminal
         td_mask = (batch_data['steps_to_end'].view(-1) > td_steps).float()
         n_valid = td_mask.sum().clamp(min=1)
 
+        # Apply value decay discount: v(S_t) ≈ γ^k · v(S_{t+k}) + (1-γ^k) · uniform
+        if value_decay < 1.0:
+            discount = value_decay ** td_steps
+            future_wdl_target = discount * future_wdl_target + (1 - discount) / 3.0
+
         # KL(future_target || current_pred)
         kl = F.kl_div(value_pred, future_wdl_target, reduction='none').sum(dim=1)
         return (kl * td_mask).sum() / n_valid
 
-    def _prepare_future_wdl(self, model, batch_data):
-        """在主前向传播之前计算 future state 的 WDL target（避免 inplace op 冲突）。"""
+    def _ensure_target_net(self):
+        """Lazy-init EMA target network for stable TD bootstrap targets."""
+        if getattr(self, '_target_net', None) is None:
+            self._target_net = copy.deepcopy(self)
+            # target net is inference-only — drop optimizer/scheduler to save memory
+            for attr in ('opt', 'scheduler'):
+                if hasattr(self._target_net, attr):
+                    delattr(self._target_net, attr)
+            self._target_net.requires_grad_(False)
+            self._target_net.eval()
+
+    @torch.no_grad()
+    def _update_target_net(self, tau):
+        """Soft update: θ_target = τ·θ_target + (1-τ)·θ_online"""
+        for p_tgt, p_src in zip(self._target_net.parameters(), self.parameters()):
+            p_tgt.data.lerp_(p_src.data, 1 - tau)
+
+    def _prepare_future_wdl(self, batch_data):
+        """用 target network 计算 future state 的 WDL target。"""
         future_state = batch_data['future_state']
         with torch.no_grad():
-            _, future_value_log, _ = model(future_state)
+            _, future_value_log, _ = self._target_net(future_state)
             future_wdl = future_value_log.exp()  # (B, 3) [draw, win, loss]
 
         # Determine perspective: compare turn plane of current vs future state
@@ -166,11 +192,13 @@ class Base(ABC, nn.Module):
         return future_wdl_adj
 
     def _optimize_batch(self, model, batch_data, use_soft, value_decay, distill_alpha, distill_temp,
-                        psw_beta=0.0, entropy_lambda=0.0, td_alpha=0.0, td_steps=5):
-        # 先计算 future state WDL（在主前向传播之前，避免 inplace op 破坏计算图）
+                        psw_beta=0.0, entropy_lambda=0.0, td_alpha=0.0, td_steps=5,
+                        target_tau=0.995):
+        # 用 target network 计算 future state WDL（在主前向传播之前，避免 inplace op 破坏计算图）
         future_wdl_target = None
         if td_alpha > 0 and 'future_state' in batch_data:
-            future_wdl_target = self._prepare_future_wdl(model, batch_data)
+            self._ensure_target_net()
+            future_wdl_target = self._prepare_future_wdl(batch_data)
 
         self.opt.zero_grad()
         log_p_pred, value_pred, steps_pred = model(batch_data['state'])
@@ -187,7 +215,8 @@ class Base(ABC, nn.Module):
 
         # N-step TD consistency loss
         if future_wdl_target is not None:
-            td_loss = self._td_consistency_loss(value_pred, future_wdl_target, batch_data, td_steps)
+            td_loss = self._td_consistency_loss(value_pred, future_wdl_target, batch_data, td_steps,
+                                                    value_decay)
             v_loss = (1 - td_alpha) * v_loss + td_alpha * td_loss
 
         s_loss = self._aux_loss(steps_pred, batch_data['aux_target'])
@@ -195,6 +224,8 @@ class Base(ABC, nn.Module):
         loss.backward()
         nn.utils.clip_grad_norm_(self.parameters(), 5)
         self.opt.step()
+        if future_wdl_target is not None:
+            self._update_target_net(target_tau)
         return p_loss, v_loss, s_loss, log_p_pred
 
     @staticmethod
@@ -336,7 +367,8 @@ class Base(ABC, nn.Module):
 
     def train_step(self, dataloader, augment, ddp_model=None, n_epochs=10,
                    distill_alpha=0.0, value_decay=1.0, distill_temp=1.0,
-                   psw_beta=0.0, entropy_lambda=0.0, td_alpha=0.0, td_steps=5):
+                   psw_beta=0.0, entropy_lambda=0.0, td_alpha=0.0, td_steps=5,
+                   target_tau=0.995):
         model = ddp_model if ddp_model is not None else self
         p_l, v_l, s_l = [], [], []
         use_soft = value_decay < 1.0 or distill_alpha > 0
@@ -358,6 +390,7 @@ class Base(ABC, nn.Module):
                     entropy_lambda,
                     td_alpha,
                     td_steps,
+                    target_tau,
                 )
                 p_l.append(p_loss.item())
                 v_l.append(v_loss.item())
