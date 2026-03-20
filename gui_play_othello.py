@@ -4,6 +4,9 @@ import os
 os.environ["OMP_NUM_THREADS"] = "1"
 
 from src.player import Human, AlphaZeroPlayer
+from src.symmetry import (get_sym_config, apply_sym_board, apply_sym_action,
+                          inverse_sym_visits, inverse_sym_stats)
+_SYM_IDS = get_sym_config('Othello')['sym_ids']
 from src.environments import load
 # On Windows, importing PyQt before torch can break torch DLL initialization.
 import torch
@@ -35,7 +38,6 @@ PARAMS_PATH = './params/{name}_{env}_{net}_{type}.pt'
 N_ACTIONS = 65      # 64 squares + 1 pass
 BOARD_SIZE = 8
 CHUNK = 50
-
 
 
 def _scan_weight_files(env_name=ENV_NAME, model_name=MODEL_NAME):
@@ -88,6 +90,24 @@ def action_label(action):
     return f"{chr(ord('a') + c)}{r + 1}"
 
 
+def _parse_book(text):
+    """Parse a book line like 'F5 D6 C3 ...' into a list of action indices."""
+    actions = []
+    for token in text.split():
+        col = ord(token[0].upper()) - ord('A')
+        row = int(token[1]) - 1
+        actions.append(row * 8 + col)
+    return actions
+
+
+# Othello weak solution (black wins by 2 discs with perfect play from both sides)
+BOOK_LINE = _parse_book(
+    "F5 D6 C3 D3 C4 F4 F6 F3 E6 E7 D7 C5 B6 D8 C6 C7 "
+    "D2 B5 A5 A6 A7 G5 E3 B4 C8 G6 G4 C2 E8 D1 F7 E2 "
+    "G3 H4 F1 E1 F2 G1 B1 F8 G8 B3 H3 B2 H5 B7 A3 A4 "
+    "A1 A2 C1 H2 H1 G2 B8 A8 G7 H8 H7 H6")
+
+
 class Def:
     network = 'CNN'
     model_type = 'current'
@@ -105,6 +125,8 @@ class Def:
     score_scale = 8.0
     reuse_tree = True
     no_search = False
+    sym_ensemble = True
+    use_book = False
     time_budget = 0.0  # 秒，0=禁用（按 sims 停），>0 时间到即落子
 
 # Game modes
@@ -1566,6 +1588,21 @@ class ParameterConsole(QWidget):
         self.sym_check.setToolTip("Random symmetry transform on leaf nodes")
         lay.addWidget(self.sym_check)
 
+        self.sym_ensemble_check = QCheckBox("SYM ENSEMBLE")
+        self.sym_ensemble_check.setChecked(Def.sym_ensemble)
+        self.sym_ensemble_check.setToolTip(
+            "Run 4 parallel MCTS trees with different board symmetries\n"
+            "(identity, 180°, main-diag, anti-diag), then merge visit counts.\n"
+            "Stronger than random per-leaf symmetry augmentation.")
+        lay.addWidget(self.sym_ensemble_check)
+
+        self.book_check = QCheckBox("BOOK")
+        self.book_check.setChecked(Def.use_book)
+        self.book_check.setToolTip(
+            "Follow the weak solution book line.\n"
+            "If opponent deviates, switch to AlphaZero for the rest of the game.")
+        lay.addWidget(self.book_check)
+
         self.reuse_tree_check = QCheckBox("REUSE TREE")
         self.reuse_tree_check.setChecked(Def.reuse_tree)
         self.reuse_tree_check.setToolTip("Reuse subtree from previous move (prune) vs fresh tree each move (reset)")
@@ -1613,6 +1650,8 @@ class ParameterConsole(QWidget):
         self.eps_sl.setValue(int(Def.noise_eps * self.eps_sl._scale))
         self.cache_sl.setValue(int(Def.cache * self.cache_sl._scale))
         self.sym_check.setChecked(Def.symmetry)
+        self.sym_ensemble_check.setChecked(Def.sym_ensemble)
+        self.book_check.setChecked(Def.use_book)
         self.reuse_tree_check.setChecked(Def.reuse_tree)
         self.no_search_check.setChecked(Def.no_search)
         self.score_factor_sl.setValue(int(Def.score_utility_factor * self.score_factor_sl._scale))
@@ -1680,6 +1719,19 @@ def _aggregate_root_stats(raw):
     return stats
 
 
+def _aggregate_root_stats_sym_ensemble(raw, sym_ids):
+    """Aggregate root stats with inverse symmetry transform for sym_ensemble mode."""
+    merged = inverse_sym_stats(raw, sym_ids, 'Othello')
+    stats = {}
+    stats['root_N'] = float(merged['root_N'][0])
+    stats['per_tree_N'] = float(raw['root_N'][0])
+    for k in ('root_Q', 'root_M', 'root_D', 'root_P1W', 'root_P2W'):
+        stats[k] = float(merged[k][0])
+    for k in ('N', 'Q', 'prior', 'noise', 'M', 'D', 'P1W', 'P2W'):
+        stats[k] = merged[k][0].copy()
+    return stats
+
+
 class ContinuousSearchWorker(QThread):
     CHUNK = CHUNK
 
@@ -1695,6 +1747,7 @@ class ContinuousSearchWorker(QThread):
         self._is_ai_turn = False
         self._threshold = 500
         self._n_trees = 1
+        self._sym_ensemble = False
         self._vl_batch = 1
         self._time_budget = 0.0
         self._t0 = 0.0
@@ -1706,7 +1759,7 @@ class ContinuousSearchWorker(QThread):
         self._idle.set()
 
     def set_position(self, bmcts, pv_fn, board, turns, is_ai_turn, threshold,
-                     n_trees=1, vl_batch=1, time_budget=0.0):
+                     n_trees=1, sym_ensemble=False, vl_batch=1, time_budget=0.0):
         self._bmcts = bmcts
         self._pv_fn = pv_fn
         self._board = np.ascontiguousarray(board, dtype=np.int8)
@@ -1714,6 +1767,7 @@ class ContinuousSearchWorker(QThread):
         self._is_ai_turn = is_ai_turn
         self._threshold = threshold
         self._n_trees = n_trees
+        self._sym_ensemble = sym_ensemble
         self._vl_batch = vl_batch
         self._time_budget = time_budget
         self._t0 = time.time()
@@ -1759,7 +1813,14 @@ class ContinuousSearchWorker(QThread):
             raw = bm.get_root_stats()
             all_visits = bm.get_visits_count()
 
-            if self._n_trees > 1:
+            if self._sym_ensemble:
+                stats_0 = _aggregate_root_stats_sym_ensemble(raw, _SYM_IDS)
+                # 逆变换每棵树的 visits 回原始坐标后求和
+                transformed_visits = all_visits.copy()
+                for i, sid in enumerate(_SYM_IDS):
+                    transformed_visits[i] = inverse_sym_visits(all_visits[i], sid, 'Othello')
+                visits = transformed_visits.sum(axis=0).copy()
+            elif self._n_trees > 1:
                 stats_0 = _aggregate_root_stats(raw)
                 visits = all_visits.sum(axis=0).copy()
             else:
@@ -1780,20 +1841,13 @@ class ContinuousSearchWorker(QThread):
                            and elapsed >= self._time_budget
                            and per_tree_n >= 8)
 
-                # Visit gap 收敛：最佳着法领先第二名超过剩余搜索量
+                # Early exit：剩余预算全部加到第二名也追不上第一名
                 sorted_v = np.sort(visits)[::-1]
                 only_one = len(sorted_v) < 2 or sorted_v[1] == 0
-                if per_tree_n >= self._threshold:
-                    # 已达目标搜索量：只需领先一个 CHUNK 即可收敛
-                    visit_converged = (only_one
-                                       or sorted_v[0] - sorted_v[1] > self.CHUNK * self._n_trees)
-                elif per_tree_n >= 8:
-                    # 未达目标但搜索量足够：领先差距 > 剩余搜索量才提前停止
-                    remaining = (self._threshold - per_tree_n) * self._n_trees
-                    visit_converged = (only_one
-                                       or sorted_v[0] - sorted_v[1] > remaining)
-                else:
-                    visit_converged = False
+                remaining = max(0, self._threshold - per_tree_n) * self._n_trees
+                visit_converged = (per_tree_n >= 8
+                                   and (only_one
+                                        or sorted_v[0] - sorted_v[1] >= remaining))
 
                 converged = visit_converged or time_up
                 if converged:
@@ -1829,11 +1883,15 @@ class OthelloGUI(QWidget):
             score_utility_factor=Def.score_utility_factor,
             score_scale=Def.score_scale,
             vl_batch=Def.vl_batch)
+        self.az_player2 = None   # second MCTS player for AvA white side
         self.player_color = 1    # 1 = Black (first player)
         self.mode = MODE_HVA
         self.net2 = None         # second network for AvA white side
         self._n_trees = 1
         self.move_count = 0
+        self._book_on = False    # book active for current game
+        self._book_idx = 0       # next move index in BOOK_LINE
+        self._book_sym = 0       # symmetry id mapping actual board → book board
 
         # ── Widgets ─────────────────────────────────────────────────────────
         self.board = BoardWidget(self.env)
@@ -1997,6 +2055,7 @@ class OthelloGUI(QWidget):
 
         def _trees_delayed(_=None): return self.settings_timer.start(400)
         self.console.n_trees_spin.valueChanged.connect(_trees_delayed)
+        self.console.sym_ensemble_check.stateChanged.connect(_trees_delayed)
 
         def _param_delayed(_=None): return self.param_timer.start(150)
         self.console.n_playout_spin.valueChanged.connect(self._on_sims_changed)
@@ -2147,6 +2206,7 @@ class OthelloGUI(QWidget):
         self.status.util_bar.score_scale = p._score_scale
         p.n_trees = self.console.n_trees_spin.value()
         p._vl_batch = self.console.vl_batch_spin.value()
+        p.sym_ensemble = self.console.sym_ensemble_check.isChecked()
 
         p.reload(self.net,
                  c_puct=_sv(self.console.c_init_sl),
@@ -2154,7 +2214,7 @@ class OthelloGUI(QWidget):
                  alpha=_sv(self.console.alpha_sl),
                  is_self_play=0)
         p.eval()
-        self._n_trees = p.n_trees
+        self._n_trees = len(_SYM_IDS) if p.sym_ensemble else p.n_trees
         self.player_color = 1 if self.console.player_cb.currentIndex() == 0 else -1
         self.mode = self.console.mode_cb.currentIndex()
         self.console._update_game_visibility(self.mode)
@@ -2174,7 +2234,11 @@ class OthelloGUI(QWidget):
         m.set_alpha(_sv(self.console.alpha_sl))
         m.set_fpu_reduction(_sv(self.console.fpu_sl))
         m.set_noise_epsilon(_sv(self.console.eps_sl))
-        m.set_use_symmetry(self.console.sym_check.isChecked())
+        # sym_ensemble 模式下禁用 C++ 层随机对称（已在 Python 层手动变换）
+        if self.az_player.sym_ensemble:
+            m.set_use_symmetry(False)
+        else:
+            m.set_use_symmetry(self.console.sym_check.isChecked())
         scale = _sv(self.console.score_scale_sl)
         m.set_score_utility_params(_sv(self.console.score_factor_sl), scale)
         self.ai_root_stats.score_scale = scale
@@ -2188,6 +2252,26 @@ class OthelloGUI(QWidget):
             m.cache_size = new_cache
         self.az_player._vl_batch = self.console.vl_batch_spin.value()
         self.worker._vl_batch = self.az_player._vl_batch
+        # Sync search params to player2 if it exists
+        if self.az_player2 is not None:
+            m2 = self.az_player2.mcts
+            m2.set_c_init(_sv(self.console.c_init_sl))
+            m2.set_c_base(_sv(self.console.c_base_sl))
+            m2.set_alpha(_sv(self.console.alpha_sl))
+            m2.set_fpu_reduction(_sv(self.console.fpu_sl))
+            m2.set_noise_epsilon(_sv(self.console.eps_sl))
+            if self.az_player2.sym_ensemble:
+                m2.set_use_symmetry(False)
+            else:
+                m2.set_use_symmetry(self.console.sym_check.isChecked())
+            m2.set_score_utility_params(_sv(self.console.score_factor_sl), scale)
+            new_cache2 = int(_sv(self.console.cache_sl))
+            old_cache2 = getattr(m2, 'cache_size', 0) or 0
+            if new_cache2 != old_cache2:
+                from src.Cache import LRUCache
+                m2.cache = LRUCache(new_cache2) if new_cache2 > 0 else None
+                m2.cache_size = new_cache2
+            self.az_player2._vl_batch = self.az_player._vl_batch
         if not self._search_paused:
             self.worker.resume()
 
@@ -2202,6 +2286,12 @@ class OthelloGUI(QWidget):
         if self.mode == MODE_AVA:
             return True
         return self.env.turn != self.player_color   # MODE_HVA
+
+    def _active_player(self):
+        """Return the MCTS player for the current turn."""
+        if self.mode == MODE_AVA and self.az_player2 is not None and self.env.turn == -1:
+            return self.az_player2
+        return self.az_player
 
     def _pv_fn_for_turn(self):
         """Return the correct pv_fn for the current turn, considering AvA."""
@@ -2233,6 +2323,10 @@ class OthelloGUI(QWidget):
             return
 
         next_ai = self._is_ai_turn()
+        # First move of the game: skip search, pick randomly
+        if next_ai and self.move_count == 0:
+            self._play_random_opening()
+            return
         if next_ai:
             self._start_scan()
         self._resume_search(is_ai_turn=next_ai)
@@ -2267,7 +2361,7 @@ class OthelloGUI(QWidget):
         self._resume_search(is_ai_turn=next_ai)
 
     def _ensure_net2(self):
-        """Load (or reload) the second network for AvA White side."""
+        """Load (or reload) the second network + MCTS player for AvA White side."""
         wt_file2 = self.console.model_type_cb2.currentText()
         network = _net_type_from_filename(wt_file2)
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -2280,6 +2374,27 @@ class OthelloGUI(QWidget):
             self.status.set_result("MODEL2 ERROR", C.RED_HEX)
         self.net2 = net2
 
+        # Create a second MCTS player mirroring az_player's config
+        p = self.az_player
+        self.az_player2 = AlphaZeroPlayer(
+            None, c_init=None, c_base=p._c_base, n_playout=None,
+            alpha=p._alpha, noise_epsilon=p._noise_eps,
+            is_selfplay=0, cache_size=p._cache_size,
+            fpu_reduction=p._fpu_reduction, use_symmetry=p._use_symmetry,
+            game_name='Othello',
+            score_utility_factor=p._score_utility_factor,
+            score_scale=p._score_scale,
+            vl_batch=p._vl_batch)
+        p2 = self.az_player2
+        p2.sym_ensemble = p.sym_ensemble
+        p2.n_trees = p.n_trees
+        p2.reload(net2,
+                  c_puct=p.mcts.mcts.config.c_init,
+                  n_playout=p.mcts.mcts.config.n_playout,
+                  alpha=p._alpha,
+                  is_self_play=0)
+        p2.eval()
+
     def _reload_net2_delayed(self):
         """Reload White AI network without restart (AvA only)."""
         if self.mode != MODE_AVA:
@@ -2287,9 +2402,6 @@ class OthelloGUI(QWidget):
         self.worker.pause_and_wait()
         self._stop_scan()
         self._ensure_net2()
-        # Reset trees — cached evaluations are stale
-        for i in range(self._n_trees):
-            self.az_player.mcts.reset_env(i)
         if not self.env.done():
             next_ai = self._is_ai_turn()
             if next_ai:
@@ -2306,6 +2418,10 @@ class OthelloGUI(QWidget):
         self.env.reset()
         for i in range(self._n_trees):
             self.az_player.mcts.reset_env(i)
+        if self.az_player2 is not None:
+            K2 = len(_SYM_IDS) if self.az_player2.sym_ensemble else self._n_trees
+            for i in range(K2):
+                self.az_player2.mcts.reset_env(i)
         self.board.last_move = None
         self.board.interactive = True
         self.board.ghost_color = QColor(C.BLACK) if self.player_color == 1 else QColor(C.WHITE)
@@ -2333,14 +2449,20 @@ class OthelloGUI(QWidget):
         self._update_analysis()
         self._update_turn_label()
 
+        self._book_on = self.console.book_check.isChecked()
+        self._book_idx = 0
+        self._book_sym = 0
+
         self._search_paused = False
         self.pause_btn.setChecked(False)
         self.pause_btn.setText("PAUSE")
 
         is_ai_first = self._is_ai_turn()
+        # First move: all 4 legal positions are symmetric-equivalent, pick randomly
         if is_ai_first:
-            self._start_scan()
-        self._resume_search(is_ai_turn=is_ai_first)
+            self._play_random_opening()
+            return
+        self._resume_search(is_ai_turn=False)
 
     def _update_turn_label(self):
         if self.env.done():
@@ -2469,6 +2591,7 @@ class OthelloGUI(QWidget):
         action = int(np.argmax(probs))
 
         if is_ai_turn:
+            self._save_history()
             self._prune_or_reset(action)
             self._apply_move(action, self.env.turn, is_ai=True)
         else:
@@ -2487,15 +2610,22 @@ class OthelloGUI(QWidget):
         if self.console.no_search_check.isChecked():
             self._nn_direct_eval(is_ai_turn)
             return
-        p = self.az_player
-        K = self._n_trees
-        board = np.tile(self.env.board, (K, 1, 1))
+        p = self._active_player()
+        sym_ens = p.sym_ensemble
+        if sym_ens:
+            K = len(_SYM_IDS)
+            board = np.stack([apply_sym_board(self.env.board, s, 'Othello')
+                              for s in _SYM_IDS])
+        else:
+            K = self._n_trees
+            board = np.tile(self.env.board, (K, 1, 1))
         turns = np.full(K, self.env.turn, dtype=np.int32)
         threshold = self.console.n_playout_spin.value()
         tb = self.console.time_budget_spin.value()
         pv_fn = self._pv_fn_for_turn()
         self.worker.set_position(p.mcts, pv_fn, board, turns,
                                  is_ai_turn, threshold, n_trees=K,
+                                 sym_ensemble=sym_ens,
                                  vl_batch=p._vl_batch, time_budget=tb)
         if not self._search_paused:
             self.worker.resume()
@@ -2546,12 +2676,19 @@ class OthelloGUI(QWidget):
         self.worker._threshold = new_thr
         self.worker._time_budget = self.console.time_budget_spin.value()
         if self.worker._is_ai_turn and not self.worker._ai_acted:
-            raw = self.az_player.mcts.get_root_stats()
+            ap = self._active_player()
+            raw = ap.mcts.get_root_stats()
             root_n = float(raw['root_N'][0])
             if root_n >= new_thr:
                 K = self._n_trees
-                all_visits = self.az_player.mcts.get_visits_count()
-                if K > 1:
+                all_visits = ap.mcts.get_visits_count()
+                if ap.sym_ensemble:
+                    stats_0 = _aggregate_root_stats_sym_ensemble(raw, _SYM_IDS)
+                    transformed = all_visits.copy()
+                    for i, sid in enumerate(_SYM_IDS):
+                        transformed[i] = inverse_sym_visits(all_visits[i], sid, 'Othello')
+                    visits = transformed.sum(axis=0).copy()
+                elif K > 1:
                     stats_0 = _aggregate_root_stats(raw)
                     visits = all_visits.sum(axis=0).copy()
                 else:
@@ -2611,18 +2748,27 @@ class OthelloGUI(QWidget):
         self.ai_root_stats.set_data(stats_0, chosen=action, ai_turn=ai_turn)
         self.ai_child_table.update()
 
+        self._save_history()
         self._prune_or_reset(action)
 
-        # In AvA, reset trees when switching to the other network
-        # to avoid stale NN evaluations from the previous player's network
-        if self.mode == MODE_AVA and self.net2 is not None:
-            for i in range(K):
-                self.az_player.mcts.reset_env(i)
-        elif self.console.reuse_tree_check.isChecked():
-            # Pre-compute hint for next position (reuse pruned subtree)
-            hint_raw = self.az_player.mcts.get_root_stats()
-            all_hint_v = self.az_player.mcts.get_visits_count()
-            if K > 1:
+        if self.console.reuse_tree_check.isChecked():
+            # Pre-compute hint from the NEXT player's pruned subtree.
+            # env.turn hasn't changed yet (step not called), so next = opponent.
+            if self.mode == MODE_AVA and self.az_player2 is not None:
+                # AvA: each player has own tree; pick the opponent's
+                hint_player = self.az_player2 if ai_turn == 1 else self.az_player
+            else:
+                hint_player = self.az_player
+            hint_raw = hint_player.mcts.get_root_stats()
+            all_hint_v = hint_player.mcts.get_visits_count()
+            if hint_player.sym_ensemble:
+                hint_s0 = _aggregate_root_stats_sym_ensemble(
+                    hint_raw, _SYM_IDS)
+                transformed = all_hint_v.copy()
+                for i, sid in enumerate(_SYM_IDS):
+                    transformed[i] = inverse_sym_visits(all_hint_v[i], sid, 'Othello')
+                hint_v = transformed.sum(axis=0).copy()
+            elif K > 1:
                 hint_s0 = _aggregate_root_stats(hint_raw)
                 hint_v = all_hint_v.sum(axis=0).copy()
             else:
@@ -2655,14 +2801,26 @@ class OthelloGUI(QWidget):
         # Apply AI move
         self._apply_move(action, ai_turn, is_ai=True)
 
-    def _prune_or_reset(self, action):
-        """Prune tree to action's subtree, or reset if reuse is disabled."""
-        K = self._n_trees
-        if self.console.reuse_tree_check.isChecked():
-            self.az_player.mcts.prune_roots(np.full(K, action, dtype=np.int32))
-        else:
+    def _prune_or_reset_player(self, player, action):
+        """Prune a single player's tree to action's subtree, or reset."""
+        K = len(_SYM_IDS) if player.sym_ensemble else self._n_trees
+        if not self.console.reuse_tree_check.isChecked():
             for i in range(K):
-                self.az_player.mcts.reset_env(i)
+                player.mcts.reset_env(i)
+        elif player.sym_ensemble:
+            sym_actions = np.array(
+                [apply_sym_action(action, s, 'Othello') for s in _SYM_IDS],
+                dtype=np.int32)
+            player.mcts.prune_roots(sym_actions)
+        else:
+            player.mcts.prune_roots(np.full(K, action, dtype=np.int32))
+
+    def _prune_or_reset(self, action):
+        """Prune tree(s) to action's subtree, or reset if reuse is disabled."""
+        self._prune_or_reset_player(self.az_player, action)
+        # AvA: also prune the other player's tree
+        if self.mode == MODE_AVA and self.az_player2 is not None:
+            self._prune_or_reset_player(self.az_player2, action)
 
     def _record_trend(self):
         """Record current WDL from status bar into trend chart."""
@@ -2677,6 +2835,27 @@ class OthelloGUI(QWidget):
             self.board.last_move = action_to_rc(action)
         else:
             self.board.last_move = 'pass'
+
+        # Book tracking: check if this move matches the book line
+        if self._book_on:
+            if self._book_idx < len(BOOK_LINE):
+                if self._book_idx == 0:
+                    # First move: detect which symmetry maps it to BOOK_LINE[0]
+                    matched = False
+                    for s in _SYM_IDS:
+                        if apply_sym_action(action, s, 'Othello') == BOOK_LINE[0]:
+                            self._book_sym = s
+                            self._book_idx = 1
+                            matched = True
+                            break
+                    if not matched:
+                        self._book_on = False
+                elif apply_sym_action(action, self._book_sym, 'Othello') == BOOK_LINE[self._book_idx]:
+                    self._book_idx += 1
+                else:
+                    self._book_on = False  # deviation → switch to AlphaZero
+            else:
+                self._book_on = False
 
         self.env.step(action)
         self.move_count += 1
@@ -2695,11 +2874,54 @@ class OthelloGUI(QWidget):
         self._update_turn_label()
         self._update_pass_btn()
 
-        # Determine next step based on mode
+        # Book: if still on-book and it's AI's turn, play instantly
         next_ai = self._is_ai_turn()
+        if self._book_on and next_ai:
+            self._play_book_move()
+            return
+
+        # Normal AlphaZero search
         if next_ai:
             self._start_scan()
         self._resume_search(is_ai_turn=next_ai)
+
+    def _play_random_opening(self):
+        """First move of the game: randomly pick one of the 4 equivalent openings."""
+        import random
+        # All 4 legal first moves are symmetric equivalents of F5
+        sym = random.choice(_SYM_IDS)
+        action = apply_sym_action(BOOK_LINE[0], sym, 'Othello')
+        ai_turn = self.env.turn
+        label = action_label(action).upper()
+        self.status.set_thinking(0)
+        # Book: pre-set sym so _apply_move's first-move detection confirms it
+        if self._book_on:
+            self._book_sym = sym
+            self.status.set_result(f"BOOK: {label}")
+        self._save_history()
+        self._prune_or_reset(action)
+        self._apply_move(action, ai_turn, is_ai=True)
+
+    def _play_book_move(self):
+        """Play the next book move instantly (no MCTS search)."""
+        if self._book_idx >= len(BOOK_LINE):
+            self._book_on = False
+            # Fallback to normal search
+            next_ai = self._is_ai_turn()
+            if next_ai:
+                self._start_scan()
+            self._resume_search(is_ai_turn=next_ai)
+            return
+        # Map canonical book action back to actual board coordinates
+        # Each Othello symmetry is its own inverse (involution), so apply same sym
+        action = apply_sym_action(BOOK_LINE[self._book_idx], self._book_sym, 'Othello')
+        ai_turn = self.env.turn
+        label = action_label(action).upper()
+        self.status.set_thinking(0)
+        self.status.set_result(f"BOOK: {label}")
+        self._save_history()
+        self._prune_or_reset(action)
+        self._apply_move(action, ai_turn, is_ai=True)
 
     def _show_result(self):
         winner = self.env.winPlayer()
@@ -2784,7 +3006,8 @@ class OthelloGUI(QWidget):
         self._history.append((self.env.copy(), self.board.last_move, self.move_count,
                               self.ai_root_stats.snapshot(),
                               self.hint_root_stats.snapshot(),
-                              self.move_log.snapshot()))
+                              self.move_log.snapshot(),
+                              self._book_on, self._book_idx, self._book_sym))
         self.undo_btn.setEnabled(True)
 
     # ═══════════════════════════════════════════════════════════════════════
@@ -2799,11 +3022,19 @@ class OthelloGUI(QWidget):
             return
         self.worker.pause_and_wait()
         self._stop_scan()
-        saved_env, saved_last, saved_count, saved_ai, saved_hint, saved_log = self._history.pop()
+        *saved, saved_book_on, saved_book_idx, saved_book_sym = self._history.pop()
+        saved_env, saved_last, saved_count, saved_ai, saved_hint, saved_log = saved
+        self._book_on = saved_book_on
+        self._book_idx = saved_book_idx
+        self._book_sym = saved_book_sym
         self.env = saved_env
         self.board.env = saved_env
         for i in range(self._n_trees):
             self.az_player.mcts.reset_env(i)
+        if self.az_player2 is not None:
+            K2 = len(_SYM_IDS) if self.az_player2.sym_ensemble else self._n_trees
+            for i in range(K2):
+                self.az_player2.mcts.reset_env(i)
         self.board.last_move = saved_last
         self.board.overlay_data = None
         self.board.update_valid()
@@ -2821,10 +3052,16 @@ class OthelloGUI(QWidget):
         self._update_turn_label()
         self._update_pass_btn()
         if not self.env.done():
-            next_ai = self._is_ai_turn()
-            if next_ai:
-                self._start_scan()
-            self._resume_search(is_ai_turn=next_ai)
+            if self.mode == MODE_AVA:
+                # AVA: undo 后自动暂停，防止 AI 立刻再下一步
+                self._search_paused = True
+                self.pause_btn.setChecked(True)
+                self.pause_btn.setText("RESUME")
+            else:
+                next_ai = self._is_ai_turn()
+                if next_ai:
+                    self._start_scan()
+                self._resume_search(is_ai_turn=next_ai)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

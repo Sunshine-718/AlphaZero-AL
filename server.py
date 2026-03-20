@@ -44,7 +44,7 @@ g_mcts.add_argument('-c', '--c_init', type=float, default=1.4, help='PUCT explor
 g_mcts.add_argument('--c_base_factor', type=float, default=5,
                      help='PUCT base factor (c_base = n * c_base_factor)')
 g_mcts.add_argument('--fpu_reduction', type=float, default=0.2, help='First-play urgency reduction')
-g_mcts.add_argument('--vl_batch', type=int, default=1,
+g_mcts.add_argument('--vl_batch', type=int, default=4,
                      help='Virtual Loss batch size per tree iteration')
 g_mcts.add_argument('--cache_size', type=int, default=10000, help='LRU transposition table max size')
 g_mcts.add_argument('--no_symmetry', action='store_true',
@@ -64,7 +64,7 @@ g_aux.add_argument('--mlh_slope', type=float, default=0.1,
                     help='MLH slope for MCTS (0=disabled, Connect4 用)')
 g_aux.add_argument('--mlh_cap', type=float, default=0.2,
                     help='MLH max effect cap')
-g_aux.add_argument('--score_utility_factor', type=float, default=0.1,
+g_aux.add_argument('--score_utility_factor', type=float, default=0.15,
                     help='KataGo-style score utility weight (0=disabled, Othello 用)')
 g_aux.add_argument('--score_scale', type=float, default=8.0,
                     help='Score atan mapping scale denominator')
@@ -78,7 +78,7 @@ g_sp.add_argument('--temp_decay_moves', type=int, default=20,
                    help='Number of moves to linearly decay temperature to 0 (0=no decay)')
 g_sp.add_argument('--temp_endgame', type=float, default=0.3,
                    help='Temperature floor (minimum temperature after decay)')
-g_sp.add_argument('--actor', type=str, default='best',
+g_sp.add_argument('--actor', type=str, default='current',
                    help='Which weight actors load (best/current)')
 
 # ── Training ──────────────────────────────────────────────────────────────────
@@ -88,7 +88,7 @@ g_train.add_argument('-b', '--batch_size', type=int, default=512, help='Training
 g_train.add_argument('--buf', '--buffer_size', type=int, default=500000, help='Replay buffer size')
 g_train.add_argument('--q_size', type=int, default=1,
                       help='Minimum buffer size before training starts')
-g_train.add_argument('--replay_ratio', type=float, default=0.1,
+g_train.add_argument('--replay_ratio', type=float, default=0.05,
                       help='Fraction of buffer sampled per training step')
 g_train.add_argument('--n_epochs', type=int, default=5, help='Training epochs per update')
 g_train.add_argument('--policy_lr_scale', type=float, default=0.3,
@@ -96,30 +96,32 @@ g_train.add_argument('--policy_lr_scale', type=float, default=0.3,
 g_train.add_argument('--dropout', type=float, default=0.1, help='Dropout rate')
 g_train.add_argument('--distill_alpha', type=float, default=0.75,
                       help='Distillation weight α: loss = (1-α)×CE(z) + α×KL(root_wdl||student) (0=pure z, 0.75=Lc0-style)')
-g_train.add_argument('--distill_temp', type=float, default=1.0,
+g_train.add_argument('--distill_temp', type=float, default=2.0,
                       help='Distillation temperature T: softens teacher/student distributions (1.0=no scaling, >1=softer)')
-g_train.add_argument('--value_decay', type=float, default=0.99,
+g_train.add_argument('--value_decay', type=float, default=1,
                       help='Game-length discount γ for value targets: target = γ^steps × z + (1-γ^steps) × uniform '
                            '(1.0=no scaling, 0.99=moderate, 0.97=aggressive)')
-g_train.add_argument('--psw_beta', type=float, default=0.3,
+g_train.add_argument('--psw_beta', type=float, default=0.5,
                       help='Policy Surprise Weighting β: w = 1 + β×KL(π||p), up-weights positions where '
                            'MCTS policy diverges from network prior (0=disabled)')
-g_train.add_argument('--entropy_lambda', type=float, default=0.01,
+g_train.add_argument('--entropy_lambda', type=float, default=0.05,
                       help='Entropy regularization λ: subtracts λ×H(p) from policy loss to discourage '
                            'policy collapse (0=disabled)')
-g_train.add_argument('--td_steps', type=int, default=5,
+g_train.add_argument('--td_steps', type=int, default=10,
                       help='N-step TD: number of steps k for future state S_{t+k} (0=disabled)')
 g_train.add_argument('--td_alpha', type=float, default=0.5,
                       help='N-step TD consistency weight: v_loss = (1-α)×base + α×KL(v(S_{t+k})||v(S_t)) '
                            '(0=disabled)')
 g_train.add_argument('--target_tau', type=float, default=0.97,
                       help='EMA decay for target network used in TD consistency (higher=slower update)')
+g_train.add_argument('--spr_alpha', type=float, default=5,
+                      help='SPR (Self-Predictive Representations) loss weight (0=disabled)')
 
 # ── Evaluation ────────────────────────────────────────────────────────────────
 g_eval = parser.add_argument_group('Evaluation')
 g_eval.add_argument('--interval', type=int, default=10, help='Eval interval (training steps)')
 g_eval.add_argument('--num_eval', type=int, default=50, help='Number of evaluation games')
-g_eval.add_argument('--thres', type=float, default=0.55, help='Win rate threshold for new best')
+g_eval.add_argument('--thres', type=float, default=0.65, help='Win rate threshold for new best')
 g_eval.add_argument('--mcts_n', type=int, default=1000, help='Benchmark pure MCTS simulations')
 
 parser.add_argument('--config', action='store_true', help='Display current config and exit')
@@ -160,7 +162,8 @@ config = {"lr": args.lr,
           "entropy_lambda": args.entropy_lambda,
           "td_steps": args.td_steps,
           "td_alpha": args.td_alpha,
-          "target_tau": args.target_tau}
+          "target_tau": args.target_tau,
+          "spr_alpha": args.spr_alpha}
 
 
 def print_config():
@@ -225,6 +228,7 @@ def print_config():
             "td_steps": args.td_steps,
             "td_alpha": args.td_alpha,
             "target_tau": args.target_tau,
+            "spr_alpha": args.spr_alpha,
         }),
         ("Evaluation", {
             "interval": args.interval,
@@ -394,6 +398,7 @@ def get_config():
         'eps': pipeline.eps,
         'td_steps': getattr(pipeline, 'td_steps', 0),
         'td_alpha': getattr(pipeline, 'td_alpha', 0.0),
+        'spr_alpha': getattr(pipeline, 'spr_alpha', 0.0),
     })
 
 
@@ -403,7 +408,7 @@ _BOOL_PARAMS = {'use_symmetry'}
 _TUNABLE_PARAMS = {
     # Training
     'batch_size', 'entropy_lambda', 'psw_beta', 'distill_alpha',
-    'distill_temp', 'value_decay', 'n_epochs', 'td_alpha', 'target_tau',
+    'distill_temp', 'value_decay', 'n_epochs', 'td_alpha', 'target_tau', 'spr_alpha',
     # Self-play (clients pull via GET /config)
     'temp', 'temp_decay_moves', 'temp_endgame',
     'dirichlet_alpha', 'eps', 'noise_steps', 'noise_eps_min',

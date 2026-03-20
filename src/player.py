@@ -6,6 +6,8 @@ import numpy as np
 from abc import abstractmethod, ABC
 from .utils import softmax
 from .MCTS_cpp import BatchedMCTS
+from .symmetry import (get_sym_config, apply_sym_board, apply_sym_action,
+                       inverse_sym_visits, inverse_sym_stats)
 
 
 class Player(ABC):
@@ -122,6 +124,7 @@ class AlphaZeroPlayer(Player):
                  value_decay=1.0,
                  n_trees=1,
                  vl_batch=1,
+                 sym_ensemble=False,
                  # 向后兼容：旧调用方用 eps= 而非 noise_epsilon=
                  eps=None):
         super().__init__()
@@ -149,6 +152,7 @@ class AlphaZeroPlayer(Player):
         self._value_decay = value_decay
         self._vl_batch = max(1, vl_batch)
         self._time_budget = None  # 秒；None 表示按 n_playout 固定次数搜索
+        self.sym_ensemble = sym_ensemble
 
         # 噪声衰减（批量自对弈用）
         self.noise_eps_init = self._noise_eps
@@ -163,15 +167,28 @@ class AlphaZeroPlayer(Player):
         else:
             self.mcts = None  # gui_play creates with None, then reload
 
+    def _sym_config(self):
+        """返回当前游戏的对称配置。"""
+        return get_sym_config(self._game_name)
+
     def _make_mcts(self, noise_eps):
-        # Root-parallel: when n_envs=1 and n_trees>1, batch_size = n_trees
-        bs = self.n_trees if (self.n_envs == 1 and self.n_trees > 1) else self.n_envs
+        # sym_ensemble: 固定 K 棵树（K 种对称），关闭 C++ 层随机对称
+        if self.sym_ensemble:
+            cfg = self._sym_config()
+            bs = len(cfg['sym_ids']) if cfg else 1
+            use_sym = False
+        elif self.n_envs == 1 and self.n_trees > 1:
+            bs = self.n_trees
+            use_sym = self._use_symmetry
+        else:
+            bs = self.n_envs
+            use_sym = self._use_symmetry
         return BatchedMCTS(
             batch_size=bs, c_init=self._c_init, c_base=self._c_base,
             alpha=self._alpha, n_playout=self._n_playout,
             game_name=self._game_name, board_converter=self._board_converter,
             cache_size=self._cache_size, noise_epsilon=noise_eps,
-            fpu_reduction=self._fpu_reduction, use_symmetry=self._use_symmetry,
+            fpu_reduction=self._fpu_reduction, use_symmetry=use_sym,
             mlh_slope=self._mlh_slope, mlh_cap=self._mlh_cap,
             score_utility_factor=self._score_utility_factor,
             score_scale=self._score_scale,
@@ -200,22 +217,33 @@ class AlphaZeroPlayer(Player):
 
     def eval(self):
         if self.mcts:
-            # Root-parallel 需要噪声来分化树的搜索路径
-            # n_trees > 1 时保留最小噪声，否则 K 棵树完全相同
-            if self.n_trees > 1:
+            # sym_ensemble 不需要噪声：4 棵树看到不同棋盘，搜索路径自然不同
+            if self.sym_ensemble:
+                self.mcts.set_noise_epsilon(0.0)
+            elif self.n_trees > 1:
+                # Root-parallel 需要噪声来分化树的搜索路径
                 self.mcts.set_noise_epsilon(self._ROOT_PARALLEL_MIN_NOISE)
             else:
                 self.mcts.set_noise_epsilon(0.0)
 
     def reset_player(self):
         if self.mcts:
-            bs = self.n_trees if (self.n_envs == 1 and self.n_trees > 1) else self.n_envs
+            if self.sym_ensemble:
+                cfg = self._sym_config()
+                bs = len(cfg['sym_ids']) if cfg else 1
+            elif self.n_envs == 1 and self.n_trees > 1:
+                bs = self.n_trees
+            else:
+                bs = self.n_envs
             for i in range(bs):
                 self.mcts.reset_env(i)
 
     # ── 单环境接口（play.py / gui_play.py / pipeline Elo）────────────────────
 
     def get_action(self, env, temp=0):
+        if self.sym_ensemble:
+            return self._get_action_sym_ensemble(env, temp)
+
         K = self.n_trees
         board = np.tile(env.board, (K, 1, 1))    # (K, H, W)
         turns = np.full(K, env.turn, dtype=np.int32)
@@ -243,6 +271,52 @@ class AlphaZeroPlayer(Player):
 
         if self.is_selfplay:
             self.mcts.prune_roots(np.full(K, action, dtype=np.int32))
+        else:
+            for i in range(K):
+                self.mcts.reset_env(i)
+
+        return action, action_probs
+
+    def _get_action_sym_ensemble(self, env, temp=0):
+        """对称并行搜索：K 种对称同时搜索，逆变换后合并 visit counts。"""
+        cfg = self._sym_config()
+        sym_ids = cfg['sym_ids']
+        game = self._game_name
+        K = len(sym_ids)
+        boards = np.stack([apply_sym_board(env.board, s, game) for s in sym_ids])
+        turns = np.full(K, env.turn, dtype=np.int32)
+
+        self.mcts.batch_playout(self.pv_fn, boards, turns,
+                                vl_batch=self._vl_batch, time_budget=self._time_budget)
+        all_visits = self.mcts.get_visits_count()  # (K, action_size)
+
+        # 逆变换每棵树的 visits 回原始坐标
+        for i, sym_id in enumerate(sym_ids):
+            all_visits[i] = inverse_sym_visits(all_visits[i], sym_id, game)
+
+        visits = all_visits.sum(axis=0)
+
+        action_probs = np.zeros(self.n_actions, dtype=np.float32)
+        valid_mask = visits > 0
+
+        if not valid_mask.any():
+            return 0, action_probs
+
+        action_probs[valid_mask] = visits[valid_mask] / visits[valid_mask].sum()
+
+        if temp <= 1e-6:
+            action = int(np.argmax(visits))
+        else:
+            valid_actions = np.where(valid_mask)[0]
+            log_visits = np.log(visits[valid_mask])
+            sample_dist = softmax(log_visits / temp)
+            action = np.random.choice(valid_actions, p=sample_dist)
+
+        # 各树的 action 需按对称映射后再 prune
+        if self.is_selfplay:
+            sym_actions = np.array(
+                [apply_sym_action(action, s, game) for s in sym_ids], dtype=np.int32)
+            self.mcts.prune_roots(sym_actions)
         else:
             for i in range(K):
                 self.mcts.reset_env(i)
