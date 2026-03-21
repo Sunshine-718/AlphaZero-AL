@@ -302,7 +302,8 @@ class Base(ABC, nn.Module):
             try:
                 if dir_path is not None:
                     os.makedirs(dir_path, exist_ok=True)
-                    torch.save(self.state_dict(), os.path.join(dir_path, 'model.pt'))
+                    sd = {k.removeprefix('_orig_mod.'): v for k, v in self.state_dict().items()}
+                    torch.save(sd, os.path.join(dir_path, 'model.pt'))
                     torch.save(self.opt.state_dict(), os.path.join(dir_path, 'optimizer.pt'))
                     torch.save(self.scheduler.state_dict(), os.path.join(dir_path, 'scheduler.pt'))
                     break

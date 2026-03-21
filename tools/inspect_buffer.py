@@ -822,31 +822,34 @@ def _extract_attention_weights(net, state_tensor):
     """Extract attention weights from all Attention modules in the network.
 
     Since scaled_dot_product_attention doesn't return weights,
-    we hook into Attention.forward to compute them from Q, K.
+    we hook into q_norm/k_norm outputs to capture normalized Q/K,
+    then compute softmax(Q @ K^T / sqrt(d_k)).
+
+    Supports both fused QKV (`qkv_proj`) and separate (`q_proj`/`k_proj`) layouts.
 
     Returns list of (num_heads, seq_len, seq_len) tensors, one per Attention layer.
     """
     attn_weights = []
 
-    def _hook(module, args, output):
-        with torch.no_grad():
-            x = args[0]
-            B, S, _ = x.shape
-            x_normed = module.prenorm(x)
-            xq = module.q_proj(x_normed).reshape(B, S, module.num_heads, module.head_dim)
-            xq = module.q_norm(xq).transpose(1, 2)
-            xk = module.k_proj(x_normed).reshape(B, S, module.num_heads, module.head_dim)
-            xk = module.k_norm(xk).transpose(1, 2)
-            scale = module.head_dim ** 0.5
-            scores = torch.matmul(xq, xk.transpose(-2, -1)) / scale
-            weights = torch.softmax(scores, dim=-1)  # (B, heads, S, S)
-            attn_weights.append(weights[0].cpu())  # take first batch item
-
-    # Find all Attention modules dynamically
+    # Collect (q_norm_output, k_norm_output) per Attention layer via hooks
+    captured = {}  # id(module) -> {'q': tensor, 'k': tensor}
     hooks = []
+
     for m in net.modules():
-        if type(m).__name__ == 'Attention' and hasattr(m, 'q_proj'):
-            hooks.append(m.register_forward_hook(_hook))
+        if type(m).__name__ == 'Attention' and hasattr(m, 'q_norm'):
+            mid = id(m)
+            captured[mid] = {}
+
+            def _make_hooks(mid):
+                def _hq(module, input, output):
+                    captured[mid]['q'] = output.detach()
+                def _hk(module, input, output):
+                    captured[mid]['k'] = output.detach()
+                return _hq, _hk
+
+            hq, hk = _make_hooks(mid)
+            hooks.append(m.q_norm.register_forward_hook(hq))
+            hooks.append(m.k_norm.register_forward_hook(hk))
 
     if not hooks:
         return []
@@ -856,6 +859,18 @@ def _extract_attention_weights(net, state_tensor):
 
     for h in hooks:
         h.remove()
+
+    # Compute attention weights from captured Q, K
+    for m in net.modules():
+        if id(m) in captured and 'q' in captured[id(m)] and 'k' in captured[id(m)]:
+            # q_norm output: (B, S, H, D) — before transpose
+            q = captured[id(m)]['q'].permute(0, 2, 1, 3)  # (B, H, S, D)
+            k = captured[id(m)]['k'].permute(0, 2, 1, 3)
+            head_dim = q.shape[-1]
+            scores = torch.matmul(q, k.transpose(-2, -1)) / (head_dim ** 0.5)
+            weights = torch.softmax(scores, dim=-1)  # (B, H, S, S)
+            attn_weights.append(weights[0].cpu())
+
     return attn_weights
 
 

@@ -124,6 +124,9 @@ g_eval.add_argument('--num_eval', type=int, default=50, help='Number of evaluati
 g_eval.add_argument('--thres', type=float, default=0.65, help='Win rate threshold for new best')
 g_eval.add_argument('--mcts_n', type=int, default=1000, help='Benchmark pure MCTS simulations')
 
+g_train.add_argument('--compile', action='store_true',
+                      help='Enable torch.compile for training acceleration (requires PyTorch 2.0+)')
+
 parser.add_argument('--config', action='store_true', help='Display current config and exit')
 
 args, _ = parser.parse_known_args()
@@ -163,7 +166,8 @@ config = {"lr": args.lr,
           "td_steps": args.td_steps,
           "td_alpha": args.td_alpha,
           "target_tau": args.target_tau,
-          "spr_alpha": args.spr_alpha}
+          "spr_alpha": args.spr_alpha,
+          "compile": args.compile}
 
 
 def print_config():
@@ -228,6 +232,7 @@ def print_config():
             "td_alpha": args.td_alpha,
             "target_tau": args.target_tau,
             "spr_alpha": args.spr_alpha,
+            "compile": args.compile,
         }),
         ("Evaluation", {
             "interval": args.interval,

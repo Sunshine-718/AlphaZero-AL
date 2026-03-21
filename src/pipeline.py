@@ -76,6 +76,11 @@ class TrainPipeline(ABC):
         self.net.load(self.current)
         print(f'Experiment directory: {self.experiment_dir}')
 
+        # torch.compile acceleration (PyTorch 2.0+)
+        if getattr(self, 'compile', False):
+            print('torch.compile enabled — compiling model (first iteration will be slow)...')
+            self.net = torch.compile(self.net, mode='reduce-overhead')
+
         if self.is_ddp:
             self.ddp_net = DDP(self.net, device_ids=[self.local_rank], find_unused_parameters=True)
         else:

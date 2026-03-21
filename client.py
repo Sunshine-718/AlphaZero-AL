@@ -59,6 +59,8 @@ parser.add_argument('--score_scale', type=float, default=None, help='Score atan 
 parser.add_argument('--value_decay', type=float, default=None, help='Value decay γ')
 parser.add_argument('--td_steps', type=int, default=None, help='N-step TD: steps k for S_{t+k}')
 parser.add_argument('--no_symmetry', action='store_true', help='Disable symmetry augmentation')
+parser.add_argument('--compile', action='store_true',
+                    help='Enable torch.compile for inference acceleration (requires PyTorch 2.0+)')
 parser.add_argument('--config', action='store_true', help='Display current config and exit')
 
 args = parser.parse_args()
@@ -178,6 +180,9 @@ class Actor:
             self.net = self.module.ViT(lr=0, device=args.device)
         else:
             raise ValueError(f'Unknown model type: {model_name}')
+        if args.compile:
+            print('torch.compile enabled — compiling model (first iteration will be slow)...')
+            self.net = torch.compile(self.net, mode='reduce-overhead')
 
         self.az_player = AlphaZeroPlayer(
             self.net,
@@ -304,6 +309,8 @@ class Actor:
 
             weights = pickle.loads(r.content)
             self.net.to('cpu')
+            if args.compile and not any(k.startswith('_orig_mod.') for k in weights):
+                weights = {f'_orig_mod.{k}': v for k, v in weights.items()}
             self.net.load_state_dict(weights, strict=False)
             self.net.to(args.device)
             self.mtime = float(r.headers['X-Timestamp'])
