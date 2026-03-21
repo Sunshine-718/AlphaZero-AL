@@ -96,7 +96,7 @@ class CNN(Base):
     aux_target_offset = 64
     score_scale = 8.0  # atan mapping scale, synced from SearchConfig at runtime
 
-    def __init__(self, lr, embed_dim=64, h_dim=32, out_dim=65, dropout=0.1, device='cpu', num_res_blocks=2, policy_lr_scale=0.3):
+    def __init__(self, lr, embed_dim=32, h_dim=64, out_dim=65, dropout=0.1, device='cpu', num_res_blocks=2, policy_lr_scale=0.3):
         super().__init__()
         self.embed_dim = embed_dim
         self.in_dim = 3  # 保持与 server.py ReplayBuffer 的兼容性
