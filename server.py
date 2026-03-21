@@ -33,6 +33,7 @@ g_server.add_argument('--port', '-P', '-p', type=int, default=7718, help='Port n
 g_env = parser.add_argument_group('Environment & Model')
 g_env.add_argument('-e', '--env', '--environment', type=str, default='Connect4', help='Environment name')
 g_env.add_argument('-m', '--model', type=str, default='CNN', help='Network type (CNN/ViT)')
+g_env.add_argument('--exp', type=str, default=None, help='Experiment ID to resume (e.g. 001). Default: create new')
 g_env.add_argument('-d', '--device', type=str,
                    default='cuda' if torch.cuda.is_available() else 'cpu', help='Device')
 
@@ -87,9 +88,9 @@ g_train.add_argument('-b', '--batch_size', type=int, default=512, help='Training
 g_train.add_argument('--buf', '--buffer_size', type=int, default=500000, help='Replay buffer size')
 g_train.add_argument('--q_size', type=int, default=1,
                       help='Minimum buffer size before training starts')
-g_train.add_argument('--replay_ratio', type=float, default=0.05,
+g_train.add_argument('--replay_ratio', type=float, default=0.025,
                       help='Fraction of buffer sampled per training step')
-g_train.add_argument('--n_epochs', type=int, default=5, help='Training epochs per update')
+g_train.add_argument('--n_epochs', type=int, default=2, help='Training epochs per update')
 g_train.add_argument('--policy_lr_scale', type=float, default=0.3,
                       help='Policy head LR multiplier')
 g_train.add_argument('--dropout', type=float, default=0.1, help='Dropout rate')
@@ -593,7 +594,8 @@ if __name__ == '__main__':
     pipeline = ServerPipeline(args.env, args.model, config,
                               min_buffer_size=args.q_size,
                               rank=rank, world_size=world_size,
-                              local_rank=local_rank)
+                              local_rank=local_rank,
+                              exp_id=args.exp)
 
     # 模型初始化后按 rank 重设种子（训练多样性）
     set_seed(rank)

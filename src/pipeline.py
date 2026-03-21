@@ -38,7 +38,7 @@ def _latest_experiment_dir(env_dir):
 
 class TrainPipeline(ABC):
     def __init__(self, env_name='Connect4', model='CNN', config=None,
-                 rank=0, world_size=1, local_rank=0):
+                 rank=0, world_size=1, local_rank=0, exp_id=None):
         collection = ('Connect4', 'Othello')
         if env_name not in collection:
             raise ValueError(f'Environment does not exist, available env: {collection}')
@@ -51,7 +51,10 @@ class TrainPipeline(ABC):
         self.env = self.module.Env()
         self.game = Game(self.env)
         self.env_dir = f'./params/{env_name}'
-        self.exp_id = _next_experiment_id(self.env_dir)
+        if exp_id is not None:
+            self.exp_id = exp_id
+        else:
+            self.exp_id = _next_experiment_id(self.env_dir)
         self.experiment_dir = f'{self.env_dir}/{self.exp_id}'
         self.name = f'{env_name}/{self.exp_id}'
         self.global_step = 0

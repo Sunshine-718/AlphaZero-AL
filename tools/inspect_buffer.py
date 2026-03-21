@@ -586,17 +586,18 @@ def _cosine_sim(a, b):
 
 def analyze_embeddings(net, output_dir, gcfg):
     """分析并可视化 Piece / Position Embedding。"""
-    piece_w = net.piece_emb.weight.detach().cpu()    # (3, d)
+    piece_w = net.piece_emb.weight.detach().cpu()    # (n_pieces, d)
     pos_w = net.pos_emb.weight.detach().cpu()        # (n_orbits, d)
     has_player = hasattr(net, 'player_emb')
     if has_player:
         player_w = net.player_emb.weight.detach().cpu()  # (2, d)
     orbit_map = net.orbit_map.cpu().numpy()
     n_orbits = pos_w.shape[0]
+    n_pieces = piece_w.shape[0]
     rows, cols = gcfg['board_shape']
     orbit_labels_dict = gcfg.get('orbit_labels', {})
 
-    PIECE_NAMES = ['Empty', 'Own', 'Opp']
+    PIECE_NAMES = ['Empty', 'Own', 'Opp'] if n_pieces == 3 else ['Own', 'Opp']
     PLAYER_NAMES = ['P1 (Black)', 'P2 (White)']
 
     # ── 1. Piece Embedding 表格 ──
@@ -604,20 +605,21 @@ def analyze_embeddings(net, output_dir, gcfg):
     piece_table = Table(title='Piece Embedding', show_header=True, header_style='bold')
     piece_table.add_column('', style='bold')
     piece_table.add_column('L2 Norm', justify='right')
-    piece_table.add_column('cos(Empty)', justify='right')
-    piece_table.add_column('cos(Own)', justify='right')
-    piece_table.add_column('cos(Opp)', justify='right')
+    for name in PIECE_NAMES:
+        piece_table.add_column(f'cos({name})', justify='right')
     for i, name in enumerate(PIECE_NAMES):
-        sims = [f'{_cosine_sim(piece_w[i], piece_w[j]):+.4f}' for j in range(3)]
+        sims = [f'{_cosine_sim(piece_w[i], piece_w[j]):+.4f}' for j in range(n_pieces)]
         piece_table.add_row(name, f'{piece_norms[i]:.4f}', *sims)
 
-    own_opp_dist = float((piece_w[1] - piece_w[2]).norm())
-    own_empty_dist = float((piece_w[1] - piece_w[0]).norm())
-    opp_empty_dist = float((piece_w[2] - piece_w[0]).norm())
+    own_idx, opp_idx = (1, 2) if n_pieces == 3 else (0, 1)
+    own_opp_dist = float((piece_w[own_idx] - piece_w[opp_idx]).norm())
     piece_table.add_section()
-    piece_table.add_row('L2 dist Own-Opp', f'{own_opp_dist:.4f}', '', '', '')
-    piece_table.add_row('L2 dist Own-Empty', f'{own_empty_dist:.4f}', '', '', '')
-    piece_table.add_row('L2 dist Opp-Empty', f'{opp_empty_dist:.4f}', '', '', '')
+    piece_table.add_row('L2 dist Own-Opp', f'{own_opp_dist:.4f}', *[''] * n_pieces)
+    if n_pieces == 3:
+        own_empty_dist = float((piece_w[1] - piece_w[0]).norm())
+        opp_empty_dist = float((piece_w[2] - piece_w[0]).norm())
+        piece_table.add_row('L2 dist Own-Empty', f'{own_empty_dist:.4f}', '', '', '')
+        piece_table.add_row('L2 dist Opp-Empty', f'{opp_empty_dist:.4f}', '', '', '')
     console.print(piece_table)
 
     # ── 2. Player Embedding 表格（仅在存在时显示） ──
@@ -780,17 +782,19 @@ def analyze_embeddings(net, output_dir, gcfg):
     console.print(f'    [dim]\\[saved] {path}[/dim]')
 
     # 4f. Piece (+ Player) Embedding PCA 散点图
+    piece_colors = ['#55A868', '#4C72B0', '#DD8452'][:n_pieces]
+    piece_markers = (['o', 's', 's'] if n_pieces == 3 else ['s', 's'])[:n_pieces]
     if has_player:
-        all_emb = torch.cat([piece_w, player_w], dim=0)  # (5, d)
+        all_emb = torch.cat([piece_w, player_w], dim=0)
         all_labels = PIECE_NAMES + PLAYER_NAMES
-        all_colors = ['#55A868', '#4C72B0', '#DD8452', '#8172B2', '#C44E52']
-        all_markers = ['o', 's', 's', '^', '^']
+        all_colors = piece_colors + ['#8172B2', '#C44E52']
+        all_markers = piece_markers + ['^', '^']
         title = 'Piece & Player Embedding PCA'
     else:
-        all_emb = piece_w  # (3, d)
+        all_emb = piece_w
         all_labels = PIECE_NAMES
-        all_colors = ['#55A868', '#4C72B0', '#DD8452']
-        all_markers = ['o', 's', 's']
+        all_colors = piece_colors
+        all_markers = piece_markers
         title = 'Piece Embedding PCA'
 
     pca2 = PCA(n_components=2)
@@ -810,6 +814,112 @@ def analyze_embeddings(net, output_dir, gcfg):
     fig.savefig(path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     console.print(f'    [dim]\\[saved] {path}[/dim]')
+
+
+# ────────────────────────── Attention Map ──────────────────────────
+
+def _extract_attention_weights(net, state_tensor):
+    """Extract attention weights from all Attention modules in the network.
+
+    Since scaled_dot_product_attention doesn't return weights,
+    we hook into Attention.forward to compute them from Q, K.
+
+    Returns list of (num_heads, seq_len, seq_len) tensors, one per Attention layer.
+    """
+    attn_weights = []
+
+    def _hook(module, args, output):
+        with torch.no_grad():
+            x = args[0]
+            B, S, _ = x.shape
+            x_normed = module.prenorm(x)
+            xq = module.q_proj(x_normed).reshape(B, S, module.num_heads, module.head_dim)
+            xq = module.q_norm(xq).transpose(1, 2)
+            xk = module.k_proj(x_normed).reshape(B, S, module.num_heads, module.head_dim)
+            xk = module.k_norm(xk).transpose(1, 2)
+            scale = module.head_dim ** 0.5
+            scores = torch.matmul(xq, xk.transpose(-2, -1)) / scale
+            weights = torch.softmax(scores, dim=-1)  # (B, heads, S, S)
+            attn_weights.append(weights[0].cpu())  # take first batch item
+
+    # Find all Attention modules dynamically
+    hooks = []
+    for m in net.modules():
+        if type(m).__name__ == 'Attention' and hasattr(m, 'q_proj'):
+            hooks.append(m.register_forward_hook(_hook))
+
+    if not hooks:
+        return []
+
+    with torch.no_grad():
+        net(state_tensor)
+
+    for h in hooks:
+        h.remove()
+    return attn_weights
+
+
+def analyze_attention(net, output_dir, gcfg, device='cpu'):
+    """Visualize attention maps for each pattern board position."""
+    utils_mod = importlib.import_module(gcfg['utils_module'])
+    board_to_state = utils_mod.board_to_state
+    rows, cols = gcfg['board_shape']
+    seq_len = rows * cols
+
+    # Key query positions to visualize (board indices)
+    if (rows, cols) == (8, 8):
+        query_positions = {
+            'corner(a1)': 0, 'X-sq(b2)': 9, 'edge(a4)': 3,
+            'center(d4)': 27, 'center(e5)': 36,
+        }
+    else:
+        # Generic: corners + center
+        query_positions = {
+            'top-left': 0, 'center': (rows // 2) * cols + cols // 2,
+        }
+
+    for desc, make_board, turn, fname in gcfg['patterns']:
+        board = make_board()
+        state = board_to_state(board, turn)
+        t = torch.from_numpy(state).to(device)
+
+        attn_list = _extract_attention_weights(net, t)
+        if not attn_list:
+            return
+
+        for layer_idx, weights in enumerate(attn_list):
+            num_heads = weights.shape[0]
+            n_queries = len(query_positions)
+            fig, axes = plt.subplots(n_queries, num_heads,
+                                     figsize=(3.5 * num_heads, 3.5 * n_queries),
+                                     squeeze=False)
+
+            for qi, (q_name, q_pos) in enumerate(query_positions.items()):
+                for hi in range(num_heads):
+                    ax = axes[qi, hi]
+                    attn_map = weights[hi, q_pos, :seq_len].reshape(rows, cols).numpy()
+                    im = ax.imshow(attn_map, cmap='hot', interpolation='nearest',
+                                   vmin=0, vmax=attn_map.max())
+                    # Mark query position
+                    qr, qc = q_pos // cols, q_pos % cols
+                    ax.plot(qc, qr, 'c*', markersize=12, markeredgecolor='white',
+                            markeredgewidth=0.5)
+                    if qi == 0:
+                        ax.set_title(f'Head {hi}', fontsize=11)
+                    if hi == 0:
+                        ax.set_ylabel(q_name, fontsize=11)
+                    ax.set_xticks(range(cols))
+                    ax.set_yticks(range(rows))
+                    ax.tick_params(labelsize=7)
+                    fig.colorbar(im, ax=ax, shrink=0.8)
+
+            player = 'X' if turn == 1 else 'O'
+            fig.suptitle(f'Attention Map — {desc} (turn={player})', fontsize=13, fontweight='bold')
+            plt.tight_layout()
+            path = os.path.join(output_dir, f'attn_{fname}_L{layer_idx}.png')
+            fig.savefig(path, dpi=150, bbox_inches='tight')
+            plt.close(fig)
+            console.print(f'    [dim]\\[saved] {path}[/dim]')
 
 
 # ────────────────────────── NN ──────────────────────────
@@ -869,6 +979,12 @@ def analyze_nn(model_path, gcfg, device='cpu', output_dir=None):
 
     if hasattr(net, 'piece_emb'):
         analyze_embeddings(net, output_dir, gcfg)
+
+    # Attention map visualization (only for models with Attention modules)
+    has_attn = any(type(m).__name__ == 'Attention' and hasattr(m, 'q_proj')
+                   for m in net.modules())
+    if has_attn:
+        analyze_attention(net, output_dir, gcfg, device)
 
     return nn_policies
 

@@ -106,8 +106,9 @@ class AttentionBlock(nn.Module):
         batch_size, num_channels, h, w = x.shape
         x = x.reshape(batch_size, num_channels, h * w).transpose(1, 2)
         attn_output = self.attn(x)
-        ffn_output = self.ffn(attn_output)
-        output = ffn_output.transpose(1, 2).reshape(batch_size, num_channels, h, w)
+        # ffn_output = self.ffn(attn_output)
+        # output = ffn_output.transpose(1, 2).reshape(batch_size, num_channels, h, w)
+        output = attn_output.transpose(1, 2).reshape(batch_size, num_channels, h, w)
         return output
 
 
@@ -115,7 +116,7 @@ class CNN(Base):
     aux_target_offset = 64
     score_scale = 8.0  # atan mapping scale, synced from SearchConfig at runtime
 
-    def __init__(self, lr, embed_dim=32, h_dim=64, out_dim=65, dropout=0.2, device='cpu', num_res_blocks=2, policy_lr_scale=0.3):
+    def __init__(self, lr, embed_dim=32, h_dim=32, out_dim=65, dropout=0.1, device='cpu', num_res_blocks=2, policy_lr_scale=0.3):
         super().__init__()
         self.embed_dim = embed_dim
         self.in_dim = 3  # 保持与 server.py ReplayBuffer 的兼容性
@@ -123,7 +124,7 @@ class CNN(Base):
         self.n_actions = out_dim
 
         # Embedding 层
-        self.piece_emb = nn.Embedding(3, embed_dim)    # 0=空, 1=己方, 2=对方
+        self.piece_emb = nn.Embedding(2, embed_dim)    # 0=己方, 1=对方 (空格无 piece embedding)
         self.pos_emb = nn.Embedding(10, embed_dim)     # 10 个轨道 (D4 对称)
         self.register_buffer('orbit_map', torch.tensor(_ORBIT_MAP, dtype=torch.long))
 
@@ -195,28 +196,7 @@ class CNN(Base):
 
     def init_weights(self, m):
         if isinstance(m, nn.Embedding):
-            if m is self.piece_emb:
-                # 正交初始化: 空/己方/对方 三向量两两正交，等距分布
-                nn.init.orthogonal_(m.weight)
-            elif m is self.pos_emb:
-                # 正交初始化 + 按战略价值缩放范数（从训练模型提取的比例）
-                # 轨道: 0=corner, 1=C-sq, 2=edge2, 3=edge3, 4=X-sq,
-                #        5=inner1, 6=inner2, 7=XX-sq, 8=near-ctr, 9=center
-                nn.init.orthogonal_(m.weight)
-                norm_scale = torch.tensor([
-                    1.00,  # 0 corner    — 最高战略价值，不可翻转
-                    0.63,  # 1 C-square  — 紧邻角落的边缘格
-                    0.56,  # 2 edge-2    — 边缘中段
-                    0.59,  # 3 edge-3    — 边缘靠中
-                    0.61,  # 4 X-square  — 对角邻角，高危格
-                    0.46,  # 5 inner-1   — 内圈
-                    0.45,  # 6 inner-2   — 内圈
-                    0.51,  # 7 XX-square — 次对角邻角
-                    0.58,  # 8 near-ctr  — 近中心
-                    0.61,  # 9 center    — 中心 4 格
-                ])
-                m.weight.data.mul_(norm_scale.unsqueeze(1))
-            return
+            nn.init.orthogonal_(m.weight)
         if isinstance(m, (nn.Conv2d, nn.Linear)):
             nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
             if m.bias is not None:
@@ -228,13 +208,16 @@ class CNN(Base):
     def _embed_state(self, state):
         """将 (B, 3, 8, 8) 状态转为 (B, embed_dim, 8, 8) embedding 表示。"""
         B = state.size(0)
-        # ch0=1 → 己方棋子, ch1=1 → 对方棋子, 两者都为 0 → 空
-        piece_ids = (state[:, 0] + state[:, 1] * 2).long().view(B, 64)
+        # 己方=ch0, 对方=ch1; 空格位置无 piece embedding (仅 pos_emb)
+        own = state[:, 0].view(B, 64)       # (B, 64) float 0/1
+        opp = state[:, 1].view(B, 64)       # (B, 64) float 0/1
 
-        pe = self.piece_emb(piece_ids)           # (B, 64, d)
-        po = self.pos_emb(self.orbit_map)        # (64, d)
+        emb_own = self.piece_emb.weight[0]   # (d,)
+        emb_opp = self.piece_emb.weight[1]   # (d,)
+        pe = own.unsqueeze(-1) * emb_own + opp.unsqueeze(-1) * emb_opp  # (B, 64, d)
+        po = self.pos_emb(self.orbit_map)    # (64, d)
 
-        x = pe + po.unsqueeze(0)                 # (B, 64, d)
+        x = pe + po.unsqueeze(0)             # (B, 64, d)
         return x.permute(0, 2, 1).view(B, self.embed_dim, 8, 8)
 
     def forward(self, x):
@@ -267,7 +250,11 @@ class CNN(Base):
             t = t.pin_memory().to(self.device, dtype=torch.float32, non_blocking=True)
         else:
             t = t.float()
-        log_prob, value_log_prob, log_steps, _ = self.forward(t)
+        x = self._embed_state(t)
+        hidden = self.hidden(x)
+        log_prob = self.policy_head(hidden)
+        value_log_prob = self.value_head(hidden)
+        log_steps = self.aux_head(hidden)
         # Value head outputs: [P(draw), P(win to-move), P(loss to-move)]
         wdl = value_log_prob.exp()  # (batch, 3)
 

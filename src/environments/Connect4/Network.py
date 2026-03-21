@@ -193,7 +193,11 @@ class CNN(Base):
             t = t.pin_memory().to(self.device, dtype=torch.float32, non_blocking=True)
         else:
             t = t.float()
-        log_prob, value_log_prob, log_steps, _ = self.forward(t)
+        x = self._embed_state(t)
+        hidden = self.hidden(x)
+        log_prob = self.policy_head(hidden)
+        value_log_prob = self.value_head(hidden)
+        log_steps = self.aux_head(hidden)
         wdl = value_log_prob.exp()  # (batch, 3)
 
         steps_prob = log_steps.exp()
