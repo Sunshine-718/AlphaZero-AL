@@ -46,68 +46,48 @@ class ResidualBlock(nn.Module):
 
 
 class Attention(nn.Module):
-    def __init__(self, h_dim, num_head, dropout=0.):
+    def __init__(self, h_dim: int, num_head: int, dropout: float = 0.):
         super().__init__()
         assert h_dim % num_head == 0
-        self.h_dim = h_dim
         self.num_heads = num_head
         self.head_dim = h_dim // num_head
         self.prenorm = nn.RMSNorm(h_dim, eps=1e-5)
-        self.q_proj = nn.Linear(h_dim, self.num_heads * self.head_dim, bias=False)
-        self.k_proj = nn.Linear(h_dim, self.num_heads * self.head_dim, bias=False)
-        self.v_proj = nn.Linear(h_dim, self.num_heads * self.head_dim, bias=False)
-        self.o_proj = nn.Linear(self.num_heads * self.head_dim, h_dim, bias=False)
+        self.qkv_proj = nn.Linear(h_dim, 3 * h_dim, bias=False)   # ① fused QKV
+        self.o_proj = nn.Linear(h_dim, h_dim, bias=False)
         self.q_norm = nn.RMSNorm(self.head_dim, eps=1e-5)
         self.k_norm = nn.RMSNorm(self.head_dim, eps=1e-5)
-        self.dropout = nn.Dropout(dropout)
         self.dropout_p = dropout
-    
-    def forward(self, x: torch.Tensor):
-        batch_size, seq_len, h_dim = x.shape
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, S, D = x.shape
         residual = x
         x = self.prenorm(x)
 
-        xq = self.q_proj(x).reshape(batch_size, seq_len, self.num_heads, self.head_dim)
-        xq = self.q_norm(xq).transpose(1, 2)
-        xk = self.k_proj(x).reshape(batch_size, seq_len, self.num_heads, self.head_dim)
-        xk = self.k_norm(xk).transpose(1, 2)
-        xv = self.v_proj(x).reshape(batch_size, seq_len, self.num_heads, self.head_dim)
-        xv = xv.transpose(1, 2)
+        qkv = self.qkv_proj(x).view(B, S, 3, self.num_heads, self.head_dim)
+        q, k, v = qkv.unbind(2)                    # 3 × (B, S, H, d)
 
-        attn_output = nn.functional.scaled_dot_product_attention(xq, xk, xv, dropout_p=self.dropout_p if self.training else 0.)
-        attn_output = attn_output.transpose(1, 2).reshape(batch_size, seq_len, h_dim)
-        output = self.dropout(self.o_proj(attn_output))
-        return output + residual
+        q = self.q_norm(q).transpose(1, 2)          # (B, H, S, d)
+        k = self.k_norm(k).transpose(1, 2)
+        v = v.transpose(1, 2)
 
+        out = nn.functional.scaled_dot_product_attention(
+            q, k, v,
+            dropout_p=self.dropout_p if self.training else 0.,
+        )
 
-class FFN(nn.Module):
-    def __init__(self, hidden_dim, ffn_mult=2):
-        super().__init__()
-        self.prenorm = nn.RMSNorm(hidden_dim, eps=1e-5)
-        self.up_proj = nn.Linear(hidden_dim, hidden_dim * ffn_mult, bias=False)
-        self.gate_proj = nn.Linear(hidden_dim, hidden_dim * ffn_mult, bias=False)
-        self.down_proj = nn.Linear(hidden_dim * ffn_mult, hidden_dim, bias=False)
-    
-    def forward(self, x):
-        residual = x
-        x = self.prenorm(x)
-        gate = nn.functional.silu(self.gate_proj(x))
-        up = self.up_proj(x)
-        return self.down_proj(gate * up) + residual
+        out = out.transpose(1, 2).contiguous().view(B, S, D)
+        return self.o_proj(out) + residual
 
 
 class AttentionBlock(nn.Module):
-    def __init__(self, h_dim, num_head, ffn_mult, dropout=0.):
+    def __init__(self, h_dim, num_head, dropout=0.):
         super().__init__()
         self.attn = Attention(h_dim, num_head, dropout)
-        self.ffn = FFN(h_dim, ffn_mult)
     
     def forward(self, x):
         batch_size, num_channels, h, w = x.shape
         x = x.reshape(batch_size, num_channels, h * w).transpose(1, 2)
         attn_output = self.attn(x)
-        # ffn_output = self.ffn(attn_output)
-        # output = ffn_output.transpose(1, 2).reshape(batch_size, num_channels, h, w)
         output = attn_output.transpose(1, 2).reshape(batch_size, num_channels, h, w)
         return output
 
@@ -116,7 +96,7 @@ class CNN(Base):
     aux_target_offset = 64
     score_scale = 8.0  # atan mapping scale, synced from SearchConfig at runtime
 
-    def __init__(self, lr, embed_dim=32, h_dim=32, out_dim=65, dropout=0.1, device='cpu', num_res_blocks=2, policy_lr_scale=0.3):
+    def __init__(self, lr, embed_dim=64, h_dim=32, out_dim=65, dropout=0.1, device='cpu', num_res_blocks=2, policy_lr_scale=0.3):
         super().__init__()
         self.embed_dim = embed_dim
         self.in_dim = 3  # 保持与 server.py ReplayBuffer 的兼容性
@@ -134,7 +114,7 @@ class CNN(Base):
             *[ResidualBlock(h_dim, h_dim, dropout=dropout) for _ in range(num_res_blocks)],
             nn.GroupNorm(1, h_dim),
             nn.Conv2d(h_dim, h_dim, kernel_size=3, padding=1, bias=False),
-            AttentionBlock(h_dim, 2, 2, dropout)
+            AttentionBlock(h_dim, 4, dropout),
         )
 
         # Policy head: conv → flatten → linear → log_softmax

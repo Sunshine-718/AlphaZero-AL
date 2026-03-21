@@ -402,6 +402,82 @@ def _draw_soft_glow(qp, x1, y1, x2, y2, color, core_w=1):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Attention Map Extractor (zero-intrusion via forward hooks)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class AttentionExtractor:
+    """Extract attention weights from the Attention layer via forward hooks.
+
+    Hooks q_norm and k_norm outputs to capture normalized Q/K,
+    then computes attention = softmax(Q @ K^T / sqrt(head_dim)).
+    Supports symmetry-ensemble: batch K symmetry-transformed states,
+    inverse-permute each attention matrix, then average.
+    """
+
+    def __init__(self):
+        self._q = None   # (B, seq, H, D) — q_norm output
+        self._k = None   # (B, seq, H, D) — k_norm output
+        self._handles = []
+        # Precompute inverse permutation tables for Othello symmetries
+        # All Othello Klein-4 symmetries are self-inverse (involutions)
+        from src.symmetry import SYM_REGISTRY
+        reg = SYM_REGISTRY['Othello']
+        self._sym_ids = reg['sym_ids']       # [0, 2, 6, 7]
+        self._perms = reg['board_perms']     # {sym_id: np.ndarray(64,)}
+
+    def _hook_q(self, module, input, output):
+        self._q = output.detach()
+
+    def _hook_k(self, module, input, output):
+        self._k = output.detach()
+
+    def attach(self, net):
+        """Register hooks on net.hidden[-1].attn.{q_norm, k_norm}."""
+        self.detach()
+        attn = net.hidden[-1].attn
+        self._handles.append(attn.q_norm.register_forward_hook(self._hook_q))
+        self._handles.append(attn.k_norm.register_forward_hook(self._hook_k))
+
+    def detach(self):
+        for h in self._handles:
+            h.remove()
+        self._handles.clear()
+        self._q = self._k = None
+
+    def get_weights(self):
+        """Compute attention weights from captured Q, K.
+
+        If batch size == K (symmetry ensemble), inverse-permute each
+        attention matrix and average. Otherwise return single result.
+
+        Returns: np.ndarray (num_heads, 64, 64) or None.
+        """
+        if self._q is None or self._k is None:
+            return None
+        # q_norm output: (B, 64, H, D) — before transpose in Attention.forward
+        B = self._q.shape[0]
+        q = self._q.permute(0, 2, 1, 3)  # (B, H, 64, D)
+        k = self._k.permute(0, 2, 1, 3)  # (B, H, 64, D)
+        head_dim = q.shape[-1]
+        # (B, H, 64, 64)
+        scores = torch.matmul(q, k.transpose(-2, -1)) / (head_dim ** 0.5)
+        weights = torch.softmax(scores, dim=-1).cpu().numpy()
+
+        K = len(self._sym_ids)
+        if B == K and K > 1:
+            # Symmetry ensemble: inverse-permute rows & cols, then average
+            acc = weights[0]  # sym_id=0 is identity, no permutation needed
+            for i in range(1, K):
+                perm = self._perms[self._sym_ids[i]]
+                w = weights[i]
+                # Inverse-permute: attn[perm][:, perm] (self-inverse symmetries)
+                acc = acc + w[:, perm][:, :, perm]
+            return acc / K
+        else:
+            return weights[0]  # (H, 64, 64)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Board Widget — Othello 8×8
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -430,6 +506,11 @@ class BoardWidget(QWidget):
         self.overlay_data = None       # dict with arrays indexed by action
         self.overlay_best = -1
 
+        # Attention heatmap
+        self.attn_weights = None   # (num_heads, 64, 64) or None
+        self.attn_head = -1        # -1=mean, 0/1=specific head
+        self.attn_visible = False  # controlled by checkbox
+
         # Valid moves cache for ghost/hover
         self._valid_set = set()
 
@@ -450,6 +531,7 @@ class BoardWidget(QWidget):
         self._draw_hover_cell(qp)
         self._draw_grid(qp)
         self._draw_pieces(qp)
+        self._draw_attention(qp)
         self._draw_valid_moves(qp)
         self._draw_last_move(qp)
         self._draw_overlay(qp)
@@ -565,6 +647,55 @@ class BoardWidget(QWidget):
         spec.setColorAt(1, QColor(255, 255, 255, 0))
         qp.setBrush(spec)
         qp.drawEllipse(QPointF(cx - rad * 0.2, cy - rad * 0.35), rad * 0.4, rad * 0.3)
+
+    def _draw_attention(self, qp):
+        """Draw attention heatmap overlay on the board."""
+        if not self.attn_visible or self.attn_weights is None:
+            return
+        w = self.attn_weights  # (H, 64, 64)
+        # Select head
+        if self.attn_head < 0:
+            attn = w.mean(axis=0)  # (64, 64)
+        else:
+            attn = w[min(self.attn_head, w.shape[0] - 1)]  # (64, 64)
+        # Query selection: hover cell or global mean
+        if self.hover_cell is not None:
+            qr, qc = self.hover_cell
+            heat = attn[qr * 8 + qc]  # (64,) — attention from query to all keys
+        else:
+            heat = attn.mean(axis=0)  # (64,) — average over all queries
+        # Normalize to [0, 1] for visualization
+        vmin, vmax = heat.min(), heat.max()
+        if vmax - vmin > 1e-8:
+            heat = (heat - vmin) / (vmax - vmin)
+        else:
+            heat = np.zeros_like(heat)
+        # Draw heatmap cells
+        m, cs = self.MARGIN, self.CELL
+        for idx in range(64):
+            r, c = idx // 8, idx % 8
+            val = float(heat[idx])
+            if val < 0.02:
+                continue
+            alpha = int(val * 140)
+            x = m + c * cs
+            y = m + r * cs
+            qp.fillRect(int(x), int(y), cs, cs, QColor(167, 139, 250, alpha))
+        # Draw query marker (small diamond) if hovering
+        if self.hover_cell is not None:
+            qr, qc = self.hover_cell
+            cx = m + qc * cs + cs // 2
+            cy = m + qr * cs + cs // 2
+            d = 6
+            path = QPainterPath()
+            path.moveTo(cx, cy - d)
+            path.lineTo(cx + d, cy)
+            path.lineTo(cx, cy + d)
+            path.lineTo(cx - d, cy)
+            path.closeSubpath()
+            qp.setPen(Qt.NoPen)
+            qp.setBrush(QColor(255, 255, 255, 200))
+            qp.drawPath(path)
 
     def _draw_valid_moves(self, qp):
         """Draw small dots on all legal move cells (always visible)."""
@@ -1622,6 +1753,29 @@ class ParameterConsole(QWidget):
                                              tooltip="KataGo-style score utility weight")
         self.score_scale_sl = _make_slider(lay, "score_scale", 1, 32, 1, Def.score_scale,
                                             tooltip="Score atan mapping scale")
+
+        # ── Attention Map ──
+        sep = _sep()
+        lay.addWidget(sep)
+        attn_info = QLabel(f"<font color='{C.DIM}' style='font-family:Consolas;font-size:10px;'>"
+                           f"Attention Heatmap</font>")
+        attn_info.setTextFormat(Qt.RichText)
+        lay.addWidget(attn_info)
+
+        attn_row = QHBoxLayout()
+        self.attn_check = QCheckBox("Show")
+        self.attn_check.setChecked(False)
+        self.attn_check.setToolTip("Overlay attention heatmap on board")
+        attn_row.addWidget(self.attn_check)
+
+        self.attn_head_cb = QComboBox()
+        self.attn_head_cb.addItems(["Mean", "Head 0", "Head 1"])
+        self.attn_head_cb.setToolTip("Select attention head to visualize")
+        self.attn_head_cb.setFixedWidth(90)
+        attn_row.addWidget(self.attn_head_cb)
+        attn_row.addStretch()
+        lay.addLayout(attn_row)
+
         lay.addStretch()
         self.tabs.addTab(w, "Aux")
 
@@ -2038,6 +2192,9 @@ class OthelloGUI(QWidget):
 
         self._history = []
 
+        # ── Attention extractor ──────────────────────────────────────────
+        self._attn_extractor = AttentionExtractor()
+
         self._reload_model()
 
         # ── Connect signals ─────────────────────────────────────────────────
@@ -2073,10 +2230,21 @@ class OthelloGUI(QWidget):
         self.pause_btn.clicked.connect(self._toggle_search_pause)
         self.hint_btn.clicked.connect(self._toggle_hint)
         self.log_btn.clicked.connect(self._toggle_log)
+        self.console.attn_check.stateChanged.connect(self._on_attn_toggle)
+        self.console.attn_head_cb.currentIndexChanged.connect(self._on_attn_head_changed)
 
         self._start_game()
 
+    def _on_attn_toggle(self, state):
+        self.board.attn_visible = bool(state)
+        self.board.update()
+
+    def _on_attn_head_changed(self, idx):
+        self.board.attn_head = idx - 1  # 0→Mean(-1), 1→Head0(0), 2→Head1(1)
+        self.board.update()
+
     def closeEvent(self, event):
+        self._attn_extractor.detach()
         self.worker.stop()
         self.worker.wait()
         super().closeEvent(event)
@@ -2181,6 +2349,9 @@ class OthelloGUI(QWidget):
             self.net.load(path)
         except Exception:
             self.status.set_result("MODEL ERROR", C.RED_HEX)
+
+        # Re-attach attention hooks to new model
+        self._attn_extractor.attach(self.net)
 
         p = self.az_player
         p._c_base = int(_sv(self.console.c_base_sl))
@@ -2497,12 +2668,18 @@ class OthelloGUI(QWidget):
         self.status.set_disc_count(black_count, white_count)
 
         with torch.no_grad():
-            state = self.env.current_state()
-            t = torch.from_numpy(state).float().to(self.net.device).unsqueeze(0)
-            if t.dim() == 5:
-                t = t.squeeze(1)
+            base = self.env.current_state()  # (1, 3, 8, 8)
+            # Build symmetry-augmented batch (K states) for attention ensemble
+            sym_states = []
+            for s in _SYM_IDS:
+                st = np.stack([apply_sym_board(base[0, c], s, 'Othello')
+                               for c in range(3)], axis=0)  # (3, 8, 8)
+                sym_states.append(st)
+            batch = np.stack(sym_states)  # (K, 3, 8, 8)
+            t = torch.from_numpy(batch).float().to(self.net.device)
             _, vl, sl, *_ = self.net(t)
 
+            # Use identity (index 0) for NN stats display
             vp = vl[0].exp().cpu().tolist()
             draw_pct = vp[0] * 100
             if self.player_color == self.env.turn:
@@ -2517,6 +2694,11 @@ class OthelloGUI(QWidget):
             if self.player_color != self.env.turn:
                 expected = -expected
             self.status.set_nn_diff(expected)
+
+            # Extract attention weights — hooks captured K symmetry variants,
+            # get_weights() inverse-permutes and averages them
+            attn_w = self._attn_extractor.get_weights()
+            self.board.attn_weights = attn_w
 
     def _update_status_mcts(self, stats_0):
         d = float(stats_0['root_D'])
