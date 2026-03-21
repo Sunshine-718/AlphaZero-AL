@@ -840,7 +840,7 @@ def analyze_nn(model_path, gcfg, device='cpu', output_dir=None):
         state = board_to_state(board, turn)
         t = torch.from_numpy(state).to(device)
         with torch.no_grad():
-            log_p, log_v, log_s = net(t)
+            log_p, log_v, log_s, *_ = net(t)
             prob = log_p.exp().cpu().numpy().flatten()
             vdist = log_v.exp().cpu().numpy().flatten()  # [draw, win(to-move), loss(to-move)]
             sdist = log_s.exp().cpu().numpy().flatten()
