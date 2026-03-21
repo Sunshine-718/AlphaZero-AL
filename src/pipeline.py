@@ -62,7 +62,7 @@ class TrainPipeline(ABC):
             self.mlh_slope = 0.0  # 初始禁用
             self.score_utility_factor = 0.0
             self._mlh_active = False
-            self._s_loss_ema = None
+            self._aux_loss_ema = None
         else:
             self._mlh_active = True
 
@@ -144,7 +144,7 @@ class TrainPipeline(ABC):
             dataloader = self.buffer.sample(self.batch_size)
 
         model_for_training = self.ddp_net if self.is_ddp else None
-        p_l, v_l, s_l, ent, g_n, f1 = self.net.train_step(
+        p_l, v_l, aux_l, spr_l, ent, g_n, f1 = self.net.train_step(
             dataloader, self.module.augment, ddp_model=model_for_training,
             n_epochs=getattr(self, 'n_epochs', 10),
             distill_alpha=getattr(self, 'distill_alpha', 0.0),
@@ -153,14 +153,16 @@ class TrainPipeline(ABC):
             psw_beta=getattr(self, 'psw_beta', 0.3),
             entropy_lambda=getattr(self, 'entropy_lambda', 0.01),
             td_alpha=getattr(self, 'td_alpha', 0.0),
-            td_steps=getattr(self, 'td_steps', 5))
+            td_steps=getattr(self, 'td_steps', 5),
+            target_tau=getattr(self, 'target_tau', 0.97),
+            spr_alpha=getattr(self, 'spr_alpha', 0.0))
 
         if self.is_ddp:
             dist.barrier()
 
         if self.rank == 0:
             print(f'F1 score (new): {f1: .3f}')
-        return p_l, v_l, s_l, ent, g_n, f1
+        return p_l, v_l, aux_l, spr_l, ent, g_n, f1
 
     def update_elo(self):
         print('Updating elo score...')
@@ -299,15 +301,15 @@ class TrainPipeline(ABC):
     def update_best_net(self):
         self.best_net = deepcopy(self.net)
 
-    def _check_mlh_warmup(self, s_loss):
+    def _check_mlh_warmup(self, aux_loss):
         """检查 aux head loss 是否已降到阈值以下，达标后一次性激活 auxiliary utility。"""
         if self._mlh_active:
             return
-        if self._s_loss_ema is None:
-            self._s_loss_ema = s_loss
+        if self._aux_loss_ema is None:
+            self._aux_loss_ema = aux_loss
         else:
-            self._s_loss_ema = 0.9 * self._s_loss_ema + 0.1 * s_loss
-        if self._s_loss_ema <= self.mlh_warmup_loss:
+            self._aux_loss_ema = 0.9 * self._aux_loss_ema + 0.1 * aux_loss
+        if self._aux_loss_ema <= self.mlh_warmup_loss:
             self.mlh_slope = self._mlh_target_slope
             self.score_utility_factor = self._score_target_factor
             self._mlh_active = True
@@ -317,11 +319,11 @@ class TrainPipeline(ABC):
             self.az_player.mcts.set_score_utility_params(
                 self.score_utility_factor,
                 getattr(self, 'score_scale', 8.0))
-            print(f'[AUX] Activated: s_loss EMA={self._s_loss_ema:.4f} <= {self.mlh_warmup_loss}, '
+            print(f'[AUX] Activated: aux_loss EMA={self._aux_loss_ema:.4f} <= {self.mlh_warmup_loss}, '
                   f'mlh_slope={self.mlh_slope}, score_utility_factor={self.score_utility_factor}')
             swanlab.log({'Event/MLH_activated': 1}, step=self.global_step)
 
-    def _log_train_step(self, p_loss, v_loss, s_loss, entropy, grad_norm, f1):
+    def _log_train_step(self, p_loss, v_loss, aux_loss, spr_loss, entropy, grad_norm, f1):
         if self.episode_len is not None:
             swanlab.log({'Metric/Episode length': self.episode_len}, step=self.global_step)
         log_dict = {
@@ -330,7 +332,8 @@ class TrainPipeline(ABC):
             'Metric/F1 score': f1,
             'Metric/Loss/Action Loss': p_loss,
             'Metric/Loss/Value loss': v_loss,
-            'Metric/Loss/Steps loss': s_loss,
+            'Metric/Loss/Aux loss': aux_loss,
+            'Metric/Loss/SPR loss': spr_loss,
             'Metric/Entropy': entropy,
         }
         swanlab.log(log_dict, step=self.global_step)
@@ -339,8 +342,9 @@ class TrainPipeline(ABC):
             'global_step': self.global_step,
             'p_loss': round(p_loss, 6),
             'v_loss': round(v_loss, 6),
-            's_loss': round(s_loss, 6),
-            'total_loss': round(p_loss + v_loss + s_loss, 6),
+            'aux_loss': round(aux_loss, 6),
+            'spr_loss': round(spr_loss, 6),
+            'total_loss': round(p_loss + v_loss + aux_loss, 6),
             'entropy': round(entropy, 6),
             'f1': round(f1, 4),
             'grad_norm': round(grad_norm, 4),
@@ -392,14 +396,14 @@ class TrainPipeline(ABC):
                 self.data_collector()
                 self.global_step += 1
 
-            p_loss, v_loss, s_loss, entropy, grad_norm, f1 = self.policy_update()
+            p_loss, v_loss, aux_loss, spr_loss, entropy, grad_norm, f1 = self.policy_update()
 
             if self.rank == 0:
                 self.net.save(self.current)
                 print(f'batch i: {self.global_step}, episode_len: {self.episode_len}, '
-                      f'loss: {p_loss + v_loss + s_loss: .8f}, entropy: {entropy: .8f}')
-                self._check_mlh_warmup(s_loss)
-                self._log_train_step(p_loss, v_loss, s_loss, entropy, grad_norm, f1)
+                      f'loss: {p_loss + v_loss + aux_loss: .8f}, entropy: {entropy: .8f}')
+                self._check_mlh_warmup(aux_loss)
+                self._log_train_step(p_loss, v_loss, aux_loss, spr_loss, entropy, grad_norm, f1)
 
                 if self.global_step % self.interval == 0:
                     print(f'current self-play batch: {self.global_step + 1}')

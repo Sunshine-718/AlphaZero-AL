@@ -106,6 +106,15 @@ class CNN(Base):
             nn.LogSoftmax(dim=-1)
         )
 
+        # SPR (Self-Predictive Representations) predictor
+        # 直接在 feature map 上预测 target network 的 hidden 输出
+        self.spr_predictor = nn.Sequential(
+            nn.Conv2d(h_dim, h_dim, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(h_dim),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(h_dim, h_dim, kernel_size=1),
+        )
+
         self.apply(self.init_weights)
         nn.init.constant_(self.policy_head[-2].weight, 0)
         nn.init.constant_(self.value_head[-2].weight, 0)
@@ -115,6 +124,7 @@ class CNN(Base):
             {'params': self.hidden.parameters()},
             {'params': self.value_head.parameters()},
             {'params': self.steps_head.parameters()},
+            {'params': self.spr_predictor.parameters()},
             {'params': self.piece_emb.parameters(), 'weight_decay': 1e-4},
             {'params': self.pos_emb.parameters(), 'weight_decay': 1e-4},
             {'params': self.policy_head.parameters(), 'lr': lr * policy_lr_scale},
@@ -172,10 +182,11 @@ class CNN(Base):
     def forward(self, x):
         x = self._embed_state(x)
         hidden = self.hidden(x)
+        spr_pred = self.spr_predictor(hidden)
         log_prob = self.policy_head(hidden)
         value = self.value_head(hidden)
         steps_pred = self.steps_head(hidden)
-        return log_prob, value, steps_pred
+        return log_prob, value, steps_pred, spr_pred
 
     @torch.no_grad()
     def policy(self, state):
@@ -198,7 +209,7 @@ class CNN(Base):
             t = t.pin_memory().to(self.device, dtype=torch.float32, non_blocking=True)
         else:
             t = t.float()
-        log_prob, value_log_prob, log_steps = self.forward(t)
+        log_prob, value_log_prob, log_steps, _ = self.forward(t)
         # Value head outputs: [P(draw), P(win to-move), P(loss to-move)]
         wdl = value_log_prob.exp()  # (batch, 3)
 

@@ -170,7 +170,7 @@ class CNN(Base):
         log_prob = self.policy_head(hidden)
         value = self.value_head(hidden)
         steps_pred = self.steps_head(hidden)
-        return log_prob, value, steps_pred
+        return log_prob, value, steps_pred, None
 
     @torch.no_grad()
     def policy(self, state):
@@ -193,7 +193,7 @@ class CNN(Base):
             t = t.pin_memory().to(self.device, dtype=torch.float32, non_blocking=True)
         else:
             t = t.float()
-        log_prob, value_log_prob, log_steps = self.forward(t)
+        log_prob, value_log_prob, log_steps, _ = self.forward(t)
         wdl = value_log_prob.exp()  # (batch, 3)
 
         steps_prob = log_steps.exp()

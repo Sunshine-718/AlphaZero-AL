@@ -4,6 +4,9 @@ import os
 os.environ["OMP_NUM_THREADS"] = "1"
 
 from src.player import Human, AlphaZeroPlayer
+from src.symmetry import (get_sym_config, apply_sym_board, apply_sym_action,
+                          inverse_sym_visits, inverse_sym_stats)
+_SYM_IDS = get_sym_config('Connect4')['sym_ids']
 from src.environments import load
 # On Windows, importing PyQt before torch can break torch DLL initialization.
 import torch
@@ -80,6 +83,7 @@ class Def:
     score_scale = 8.0
     reuse_tree = True
     no_search = False
+    sym_ensemble = True
     time_budget = 0.0
 
 # Game modes
@@ -1605,6 +1609,14 @@ class ParameterConsole(QWidget):
         self.sym_check.setToolTip("Random symmetry transform on leaf nodes")
         lay.addWidget(self.sym_check)
 
+        self.sym_ensemble_check = QCheckBox("SYM ENSEMBLE")
+        self.sym_ensemble_check.setChecked(Def.sym_ensemble)
+        self.sym_ensemble_check.setToolTip(
+            "Run 2 parallel MCTS trees with different board symmetries\n"
+            "(identity + horizontal flip), then merge visit counts.\n"
+            "Stronger than random per-leaf symmetry augmentation.")
+        lay.addWidget(self.sym_ensemble_check)
+
         self.reuse_tree_check = QCheckBox("REUSE TREE")
         self.reuse_tree_check.setChecked(Def.reuse_tree)
         self.reuse_tree_check.setToolTip("Reuse subtree from previous move (prune) vs fresh tree each move (reset)")
@@ -1656,6 +1668,7 @@ class ParameterConsole(QWidget):
         self.eps_sl.setValue(int(Def.noise_eps * self.eps_sl._scale))
         self.cache_sl.setValue(int(Def.cache * self.cache_sl._scale))
         self.sym_check.setChecked(Def.symmetry)
+        self.sym_ensemble_check.setChecked(Def.sym_ensemble)
         self.reuse_tree_check.setChecked(Def.reuse_tree)
         self.no_search_check.setChecked(Def.no_search)
         self.mlh_slope_sl.setValue(int(Def.mlh_slope * self.mlh_slope_sl._scale))
@@ -1737,6 +1750,19 @@ def _aggregate_root_stats(raw):
     return stats
 
 
+def _aggregate_root_stats_sym_ensemble(raw, sym_ids, game='Connect4'):
+    """Aggregate root stats with inverse symmetry transform for sym_ensemble mode."""
+    merged = inverse_sym_stats(raw, sym_ids, game)
+    stats = {}
+    stats['root_N'] = float(merged['root_N'][0])
+    stats['per_tree_N'] = float(raw['root_N'][0])
+    for k in ('root_Q', 'root_M', 'root_D', 'root_P1W', 'root_P2W'):
+        stats[k] = float(merged[k][0])
+    for k in ('N', 'Q', 'prior', 'noise', 'M', 'D', 'P1W', 'P2W'):
+        stats[k] = merged[k][0].copy()
+    return stats
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # MCTS Search Worker (background thread)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1757,6 +1783,7 @@ class ContinuousSearchWorker(QThread):
         self._is_ai_turn = False
         self._threshold = 500
         self._n_trees = 1
+        self._sym_ensemble = False
         self._vl_batch = 1
         self._time_budget = 0.0
         self._t0 = 0.0
@@ -1768,7 +1795,7 @@ class ContinuousSearchWorker(QThread):
         self._idle.set()
 
     def set_position(self, bmcts, pv_fn, board, turns, is_ai_turn, threshold,
-                     n_trees=1, vl_batch=1, time_budget=0.0):
+                     n_trees=1, sym_ensemble=False, vl_batch=1, time_budget=0.0):
         self._bmcts = bmcts
         self._pv_fn = pv_fn
         self._board = np.ascontiguousarray(board, dtype=np.int8)
@@ -1776,6 +1803,7 @@ class ContinuousSearchWorker(QThread):
         self._is_ai_turn = is_ai_turn
         self._threshold = threshold
         self._n_trees = n_trees
+        self._sym_ensemble = sym_ensemble
         self._vl_batch = vl_batch
         self._time_budget = time_budget
         self._t0 = time.time()
@@ -1821,7 +1849,15 @@ class ContinuousSearchWorker(QThread):
             raw = bm.get_root_stats()
             all_visits = bm.get_visits_count()
 
-            if self._n_trees > 1:
+            if self._sym_ensemble:
+                stats_0 = _aggregate_root_stats_sym_ensemble(
+                    raw, _SYM_IDS, 'Connect4')
+                transformed_visits = all_visits.copy()
+                for i, sid in enumerate(_SYM_IDS):
+                    transformed_visits[i] = inverse_sym_visits(
+                        all_visits[i], sid, 'Connect4')
+                visits = transformed_visits.sum(axis=0).copy()
+            elif self._n_trees > 1:
                 stats_0 = _aggregate_root_stats(raw)
                 visits = all_visits.sum(axis=0).copy()
             else:
@@ -1841,20 +1877,13 @@ class ContinuousSearchWorker(QThread):
                            and elapsed >= self._time_budget
                            and per_tree_n >= 8)
 
-                # Visit gap 收敛：最佳着法领先第二名超过剩余搜索量
+                # Early exit：剩余预算全部加到第二名也追不上第一名
                 sorted_v = np.sort(visits)[::-1]
                 only_one = len(sorted_v) < 2 or sorted_v[1] == 0
-                if per_tree_n >= self._threshold:
-                    # 已达目标搜索量：只需领先一个 CHUNK 即可收敛
-                    visit_converged = (only_one
-                                       or sorted_v[0] - sorted_v[1] > self.CHUNK * self._n_trees)
-                elif per_tree_n >= 8:
-                    # 未达目标但搜索量足够：领先差距 > 剩余搜索量才提前停止
-                    remaining = (self._threshold - per_tree_n) * self._n_trees
-                    visit_converged = (only_one
-                                       or sorted_v[0] - sorted_v[1] > remaining)
-                else:
-                    visit_converged = False
+                remaining = max(0, self._threshold - per_tree_n) * self._n_trees
+                visit_converged = (per_tree_n >= 8
+                                   and (only_one
+                                        or sorted_v[0] - sorted_v[1] >= remaining))
 
                 converged = visit_converged or time_up
                 if converged:
@@ -1890,6 +1919,7 @@ class Connect4GUI(QWidget):
             score_utility_factor=Def.score_utility_factor,
             score_scale=Def.score_scale,
             vl_batch=Def.vl_batch)
+        self.az_player2 = None   # second MCTS player for AvA P2 side
         self.player_color = 1
         self.mode = MODE_HVA
         self.net2 = None         # second network for AvA P2 side
@@ -2049,6 +2079,7 @@ class Connect4GUI(QWidget):
 
         _trees_delayed = lambda _=None: self.settings_timer.start(400)
         self.console.n_trees_spin.valueChanged.connect(_trees_delayed)
+        self.console.sym_ensemble_check.stateChanged.connect(_trees_delayed)
 
         _param_delayed = lambda _=None: self.param_timer.start(150)
         self.console.n_playout_spin.valueChanged.connect(self._on_sims_changed)
@@ -2201,6 +2232,7 @@ class Connect4GUI(QWidget):
         p._score_scale = _sv(self.console.score_scale_sl)
         p.n_trees = self.console.n_trees_spin.value()
         p._vl_batch = self.console.vl_batch_spin.value()
+        p.sym_ensemble = self.console.sym_ensemble_check.isChecked()
 
         p.reload(self.net,
                  c_puct=_sv(self.console.c_init_sl),
@@ -2208,7 +2240,7 @@ class Connect4GUI(QWidget):
                  alpha=_sv(self.console.alpha_sl),
                  is_self_play=0)
         p.eval()
-        self._n_trees = p.n_trees
+        self._n_trees = len(_SYM_IDS) if p.sym_ensemble else p.n_trees
         self.player_color = 1 if self.console.player_cb.currentIndex() == 0 else -1
         self.trend.set_player_color(self.player_color)
         self.mode = self.console.mode_cb.currentIndex()
@@ -2229,7 +2261,10 @@ class Connect4GUI(QWidget):
         m.set_alpha(_sv(self.console.alpha_sl))
         m.set_fpu_reduction(_sv(self.console.fpu_sl))
         m.set_noise_epsilon(_sv(self.console.eps_sl))
-        m.set_use_symmetry(self.console.sym_check.isChecked())
+        if self.az_player.sym_ensemble:
+            m.set_use_symmetry(False)
+        else:
+            m.set_use_symmetry(self.console.sym_check.isChecked())
         m.set_mlh_params(_sv(self.console.mlh_slope_sl),
                          _sv(self.console.mlh_cap_sl))
         m.set_score_utility_params(_sv(self.console.score_factor_sl),
@@ -2242,6 +2277,29 @@ class Connect4GUI(QWidget):
             m.cache_size = new_cache
         self.az_player._vl_batch = self.console.vl_batch_spin.value()
         self.worker._vl_batch = self.az_player._vl_batch
+        # Sync search params to player2 if it exists
+        if self.az_player2 is not None:
+            m2 = self.az_player2.mcts
+            m2.set_c_init(_sv(self.console.c_init_sl))
+            m2.set_c_base(_sv(self.console.c_base_sl))
+            m2.set_alpha(_sv(self.console.alpha_sl))
+            m2.set_fpu_reduction(_sv(self.console.fpu_sl))
+            m2.set_noise_epsilon(_sv(self.console.eps_sl))
+            if self.az_player2.sym_ensemble:
+                m2.set_use_symmetry(False)
+            else:
+                m2.set_use_symmetry(self.console.sym_check.isChecked())
+            m2.set_mlh_params(_sv(self.console.mlh_slope_sl),
+                              _sv(self.console.mlh_cap_sl))
+            m2.set_score_utility_params(_sv(self.console.score_factor_sl),
+                                        _sv(self.console.score_scale_sl))
+            new_cache2 = int(_sv(self.console.cache_sl))
+            old_cache2 = getattr(m2, 'cache_size', 0) or 0
+            if new_cache2 != old_cache2:
+                from src.Cache import LRUCache
+                m2.cache = LRUCache(new_cache2) if new_cache2 > 0 else None
+                m2.cache_size = new_cache2
+            self.az_player2._vl_batch = self.az_player._vl_batch
         if not self._search_paused:
             self.worker.resume()
 
@@ -2256,6 +2314,12 @@ class Connect4GUI(QWidget):
         if self.mode == MODE_AVA:
             return True
         return self.env.turn != self.player_color   # MODE_HVA
+
+    def _active_player(self):
+        """Return the MCTS player for the current turn."""
+        if self.mode == MODE_AVA and self.az_player2 is not None and self.env.turn == -1:
+            return self.az_player2
+        return self.az_player
 
     def _pv_fn_for_turn(self):
         """Return the correct pv_fn for the current turn, considering AvA."""
@@ -2318,7 +2382,7 @@ class Connect4GUI(QWidget):
         self._resume_search(is_ai_turn=next_ai)
 
     def _ensure_net2(self):
-        """Load (or reload) the second network for AvA P2 side."""
+        """Load (or reload) the second network + MCTS player for AvA P2 side."""
         wt_file2 = self.console.model_type_cb2.currentText()
         network = _net_type_from_filename(wt_file2)
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -2331,6 +2395,27 @@ class Connect4GUI(QWidget):
             self.status.set_result("MODEL2 ERROR", C.RED_HEX)
         self.net2 = net2
 
+        # Create a second MCTS player mirroring az_player's config
+        p = self.az_player
+        self.az_player2 = AlphaZeroPlayer(
+            None, c_init=None, c_base=p._c_base, n_playout=None,
+            alpha=p._alpha, noise_epsilon=p._noise_eps,
+            is_selfplay=0, cache_size=p._cache_size,
+            fpu_reduction=p._fpu_reduction, use_symmetry=p._use_symmetry,
+            game_name='Connect4',
+            score_utility_factor=p._score_utility_factor,
+            score_scale=p._score_scale,
+            vl_batch=p._vl_batch)
+        p2 = self.az_player2
+        p2.sym_ensemble = p.sym_ensemble
+        p2.n_trees = p.n_trees
+        p2.reload(net2,
+                  c_puct=p.mcts.mcts.config.c_init,
+                  n_playout=p.mcts.mcts.config.n_playout,
+                  alpha=p._alpha,
+                  is_self_play=0)
+        p2.eval()
+
     def _reload_net2_delayed(self):
         """Reload P2 AI network without restart (AvA only)."""
         if self.mode != MODE_AVA:
@@ -2338,8 +2423,6 @@ class Connect4GUI(QWidget):
         self.worker.pause_and_wait()
         self._stop_scan()
         self._ensure_net2()
-        for i in range(self._n_trees):
-            self.az_player.mcts.reset_env(i)
         if not self.env.done():
             next_ai = self._is_ai_turn()
             if next_ai:
@@ -2356,6 +2439,10 @@ class Connect4GUI(QWidget):
         self.env.reset()
         for i in range(self._n_trees):
             self.az_player.mcts.reset_env(i)
+        if self.az_player2 is not None:
+            K2 = len(_SYM_IDS) if self.az_player2.sym_ensemble else self._n_trees
+            for i in range(K2):
+                self.az_player2.mcts.reset_env(i)
         self.board.last_move = None
         self.board.win_cells = None
         self.board.anim_row = -1
@@ -2520,15 +2607,22 @@ class Connect4GUI(QWidget):
         if self.console.no_search_check.isChecked():
             self._nn_direct_eval(is_ai_turn)
             return
-        p = self.az_player
-        K = self._n_trees
-        board = np.tile(self.env.board, (K, 1, 1))
+        p = self._active_player()
+        sym_ens = p.sym_ensemble
+        if sym_ens:
+            K = len(_SYM_IDS)
+            board = np.stack([apply_sym_board(self.env.board, s, 'Connect4')
+                              for s in _SYM_IDS])
+        else:
+            K = self._n_trees
+            board = np.tile(self.env.board, (K, 1, 1))
         turns = np.full(K, self.env.turn, dtype=np.int32)
         threshold = self.console.n_playout_spin.value()
         tb = self.console.time_budget_spin.value()
         pv_fn = self._pv_fn_for_turn()
         self.worker.set_position(p.mcts, pv_fn, board, turns,
                                  is_ai_turn, threshold, n_trees=K,
+                                 sym_ensemble=sym_ens,
                                  vl_batch=p._vl_batch, time_budget=tb)
         if not self._search_paused:
             self.worker.resume()
@@ -2579,12 +2673,21 @@ class Connect4GUI(QWidget):
         self.worker._threshold = new_thr
         self.worker._time_budget = self.console.time_budget_spin.value()
         if self.worker._is_ai_turn and not self.worker._ai_acted:
-            raw = self.az_player.mcts.get_root_stats()
+            ap = self._active_player()
+            raw = ap.mcts.get_root_stats()
             root_n = float(raw['root_N'][0])  # per-tree N
             if root_n >= new_thr:
                 K = self._n_trees
-                all_visits = self.az_player.mcts.get_visits_count()
-                if K > 1:
+                all_visits = ap.mcts.get_visits_count()
+                if ap.sym_ensemble:
+                    stats_0 = _aggregate_root_stats_sym_ensemble(
+                        raw, _SYM_IDS, 'Connect4')
+                    transformed = all_visits.copy()
+                    for i, sid in enumerate(_SYM_IDS):
+                        transformed[i] = inverse_sym_visits(
+                            all_visits[i], sid, 'Connect4')
+                    visits = transformed.sum(axis=0).copy()
+                elif K > 1:
                     stats_0 = _aggregate_root_stats(raw)
                     visits = all_visits.sum(axis=0).copy()
                 else:
@@ -2647,14 +2750,22 @@ class Connect4GUI(QWidget):
 
         self._prune_or_reset(action)
 
-        # In AvA, reset trees when switching to the other network
-        if self.mode == MODE_AVA and self.net2 is not None:
-            for i in range(K):
-                self.az_player.mcts.reset_env(i)
-        elif self.console.reuse_tree_check.isChecked():
-            hint_raw = self.az_player.mcts.get_root_stats()
-            all_hint_v = self.az_player.mcts.get_visits_count()
-            if K > 1:
+        if self.console.reuse_tree_check.isChecked():
+            # AvA: each player has own tree; pick the opponent's for hint
+            if self.mode == MODE_AVA and self.az_player2 is not None:
+                hint_player = self.az_player2 if ai_turn == 1 else self.az_player
+            else:
+                hint_player = self.az_player
+            hint_raw = hint_player.mcts.get_root_stats()
+            all_hint_v = hint_player.mcts.get_visits_count()
+            if hint_player.sym_ensemble:
+                hint_s0 = _aggregate_root_stats_sym_ensemble(
+                    hint_raw, _SYM_IDS, 'Connect4')
+                transformed = all_hint_v.copy()
+                for i, sid in enumerate(_SYM_IDS):
+                    transformed[i] = inverse_sym_visits(all_hint_v[i], sid, 'Connect4')
+                hint_v = transformed.sum(axis=0).copy()
+            elif K > 1:
                 hint_s0 = _aggregate_root_stats(hint_raw)
                 hint_v = all_hint_v.sum(axis=0).copy()
             else:
@@ -2686,7 +2797,17 @@ class Connect4GUI(QWidget):
 
         env_copy = self.env.copy()
         env_copy.step(action)
-        next_board = np.tile(env_copy.board, (K, 1, 1))
+        # Determine which player searches next (env_copy.turn is the next turn)
+        if self.mode == MODE_AVA and self.az_player2 is not None and env_copy.turn == -1:
+            next_player = self.az_player2
+        else:
+            next_player = self.az_player
+        sym_ens = next_player.sym_ensemble
+        if sym_ens:
+            next_board = np.stack([apply_sym_board(env_copy.board, s, 'Connect4')
+                                   for s in _SYM_IDS])
+        else:
+            next_board = np.tile(env_copy.board, (K, 1, 1))
         next_turns = np.full(K, env_copy.turn, dtype=np.int32)
         threshold = self.console.n_playout_spin.value()
         tb = self.console.time_budget_spin.value()
@@ -2697,18 +2818,16 @@ class Connect4GUI(QWidget):
                 next_pv_fn = self.net2
             else:
                 next_pv_fn = self.az_player.pv_fn
-            # After AI move in AvA: next is also AI. In HvA: next is hint.
-            # We use env_copy.turn to check since self.env hasn't stepped yet.
             if self.mode == MODE_AVA:
                 next_is_ai = True
             elif self.mode == MODE_HVH:
                 next_is_ai = False
             else:
                 next_is_ai = (env_copy.turn != self.player_color)
-            self.worker.set_position(self.az_player.mcts, next_pv_fn,
+            self.worker.set_position(next_player.mcts, next_pv_fn,
                                      next_board, next_turns,
                                      is_ai_turn=next_is_ai, threshold=threshold,
-                                     n_trees=K,
+                                     n_trees=K, sym_ensemble=sym_ens,
                                      vl_batch=self.az_player._vl_batch,
                                      time_budget=tb)
             if not self._search_paused:
@@ -2721,14 +2840,25 @@ class Connect4GUI(QWidget):
             self._start_anim(row, action, color,
                              lambda a=action: self._after_ai_anim(a))
 
-    def _prune_or_reset(self, action):
-        """Prune tree to action's subtree, or reset if reuse is disabled."""
-        K = self._n_trees
-        if self.console.reuse_tree_check.isChecked():
-            self.az_player.mcts.prune_roots(np.full(K, action, dtype=np.int32))
-        else:
+    def _prune_or_reset_player(self, player, action):
+        """Prune a single player's tree to action's subtree, or reset."""
+        K = len(_SYM_IDS) if player.sym_ensemble else self._n_trees
+        if not self.console.reuse_tree_check.isChecked():
             for i in range(K):
-                self.az_player.mcts.reset_env(i)
+                player.mcts.reset_env(i)
+        elif player.sym_ensemble:
+            sym_actions = np.array(
+                [apply_sym_action(action, s, 'Connect4') for s in _SYM_IDS],
+                dtype=np.int32)
+            player.mcts.prune_roots(sym_actions)
+        else:
+            player.mcts.prune_roots(np.full(K, action, dtype=np.int32))
+
+    def _prune_or_reset(self, action):
+        """Prune tree(s) to action's subtree, or reset if reuse is disabled."""
+        self._prune_or_reset_player(self.az_player, action)
+        if self.mode == MODE_AVA and self.az_player2 is not None:
+            self._prune_or_reset_player(self.az_player2, action)
 
     def _record_trend(self):
         """Record current WDL from status bar into trend chart."""
@@ -2752,9 +2882,12 @@ class Connect4GUI(QWidget):
             return
 
         self._update_turn_label()
-        # In AvA, scanning is already handled by pre-set worker in _on_ai_ready
-        if self._is_ai_turn():
+        next_ai = self._is_ai_turn()
+        if next_ai:
             self._start_scan()
+        # NO SEARCH 模式下需要显式触发下一步（正常模式下 worker 已在动画前预启动）
+        if self.console.no_search_check.isChecked():
+            self._resume_search(is_ai_turn=next_ai)
 
     def _after_human_anim(self, col):
         current_player = self.env.turn
@@ -2855,6 +2988,10 @@ class Connect4GUI(QWidget):
         self.board.env = saved_env
         for i in range(self._n_trees):
             self.az_player.mcts.reset_env(i)
+        if self.az_player2 is not None:
+            K2 = len(_SYM_IDS) if self.az_player2.sym_ensemble else self._n_trees
+            for i in range(K2):
+                self.az_player2.mcts.reset_env(i)
         self.board.last_move = saved_last
         self.board.win_cells = None
         self.board.anim_row = -1
