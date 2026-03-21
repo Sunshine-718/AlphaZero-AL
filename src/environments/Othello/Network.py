@@ -27,30 +27,95 @@ class ResidualBlock(nn.Module):
     Conv -> BN -> SiLU -> Dropout -> Conv -> BN -> Add -> SiLU
     """
 
-    def __init__(self, in_channels, out_channels, dropout_rate=0.):
+    def __init__(self, in_channels, out_channels, kernel_size=3, padding=1, dropout=0.):
         super().__init__()
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(out_channels)
-        self.silu = nn.SiLU(inplace=True)
-        self.dropout = nn.Dropout2d(p=dropout_rate)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(out_channels)
-
-        self.shortcut = nn.Sequential()
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, padding=padding, bias=True)
+        self.norm = nn.GroupNorm(1, in_channels)
+        self.dropout = nn.Dropout2d(dropout, inplace=True)
+        if in_channels == out_channels:
+            self.resid = True
+        else:
+            self.resid = False
 
     def forward(self, x):
-        out = self.silu(self.bn1(self.conv1(x)))
-        out = self.dropout(out)
-        out = self.bn2(self.conv2(out))
-        out += self.shortcut(x)
-        return self.silu(out)
+        residual = x if self.resid else 0
+        x = self.norm(x)
+        x = self.conv(x)
+        x = nn.functional.silu(x)
+        return self.dropout(x) + residual
+
+
+class Attention(nn.Module):
+    def __init__(self, h_dim, num_head, dropout=0.):
+        super().__init__()
+        assert h_dim % num_head == 0
+        self.h_dim = h_dim
+        self.num_heads = num_head
+        self.head_dim = h_dim // num_head
+        self.prenorm = nn.RMSNorm(h_dim, eps=1e-5)
+        self.q_proj = nn.Linear(h_dim, self.num_heads * self.head_dim, bias=False)
+        self.k_proj = nn.Linear(h_dim, self.num_heads * self.head_dim, bias=False)
+        self.v_proj = nn.Linear(h_dim, self.num_heads * self.head_dim, bias=False)
+        self.o_proj = nn.Linear(self.num_heads * self.head_dim, h_dim, bias=False)
+        self.q_norm = nn.RMSNorm(self.head_dim, eps=1e-5)
+        self.k_norm = nn.RMSNorm(self.head_dim, eps=1e-5)
+        self.dropout = nn.Dropout(dropout)
+        self.dropout_p = dropout
+    
+    def forward(self, x: torch.Tensor):
+        batch_size, seq_len, h_dim = x.shape
+        residual = x
+        x = self.prenorm(x)
+
+        xq = self.q_proj(x).reshape(batch_size, seq_len, self.num_heads, self.head_dim)
+        xq = self.q_norm(xq).transpose(1, 2)
+        xk = self.k_proj(x).reshape(batch_size, seq_len, self.num_heads, self.head_dim)
+        xk = self.k_norm(xk).transpose(1, 2)
+        xv = self.v_proj(x).reshape(batch_size, seq_len, self.num_heads, self.head_dim)
+        xv = xv.transpose(1, 2)
+
+        attn_output = nn.functional.scaled_dot_product_attention(xq, xk, xv, dropout_p=self.dropout_p if self.training else 0.)
+        attn_output = attn_output.transpose(1, 2).reshape(batch_size, seq_len, h_dim)
+        output = self.dropout(self.o_proj(attn_output))
+        return output + residual
+
+
+class FFN(nn.Module):
+    def __init__(self, hidden_dim, ffn_mult=2):
+        super().__init__()
+        self.prenorm = nn.RMSNorm(hidden_dim, eps=1e-5)
+        self.up_proj = nn.Linear(hidden_dim, hidden_dim * ffn_mult, bias=False)
+        self.gate_proj = nn.Linear(hidden_dim, hidden_dim * ffn_mult, bias=False)
+        self.down_proj = nn.Linear(hidden_dim * ffn_mult, hidden_dim, bias=False)
+    
+    def forward(self, x):
+        residual = x
+        x = self.prenorm(x)
+        gate = nn.functional.silu(self.gate_proj(x))
+        up = self.up_proj(x)
+        return self.down_proj(gate * up) + residual
+
+
+class AttentionBlock(nn.Module):
+    def __init__(self, h_dim, num_head, ffn_mult, dropout=0.):
+        super().__init__()
+        self.attn = Attention(h_dim, num_head, dropout)
+        self.ffn = FFN(h_dim, ffn_mult)
+    
+    def forward(self, x):
+        batch_size, num_channels, h, w = x.shape
+        x = x.reshape(batch_size, num_channels, h * w).transpose(1, 2)
+        attn_output = self.attn(x)
+        ffn_output = self.ffn(attn_output)
+        output = ffn_output.transpose(1, 2).reshape(batch_size, num_channels, h, w)
+        return output
 
 
 class CNN(Base):
     aux_target_offset = 64
     score_scale = 8.0  # atan mapping scale, synced from SearchConfig at runtime
 
-    def __init__(self, lr, embed_dim=32, h_dim=64, out_dim=65, dropout=0.2, device='cpu', num_res_blocks=4, policy_lr_scale=0.3):
+    def __init__(self, lr, embed_dim=32, h_dim=64, out_dim=65, dropout=0.2, device='cpu', num_res_blocks=2, policy_lr_scale=0.3):
         super().__init__()
         self.embed_dim = embed_dim
         self.in_dim = 3  # 保持与 server.py ReplayBuffer 的兼容性
@@ -62,46 +127,41 @@ class CNN(Base):
         self.pos_emb = nn.Embedding(10, embed_dim)     # 10 个轨道 (D4 对称)
         self.register_buffer('orbit_map', torch.tensor(_ORBIT_MAP, dtype=torch.long))
 
-        # 8x8 board with padding=2 → 10x10 feature maps
-        FLAT = h_dim * 10 * 10
-
-        # Body: Stem + Residual Blocks
+        # Body: Stem + Residual Blocks (spatial dims stay 8x8, all convs use padding=1)
         self.hidden = nn.Sequential(
-            nn.Conv2d(embed_dim, h_dim, kernel_size=3, padding=2, bias=False),
-            nn.BatchNorm2d(h_dim),
-            nn.SiLU(inplace=True),
-            *[ResidualBlock(h_dim, h_dim, dropout_rate=dropout) for _ in range(num_res_blocks)]
+            ResidualBlock(embed_dim, h_dim, dropout=dropout),
+            *[ResidualBlock(h_dim, h_dim, dropout=dropout) for _ in range(num_res_blocks)],
+            nn.GroupNorm(1, h_dim),
+            nn.Conv2d(h_dim, h_dim, kernel_size=3, padding=1, bias=False),
+            AttentionBlock(h_dim, 2, 2, dropout)
         )
 
         # Policy head: conv → flatten → linear → log_softmax
-        policy_conv_flat = 5 * 10 * 10
+        policy_conv_flat = 5 * 8 * 8
         self.policy_head = nn.Sequential(
-            nn.Conv2d(h_dim, 5, kernel_size=1, bias=True),
-            nn.SiLU(inplace=True),
+            ResidualBlock(h_dim, 5, dropout=dropout),
             nn.Flatten(),
-            nn.LayerNorm(policy_conv_flat),
+            nn.RMSNorm(policy_conv_flat, eps=1e-5),
             nn.Linear(policy_conv_flat, out_dim),
             nn.LogSoftmax(dim=-1)
         )
 
         # Value head: WDL (draw, p1_win, p2_win)
         self.value_head = nn.Sequential(
-            nn.Conv2d(h_dim, 5, kernel_size=1, bias=True),
-            nn.SiLU(inplace=True),
+            ResidualBlock(h_dim, 5, dropout=dropout),
             nn.Flatten(),
             nn.Linear(policy_conv_flat, policy_conv_flat),
             nn.SiLU(inplace=True),
-            nn.LayerNorm(policy_conv_flat),
+            nn.RMSNorm(policy_conv_flat, eps=1e-5),
             nn.Linear(policy_conv_flat, 3),
             nn.LogSoftmax(dim=-1)
         )
 
         # Auxiliary head: terminal disc diff from current-player perspective, in [-64, 64].
-        self.steps_head = nn.Sequential(
-            nn.Conv2d(h_dim, 5, kernel_size=1, bias=True),
-            nn.SiLU(inplace=True),
+        self.aux_head = nn.Sequential(
+            ResidualBlock(h_dim, 5, dropout=dropout),
             nn.Flatten(),
-            nn.LayerNorm(policy_conv_flat),
+            nn.RMSNorm(policy_conv_flat, eps=1e-5),
             nn.Linear(policy_conv_flat, 129),
             nn.LogSoftmax(dim=-1)
         )
@@ -109,21 +169,19 @@ class CNN(Base):
         # SPR (Self-Predictive Representations) predictor
         # 直接在 feature map 上预测 target network 的 hidden 输出
         self.spr_predictor = nn.Sequential(
-            nn.Conv2d(h_dim, h_dim, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(h_dim),
-            nn.SiLU(inplace=True),
+            ResidualBlock(h_dim, h_dim, dropout=dropout),
             nn.Conv2d(h_dim, h_dim, kernel_size=1),
         )
 
         self.apply(self.init_weights)
         nn.init.constant_(self.policy_head[-2].weight, 0)
         nn.init.constant_(self.value_head[-2].weight, 0)
-        nn.init.constant_(self.steps_head[-2].weight, 0)
+        nn.init.constant_(self.aux_head[-2].weight, 0)
 
         self.opt = torch.optim.AdamW([
             {'params': self.hidden.parameters()},
             {'params': self.value_head.parameters()},
-            {'params': self.steps_head.parameters()},
+            {'params': self.aux_head.parameters()},
             {'params': self.spr_predictor.parameters()},
             {'params': self.piece_emb.parameters(), 'weight_decay': 1e-4},
             {'params': self.pos_emb.parameters(), 'weight_decay': 1e-4},
@@ -185,7 +243,7 @@ class CNN(Base):
         spr_pred = self.spr_predictor(hidden)
         log_prob = self.policy_head(hidden)
         value = self.value_head(hidden)
-        steps_pred = self.steps_head(hidden)
+        steps_pred = self.aux_head(hidden)
         return log_prob, value, steps_pred, spr_pred
 
     @torch.no_grad()
