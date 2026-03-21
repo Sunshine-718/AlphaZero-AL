@@ -32,40 +32,31 @@ from PyQt5.QtWidgets import (
 # ═══════════════════════════════════════════════════════════════════════════════
 
 ENV_NAME = 'Othello'
-MODEL_NAME = 'AZ'
 PARAMS_DIR = './params'
-PARAMS_PATH = './params/{name}_{env}_{net}_{type}.pt'
 N_ACTIONS = 65      # 64 squares + 1 pass
 BOARD_SIZE = 8
 CHUNK = 50
 
 
-def _scan_weight_files(env_name=ENV_NAME, model_name=MODEL_NAME):
-    """Scan params/ and return a sorted list of .pt filenames for this env.
-    'current' and 'best' variants are placed first."""
-    prefix = f"{model_name}_{env_name}_"
-    files = []
-    if os.path.isdir(PARAMS_DIR):
-        for fn in os.listdir(PARAMS_DIR):
-            if fn.startswith(prefix) and fn.endswith('.pt'):
-                files.append(fn)
-    # Sort: current first, best second, then alphabetical
-    def _sort_key(f):
-        if '_current.' in f:
-            return (0, f)
-        if '_best.' in f:
-            return (1, f)
-        return (2, f)
-    files.sort(key=_sort_key)
-    return files
-
-
-def _net_type_from_filename(filename, env_name=ENV_NAME, model_name=MODEL_NAME):
-    """Extract network type from weight filename.
-    E.g. 'AZ_Othello_CNN_current.pt' → 'CNN'."""
-    prefix = f"{model_name}_{env_name}_"
-    mid = filename[len(prefix):-3]  # 'CNN_current'
-    return mid.split('_', 1)[0]
+def _scan_experiments(env_name=ENV_NAME):
+    """Scan params/{env}/ for experiment directories.
+    Returns sorted list of entries like '001/current', '001/best', etc.
+    Latest experiment first, current before best within each experiment."""
+    env_dir = os.path.join(PARAMS_DIR, env_name)
+    entries = []
+    if not os.path.isdir(env_dir):
+        return entries
+    exp_ids = []
+    for name in os.listdir(env_dir):
+        if os.path.isdir(os.path.join(env_dir, name)) and name.isdigit():
+            exp_ids.append(name)
+    exp_ids.sort(key=int, reverse=True)  # latest first
+    for exp_id in exp_ids:
+        for variant in ('current', 'best'):
+            model_file = os.path.join(env_dir, exp_id, variant, 'model.pt')
+            if os.path.exists(model_file):
+                entries.append(f'{exp_id}/{variant}')
+    return entries
 
 
 # Action ↔ board coordinate helpers
@@ -1481,14 +1472,14 @@ class ParameterConsole(QWidget):
         self._weights_label = _label("WEIGHTS")
         lay.addWidget(self._weights_label)
         self.model_type_cb = NoWheelComboBox()
-        self.model_type_cb.addItems(_scan_weight_files())
+        self.model_type_cb.addItems(_scan_experiments())
         lay.addWidget(self.model_type_cb)
 
         # ⚪ WEIGHTS (second — only shown in AvA for White AI)
         self._weights2_label = _label("⚪ WEIGHTS")
         lay.addWidget(self._weights2_label)
         self.model_type_cb2 = NoWheelComboBox()
-        self.model_type_cb2.addItems(_scan_weight_files())
+        self.model_type_cb2.addItems(_scan_experiments())
         lay.addWidget(self.model_type_cb2)
         self._weights2_label.hide()
         self.model_type_cb2.hide()
@@ -2180,13 +2171,12 @@ class OthelloGUI(QWidget):
     # ═══════════════════════════════════════════════════════════════════════
 
     def _reload_model(self):
-        wt_file = self.console.model_type_cb.currentText()
-        network = _net_type_from_filename(wt_file)
+        entry = self.console.model_type_cb.currentText()  # e.g. '001/current'
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        net = getattr(self.env_module, network)(lr=0, device=device)
+        net = self.env_module.CNN(lr=0, device=device)
         net.eval()
         self.net = net
-        path = os.path.join(PARAMS_DIR, wt_file)
+        path = os.path.join(PARAMS_DIR, ENV_NAME, entry)
         try:
             self.net.load(path)
         except Exception:
@@ -2362,12 +2352,11 @@ class OthelloGUI(QWidget):
 
     def _ensure_net2(self):
         """Load (or reload) the second network + MCTS player for AvA White side."""
-        wt_file2 = self.console.model_type_cb2.currentText()
-        network = _net_type_from_filename(wt_file2)
+        entry2 = self.console.model_type_cb2.currentText()
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        net2 = getattr(self.env_module, network)(lr=0, device=device)
+        net2 = self.env_module.CNN(lr=0, device=device)
         net2.eval()
-        path = os.path.join(PARAMS_DIR, wt_file2)
+        path = os.path.join(PARAMS_DIR, ENV_NAME, entry2)
         try:
             net2.load(path)
         except Exception:

@@ -2,9 +2,11 @@
 # -*- coding: utf-8 -*-
 # Written by: Sunshine
 # Created on: 20/Jul/2024  22:31
+import os
 import torch
 import argparse
 from src.environments import load
+from src.pipeline import _latest_experiment_dir
 from src.game import Game
 from src.player import Human, AlphaZeroPlayer, NetworkPlayer
 
@@ -15,10 +17,10 @@ parser.add_argument('-n', type=int, default=500,
                     help='Number of simulations before AlphaZero make an action')
 parser.add_argument('--sp', action='store_true',
                     help='AlphaZero play against itself')
-parser.add_argument('--model', type=str, default='current', help='Model type')
+parser.add_argument('--model', type=str, default='current', help='Model type (current/best)')
 parser.add_argument('--network', type=str, default='CNN', help='Network type')
 parser.add_argument('--env', type=str, default='Connect4', help='env name')
-parser.add_argument('--name', type=str, default='AZ', help='Model name')
+parser.add_argument('--exp', type=str, default=None, help='Experiment ID (default: latest)')
 parser.add_argument('-c', '--c_init', type=float, default=4, help='C_puct init')
 parser.add_argument('-a', '--alpha', type=float, default=0.1, help='Dirichlet alpha')
 parser.add_argument('--no_symmetry', action='store_true', help='Disable random symmetry augmentation during MCTS search')
@@ -57,7 +59,16 @@ if __name__ == '__main__':
         else:
             raise ValueError(f"Unknown network type: {args.network}")
 
-        net.load(f'./params/{args.name}_{args.env}_{args.network}_{args.model}.pt')
+        env_dir = f'./params/{args.env}'
+        if args.exp:
+            exp_dir = os.path.join(env_dir, args.exp)
+        else:
+            exp_dir = _latest_experiment_dir(env_dir)
+        if exp_dir is None:
+            raise FileNotFoundError(f'No experiment found in {env_dir}')
+        model_dir = os.path.join(exp_dir, args.model)
+        print(f'Loading weights from: {model_dir}')
+        net.load(model_dir)
 
         if args.n == 0:
             az_player = NetworkPlayer(net)

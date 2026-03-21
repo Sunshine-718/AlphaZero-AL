@@ -33,7 +33,6 @@ g_server.add_argument('--port', '-P', '-p', type=int, default=7718, help='Port n
 g_env = parser.add_argument_group('Environment & Model')
 g_env.add_argument('-e', '--env', '--environment', type=str, default='Connect4', help='Environment name')
 g_env.add_argument('-m', '--model', type=str, default='CNN', help='Network type (CNN/ViT)')
-g_env.add_argument('--name', type=str, default='AZ', help='Experiment name')
 g_env.add_argument('-d', '--device', type=str,
                    default='cuda' if torch.cuda.is_available() else 'cpu', help='Device')
 
@@ -104,7 +103,7 @@ g_train.add_argument('--value_decay', type=float, default=1,
 g_train.add_argument('--psw_beta', type=float, default=0.5,
                       help='Policy Surprise Weighting β: w = 1 + β×KL(π||p), up-weights positions where '
                            'MCTS policy diverges from network prior (0=disabled)')
-g_train.add_argument('--entropy_lambda', type=float, default=0.05,
+g_train.add_argument('--entropy_lambda', type=float, default=0.01,
                       help='Entropy regularization λ: subtracts λ×H(p) from policy loss to discourage '
                            'policy collapse (0=disabled)')
 g_train.add_argument('--td_steps', type=int, default=10,
@@ -180,7 +179,6 @@ def print_config():
         ("Environment & Model", {
             "env": args.env,
             "model": args.model,
-            "name": args.name,
             "device": args.device,
         }),
         ("MCTS Search", {
@@ -326,6 +324,14 @@ def upload():
     return jsonify({'status': 'success'})
 
 
+def _load_model_state_dict(path):
+    """Load model weights, compatible with directory and legacy file formats."""
+    if os.path.isdir(path):
+        return torch.load(os.path.join(path, 'model.pt'), map_location='cpu', weights_only=True)
+    checkpoint = torch.load(path, map_location='cpu', weights_only=True)
+    return checkpoint['model_state_dict'] if 'model_state_dict' in checkpoint else checkpoint
+
+
 @app.route('/weights', methods=['GET'])
 def weights():
     global TOTAL_SENT_BYTES
@@ -335,7 +341,8 @@ def weights():
         path = pipeline.current
 
     try:
-        mtime = os.path.getmtime(path)
+        model_file = os.path.join(path, 'model.pt') if os.path.isdir(path) else path
+        mtime = os.path.getmtime(model_file)
     except FileNotFoundError:
         return '', 304
     try:
@@ -346,7 +353,7 @@ def weights():
         print(f'Client {request.remote_addr}:{request.environ.get("REMOTE_PORT")} connected.')
     if mtime > client_ts:
         payload = pickle.dumps(
-            torch.load(path, map_location='cpu', weights_only=True)["model_state_dict"],
+            _load_model_state_dict(path),
             protocol=pickle.HIGHEST_PROTOCOL
         )
         TOTAL_SENT_BYTES += len(payload)
@@ -583,7 +590,7 @@ if __name__ == '__main__':
     # 统一种子初始化模型（保证各 rank 权重一致）
     set_seed(0)
 
-    pipeline = ServerPipeline(args.env, args.model, args.name, config,
+    pipeline = ServerPipeline(args.env, args.model, config,
                               min_buffer_size=args.q_size,
                               rank=rank, world_size=world_size,
                               local_rank=local_rank)

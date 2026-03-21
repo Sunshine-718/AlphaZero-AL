@@ -3,6 +3,7 @@
 # Written by: Sunshine
 # Created on: 09/Sep/2024  04:20
 import copy
+import os
 import time
 import torch
 import torch.nn as nn
@@ -289,14 +290,21 @@ class Base(ABC, nn.Module):
         total_norm = self._grad_norm(self.parameters())
         return float(entropy), total_norm, f1
 
-    def save(self, path=None):
+    def save(self, dir_path=None):
+        """Save model weights and training state to a directory.
+
+        Directory structure:
+            dir_path/model.pt       — model state_dict
+            dir_path/optimizer.pt   — optimizer state_dict
+            dir_path/scheduler.pt   — scheduler state_dict
+        """
         while True:
             try:
-                if path is not None:
-                    checkpoint = {'model_state_dict': self.state_dict(),
-                                  'opt_state_dict': self.opt.state_dict(),
-                                  'scheduler_state_dict': self.scheduler.state_dict()}
-                    torch.save(checkpoint, path)
+                if dir_path is not None:
+                    os.makedirs(dir_path, exist_ok=True)
+                    torch.save(self.state_dict(), os.path.join(dir_path, 'model.pt'))
+                    torch.save(self.opt.state_dict(), os.path.join(dir_path, 'optimizer.pt'))
+                    torch.save(self.scheduler.state_dict(), os.path.join(dir_path, 'scheduler.pt'))
                     break
             except RuntimeError:
                 print('Failed to save parameters, retry...')
@@ -304,17 +312,49 @@ class Base(ABC, nn.Module):
                 continue
 
     def load(self, path=None):
-        if path is not None:
-            try:
+        """Load model weights and optionally training state.
+
+        Supports three formats:
+        - Directory (new): path/model.pt, path/optimizer.pt, path/scheduler.pt
+        - Single file (legacy v1): {'model_state_dict': ..., 'opt_state_dict': ...}
+        - Single file (legacy v2): bare state_dict
+        """
+        if path is None:
+            return self
+        try:
+            if os.path.isdir(path):
+                model_file = os.path.join(path, 'model.pt')
+                self.load_state_dict(
+                    torch.load(model_file, map_location=self.device, weights_only=True),
+                    strict=False)
+                opt_file = os.path.join(path, 'optimizer.pt')
+                sched_file = os.path.join(path, 'scheduler.pt')
+                if os.path.exists(opt_file):
+                    try:
+                        self.opt.load_state_dict(
+                            torch.load(opt_file, map_location=self.device, weights_only=True))
+                    except (ValueError, KeyError) as e:
+                        print(f'Optimizer state incompatible, using fresh state.\n{e}')
+                if os.path.exists(sched_file):
+                    try:
+                        self.scheduler.load_state_dict(
+                            torch.load(sched_file, map_location=self.device, weights_only=True))
+                    except (ValueError, KeyError) as e:
+                        print(f'Scheduler state incompatible, using fresh state.\n{e}')
+            else:
+                # Legacy single-file format
                 checkpoint = torch.load(path, map_location=self.device, weights_only=True)
-                self.load_state_dict(checkpoint['model_state_dict'], strict=False)
-                try:
-                    self.opt.load_state_dict(checkpoint['opt_state_dict'])
-                    self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-                except (ValueError, KeyError) as e:
-                    print(f'Optimizer/scheduler state incompatible, using fresh state.\n{e}')
-            except Exception as e:
-                print(f'Failed to load parameters.\n{e}')
+                if 'model_state_dict' in checkpoint:
+                    self.load_state_dict(checkpoint['model_state_dict'], strict=False)
+                    try:
+                        self.opt.load_state_dict(checkpoint['opt_state_dict'])
+                        self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+                    except (ValueError, KeyError) as e:
+                        print(f'Optimizer/scheduler state incompatible, using fresh state.\n{e}')
+                else:
+                    self.load_state_dict(checkpoint, strict=False)
+        except Exception as e:
+            print(f'Failed to load parameters.\n{e}')
         # Invalidate target net so it re-inits from the newly loaded weights
         object.__setattr__(self, '_target_net', None)
         return self

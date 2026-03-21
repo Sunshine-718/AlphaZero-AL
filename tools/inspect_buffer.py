@@ -892,9 +892,21 @@ def main():
 
     gcfg = GAME_CONFIGS[args.game]
     if args.model is None:
-        args.model = gcfg['best_model'] if args.best else gcfg['default_model']
+        # Auto-detect latest experiment directory
+        from src.pipeline import _latest_experiment_dir
+        env_dir = f'./params/{args.game}'
+        exp_dir = _latest_experiment_dir(env_dir)
+        if exp_dir:
+            variant = 'best' if args.best else 'current'
+            args.model = os.path.join(exp_dir, variant)
+        else:
+            # Fallback to legacy paths
+            args.model = gcfg['best_model'] if args.best else gcfg['default_model']
     elif args.best:
-        args.model = gcfg['best_model']
+        from src.pipeline import _latest_experiment_dir
+        env_dir = f'./params/{args.game}'
+        exp_dir = _latest_experiment_dir(env_dir)
+        args.model = os.path.join(exp_dir, 'best') if exp_dir else gcfg['best_model']
 
     if args.output is None:
         args.output = os.path.join('tools', 'figures', datetime.now().strftime('%Y%m%d_%H%M%S'))

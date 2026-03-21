@@ -13,8 +13,31 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import swanlab
 
 
+def _next_experiment_id(env_dir):
+    """Scan env_dir for numeric subdirs, return max+1 as zero-padded 3-digit str."""
+    os.makedirs(env_dir, exist_ok=True)
+    max_id = 0
+    for name in os.listdir(env_dir):
+        if os.path.isdir(os.path.join(env_dir, name)) and name.isdigit():
+            max_id = max(max_id, int(name))
+    return f'{max_id + 1:03d}'
+
+
+def _latest_experiment_dir(env_dir):
+    """Return path to highest numeric experiment dir, or None."""
+    if not os.path.isdir(env_dir):
+        return None
+    max_id, max_name = 0, None
+    for name in os.listdir(env_dir):
+        if os.path.isdir(os.path.join(env_dir, name)) and name.isdigit():
+            n = int(name)
+            if n > max_id:
+                max_id, max_name = n, name
+    return os.path.join(env_dir, max_name) if max_name else None
+
+
 class TrainPipeline(ABC):
-    def __init__(self, env_name='Connect4', model='CNN', name='AZ', config=None,
+    def __init__(self, env_name='Connect4', model='CNN', config=None,
                  rank=0, world_size=1, local_rank=0):
         collection = ('Connect4', 'Othello')
         if env_name not in collection:
@@ -27,8 +50,10 @@ class TrainPipeline(ABC):
         self.module = load(env_name)
         self.env = self.module.Env()
         self.game = Game(self.env)
-        self.name = f'{name}_{env_name}'
-        self.params = './params'
+        self.env_dir = f'./params/{env_name}'
+        self.exp_id = _next_experiment_id(self.env_dir)
+        self.experiment_dir = f'{self.env_dir}/{self.exp_id}'
+        self.name = f'{env_name}/{self.exp_id}'
         self.global_step = 0
         self._dashboard_metrics = {}
         self.raw_config = config if config else {}
@@ -43,9 +68,10 @@ class TrainPipeline(ABC):
             self.net = self.module.ViT(lr=self.lr, device=self.device)
         else:
             raise ValueError(f'Unknown model type: {model}')
-        self.current = f'{self.params}/{self.name}_{self.net.name()}_current.pt'
-        self.best = f'{self.params}/{self.name}_{self.net.name()}_best.pt'
+        self.current = f'{self.experiment_dir}/current'
+        self.best = f'{self.experiment_dir}/best'
         self.net.load(self.current)
+        print(f'Experiment directory: {self.experiment_dir}')
 
         if self.is_ddp:
             self.ddp_net = DDP(self.net, device_ids=[self.local_rank], find_unused_parameters=True)
@@ -80,7 +106,6 @@ class TrainPipeline(ABC):
         self.elo = Elo(self.init_elo, 1500)
         self.r_a = 0
         self.r_b = 0
-        os.makedirs('params', exist_ok=True)
 
     def init_buffer(self, buffer):
         self.buffer = buffer
