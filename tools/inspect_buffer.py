@@ -996,7 +996,7 @@ def analyze_nn(model_path, gcfg, device='cpu', output_dir=None):
         analyze_embeddings(net, output_dir, gcfg)
 
     # Attention map visualization (only for models with Attention modules)
-    has_attn = any(type(m).__name__ == 'Attention' and hasattr(m, 'q_proj')
+    has_attn = any(type(m).__name__ == 'Attention' and (hasattr(m, 'q_proj') or hasattr(m, 'qkv_proj'))
                    for m in net.modules())
     if has_attn:
         analyze_attention(net, output_dir, gcfg, device)
