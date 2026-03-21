@@ -2390,7 +2390,7 @@ class OthelloGUI(QWidget):
         p2.n_trees = p.n_trees
         p2.reload(net2,
                   c_puct=p.mcts.mcts.config.c_init,
-                  n_playout=p.mcts.mcts.config.n_playout,
+                  n_playout=p._n_playout,
                   alpha=p._alpha,
                   is_self_play=0)
         p2.eval()
@@ -2512,7 +2512,7 @@ class OthelloGUI(QWidget):
             t = torch.from_numpy(state).float().to(self.net.device).unsqueeze(0)
             if t.dim() == 5:
                 t = t.squeeze(1)
-            _, vl, sl = self.net(t)
+            _, vl, sl, *_ = self.net(t)
 
             vp = vl[0].exp().cpu().tolist()
             draw_pct = vp[0] * 100
@@ -2564,12 +2564,29 @@ class OthelloGUI(QWidget):
 
     # ── Continuous search helpers ──────────────────────────────────────────
     def _nn_direct_eval(self, is_ai_turn):
-        """NO SEARCH 模式：单次 NN 前向 + 合法 mask，绕过 MCTS。"""
+        """NO SEARCH 模式：NN 前向 + 合法 mask，绕过 MCTS。支持对称增强。"""
         pv_fn = self._pv_fn_for_turn()
-        state = self.env.current_state()               # (1, 3, R, C)
-        probs, wdl, ml = pv_fn.predict(state)           # probs (1, A), wdl (1, 3), ml (1, 1)
-        probs = probs[0]                                 # (A,)
-        wdl = wdl[0]                                     # (3,) = [draw, win, loss] relative
+        p = self._active_player()
+        if p.sym_ensemble and len(_SYM_IDS) > 1:
+            # 对称增强：对所有对称变换取平均
+            base = self.env.current_state()  # (1, 3, R, C)
+            sym_states = []
+            for s in _SYM_IDS:
+                st = np.stack([apply_sym_board(base[0, c], s, 'Othello')
+                               for c in range(3)], axis=0)  # (3, R, C)
+                sym_states.append(st)
+            states = np.stack(sym_states)  # (K, 3, R, C)
+            all_probs, all_wdl, _ = pv_fn.predict(states)  # (K, A), (K, 3)
+            # 逆变换每个对称的 policy 再取平均
+            for i, s in enumerate(_SYM_IDS):
+                all_probs[i] = inverse_sym_visits(all_probs[i], s, 'Othello')
+            probs = all_probs.mean(axis=0)  # (A,)
+            wdl = all_wdl.mean(axis=0)      # (3,)
+        else:
+            state = self.env.current_state()               # (1, 3, R, C)
+            probs, wdl, _ = pv_fn.predict(state)           # probs (1, A), wdl (1, 3)
+            probs = probs[0]                                 # (A,)
+            wdl = wdl[0]                                     # (3,)
         mask = np.array(self.env.valid_mask(), dtype=bool)
         probs[~mask] = 0.0
         total = probs.sum()
