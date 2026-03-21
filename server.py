@@ -114,7 +114,7 @@ g_train.add_argument('--td_alpha', type=float, default=0.5,
                            '(0=disabled)')
 g_train.add_argument('--target_tau', type=float, default=0.97,
                       help='EMA decay for target network used in TD consistency (higher=slower update)')
-g_train.add_argument('--spr_alpha', type=float, default=5,
+g_train.add_argument('--spr_alpha', type=float, default=0.1,
                       help='SPR (Self-Predictive Representations) loss weight (0=disabled)')
 
 # ── Evaluation ────────────────────────────────────────────────────────────────
