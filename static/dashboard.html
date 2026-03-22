@@ -280,7 +280,7 @@
 
   <script>
     const PARAM_GROUPS = {
-      Training: ['batch_size', 'psw_beta', 'entropy_lambda', 'distill_alpha', 'distill_temp', 'value_decay', 'n_epochs', 'td_alpha', 'target_tau', 'spr_alpha'],
+      Training: ['batch_size', 'psw_beta', 'entropy_lambda', 'distill_alpha', 'distill_temp', 'value_decay', 'n_epochs', 'td_alpha', 'target_tau'],
       MCTS: ['n_playout', 'c_puct', 'c_base', 'fpu_reduction', 'vl_batch', 'use_symmetry'],
       'Self-play': ['temp', 'temp_decay_moves', 'temp_endgame', 'eps'],
       Noise: ['dirichlet_alpha', 'noise_steps', 'noise_eps_min'],
@@ -293,7 +293,6 @@
       { key: 'p_loss', label: 'Policy Loss', fmt: 6 },
       { key: 'v_loss', label: 'Value Loss', fmt: 6 },
       { key: 'aux_loss', label: 'Aux Loss', fmt: 6 },
-      { key: 'spr_loss', label: 'SPR Loss', fmt: 6 },
       { key: 'entropy', label: 'Entropy', fmt: 4 },
       { key: 'f1', label: 'F1 Score', fmt: 4 },
       { key: 'grad_norm', label: 'Grad Norm', fmt: 4 },

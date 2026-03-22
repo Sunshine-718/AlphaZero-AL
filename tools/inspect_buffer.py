@@ -818,41 +818,49 @@ def analyze_embeddings(net, output_dir, gcfg):
 
 # ────────────────────────── Attention Map ──────────────────────────
 
-def _extract_attention_weights(net, state_tensor):
-    """Extract attention weights from all Attention modules in the network.
+def _extract_attention_data(net, state_tensor):
+    """Extract attention weights and gate scores from all Attention modules.
 
-    Since scaled_dot_product_attention doesn't return weights,
-    we hook into q_norm/k_norm outputs to capture normalized Q/K,
-    then compute softmax(Q @ K^T / sqrt(d_k)).
+    Hooks q_norm/k_norm outputs to compute softmax(Q @ K^T / sqrt(d_k)).
+    For GatedAttention, also hooks qkvg_proj to extract gate = sigmoid(g).
 
-    Supports both fused QKV (`qkv_proj`) and separate (`q_proj`/`k_proj`) layouts.
-
-    Returns list of (num_heads, seq_len, seq_len) tensors, one per Attention layer.
+    Returns:
+        attn_weights: list of (num_heads, seq_len, seq_len) tensors
+        gate_scores:  list of (seq_len, num_heads) tensors, or empty if no gates
     """
     attn_weights = []
+    gate_scores = []
 
-    # Collect (q_norm_output, k_norm_output) per Attention layer via hooks
-    captured = {}  # id(module) -> {'q': tensor, 'k': tensor}
+    captured = {}  # id(module) -> {'q': tensor, 'k': tensor, 'gate': tensor}
     hooks = []
+    modules_order = []
 
     for m in net.modules():
-        if type(m).__name__ == 'Attention' and hasattr(m, 'q_norm'):
+        if hasattr(m, 'q_norm') and hasattr(m, 'k_norm'):
             mid = id(m)
             captured[mid] = {}
+            modules_order.append(m)
 
-            def _make_hooks(mid):
+            def _make_hooks(mid, mod):
                 def _hq(module, input, output):
                     captured[mid]['q'] = output.detach()
                 def _hk(module, input, output):
                     captured[mid]['k'] = output.detach()
-                return _hq, _hk
+                def _hg(module, input, output):
+                    # qkvg_proj output: (B, S, 3*D + H), gate is last H dims
+                    num_heads = mod.num_heads
+                    gate = output.detach()[..., -num_heads:]  # (B, S, H)
+                    captured[mid]['gate'] = torch.sigmoid(gate)
+                return _hq, _hk, _hg
 
-            hq, hk = _make_hooks(mid)
+            hq, hk, hg = _make_hooks(mid, m)
             hooks.append(m.q_norm.register_forward_hook(hq))
             hooks.append(m.k_norm.register_forward_hook(hk))
+            if hasattr(m, 'qkvg_proj'):
+                hooks.append(m.qkvg_proj.register_forward_hook(hg))
 
     if not hooks:
-        return []
+        return [], []
 
     with torch.no_grad():
         net(state_tensor)
@@ -860,18 +868,19 @@ def _extract_attention_weights(net, state_tensor):
     for h in hooks:
         h.remove()
 
-    # Compute attention weights from captured Q, K
-    for m in net.modules():
-        if id(m) in captured and 'q' in captured[id(m)] and 'k' in captured[id(m)]:
-            # q_norm output: (B, S, H, D) — before transpose
-            q = captured[id(m)]['q'].permute(0, 2, 1, 3)  # (B, H, S, D)
-            k = captured[id(m)]['k'].permute(0, 2, 1, 3)
+    for m in modules_order:
+        mid = id(m)
+        if mid in captured and 'q' in captured[mid] and 'k' in captured[mid]:
+            q = captured[mid]['q'].permute(0, 2, 1, 3)  # (B, H, S, D)
+            k = captured[mid]['k'].permute(0, 2, 1, 3)
             head_dim = q.shape[-1]
             scores = torch.matmul(q, k.transpose(-2, -1)) / (head_dim ** 0.5)
-            weights = torch.softmax(scores, dim=-1)  # (B, H, S, S)
+            weights = torch.softmax(scores, dim=-1)
             attn_weights.append(weights[0].cpu())
+            if 'gate' in captured[mid]:
+                gate_scores.append(captured[mid]['gate'][0].cpu())  # (S, H)
 
-    return attn_weights
+    return attn_weights, gate_scores
 
 
 def analyze_attention(net, output_dir, gcfg, device='cpu'):
@@ -898,7 +907,7 @@ def analyze_attention(net, output_dir, gcfg, device='cpu'):
         state = board_to_state(board, turn)
         t = torch.from_numpy(state).to(device)
 
-        attn_list = _extract_attention_weights(net, t)
+        attn_list, gate_list = _extract_attention_data(net, t)
         if not attn_list:
             return
 
@@ -932,6 +941,46 @@ def analyze_attention(net, output_dir, gcfg, device='cpu'):
             fig.suptitle(f'Attention Map — {desc} (turn={player})', fontsize=13, fontweight='bold')
             plt.tight_layout()
             path = os.path.join(output_dir, f'attn_{fname}_L{layer_idx}.png')
+            fig.savefig(path, dpi=150, bbox_inches='tight')
+            plt.close(fig)
+            console.print(f'    [dim]\\[saved] {path}[/dim]')
+
+        # Gate score visualization (GatedAttention only)
+        for layer_idx, gate in enumerate(gate_list):
+            # gate: (S, H) — sigmoid gate score per position per head
+            num_heads = gate.shape[1]
+            gate_np = gate.numpy()  # (64, H)
+
+            fig, axes = plt.subplots(1, num_heads + 1,
+                                     figsize=(3.5 * (num_heads + 1), 3.5),
+                                     squeeze=False)
+
+            for hi in range(num_heads):
+                ax = axes[0, hi]
+                g_map = gate_np[:seq_len, hi].reshape(rows, cols)
+                im = ax.imshow(g_map, cmap='RdYlGn', interpolation='nearest',
+                               vmin=0, vmax=1)
+                ax.set_title(f'Head {hi}', fontsize=11)
+                ax.set_xticks(range(cols))
+                ax.set_yticks(range(rows))
+                ax.tick_params(labelsize=7)
+                fig.colorbar(im, ax=ax, shrink=0.8)
+
+            # Mean across heads
+            ax = axes[0, num_heads]
+            g_mean = gate_np[:seq_len].mean(axis=1).reshape(rows, cols)
+            im = ax.imshow(g_mean, cmap='RdYlGn', interpolation='nearest',
+                           vmin=0, vmax=1)
+            ax.set_title('Mean', fontsize=11)
+            ax.set_xticks(range(cols))
+            ax.set_yticks(range(rows))
+            ax.tick_params(labelsize=7)
+            fig.colorbar(im, ax=ax, shrink=0.8)
+
+            player = 'X' if turn == 1 else 'O'
+            fig.suptitle(f'Gate Score — {desc} (turn={player})', fontsize=13, fontweight='bold')
+            plt.tight_layout()
+            path = os.path.join(output_dir, f'gate_{fname}_L{layer_idx}.png')
             fig.savefig(path, dpi=150, bbox_inches='tight')
             plt.close(fig)
             console.print(f'    [dim]\\[saved] {path}[/dim]')
@@ -996,7 +1045,7 @@ def analyze_nn(model_path, gcfg, device='cpu', output_dir=None):
         analyze_embeddings(net, output_dir, gcfg)
 
     # Attention map visualization (only for models with Attention modules)
-    has_attn = any(type(m).__name__ == 'Attention' and (hasattr(m, 'q_proj') or hasattr(m, 'qkv_proj'))
+    has_attn = any(hasattr(m, 'q_norm') and hasattr(m, 'k_norm')
                    for m in net.modules())
     if has_attn:
         analyze_attention(net, output_dir, gcfg, device)

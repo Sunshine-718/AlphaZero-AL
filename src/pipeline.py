@@ -177,7 +177,7 @@ class TrainPipeline(ABC):
             dataloader = self.buffer.sample(self.batch_size)
 
         model_for_training = self.ddp_net if self.is_ddp else None
-        p_l, v_l, aux_l, spr_l, ent, g_n, f1 = self.net.train_step(
+        p_l, v_l, aux_l, ent, g_n, f1 = self.net.train_step(
             dataloader, self.module.augment, ddp_model=model_for_training,
             n_epochs=getattr(self, 'n_epochs', 10),
             distill_alpha=getattr(self, 'distill_alpha', 0.0),
@@ -187,15 +187,14 @@ class TrainPipeline(ABC):
             entropy_lambda=getattr(self, 'entropy_lambda', 0.01),
             td_alpha=getattr(self, 'td_alpha', 0.0),
             td_steps=getattr(self, 'td_steps', 5),
-            target_tau=getattr(self, 'target_tau', 0.97),
-            spr_alpha=getattr(self, 'spr_alpha', 0.0))
+            target_tau=getattr(self, 'target_tau', 0.97))
 
         if self.is_ddp:
             dist.barrier()
 
         if self.rank == 0:
             print(f'F1 score (new): {f1: .3f}')
-        return p_l, v_l, aux_l, spr_l, ent, g_n, f1
+        return p_l, v_l, aux_l, ent, g_n, f1
 
     def update_elo(self):
         print('Updating elo score...')
@@ -356,7 +355,7 @@ class TrainPipeline(ABC):
                   f'mlh_slope={self.mlh_slope}, score_utility_factor={self.score_utility_factor}')
             swanlab.log({'Event/MLH_activated': 1}, step=self.global_step)
 
-    def _log_train_step(self, p_loss, v_loss, aux_loss, spr_loss, entropy, grad_norm, f1):
+    def _log_train_step(self, p_loss, v_loss, aux_loss, entropy, grad_norm, f1):
         if self.episode_len is not None:
             swanlab.log({'Metric/Episode length': self.episode_len}, step=self.global_step)
         log_dict = {
@@ -366,7 +365,6 @@ class TrainPipeline(ABC):
             'Metric/Loss/Action Loss': p_loss,
             'Metric/Loss/Value loss': v_loss,
             'Metric/Loss/Aux loss': aux_loss,
-            'Metric/Loss/SPR loss': spr_loss,
             'Metric/Entropy': entropy,
         }
         swanlab.log(log_dict, step=self.global_step)
@@ -376,7 +374,6 @@ class TrainPipeline(ABC):
             'p_loss': round(p_loss, 6),
             'v_loss': round(v_loss, 6),
             'aux_loss': round(aux_loss, 6),
-            'spr_loss': round(spr_loss, 6),
             'total_loss': round(p_loss + v_loss + aux_loss, 6),
             'entropy': round(entropy, 6),
             'f1': round(f1, 4),
@@ -429,14 +426,14 @@ class TrainPipeline(ABC):
                 self.data_collector()
                 self.global_step += 1
 
-            p_loss, v_loss, aux_loss, spr_loss, entropy, grad_norm, f1 = self.policy_update()
+            p_loss, v_loss, aux_loss, entropy, grad_norm, f1 = self.policy_update()
 
             if self.rank == 0:
                 self.net.save(self.current)
                 print(f'batch i: {self.global_step}, episode_len: {self.episode_len}, '
                       f'loss: {p_loss + v_loss + aux_loss: .8f}, entropy: {entropy: .8f}')
                 self._check_mlh_warmup(aux_loss)
-                self._log_train_step(p_loss, v_loss, aux_loss, spr_loss, entropy, grad_norm, f1)
+                self._log_train_step(p_loss, v_loss, aux_loss, entropy, grad_norm, f1)
 
                 if self.global_step % self.interval == 0:
                     print(f'current self-play batch: {self.global_step + 1}')

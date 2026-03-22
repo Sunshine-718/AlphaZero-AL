@@ -170,7 +170,7 @@ class CNN(Base):
         log_prob = self.policy_head(hidden)
         value = self.value_head(hidden)
         steps_pred = self.steps_head(hidden)
-        return log_prob, value, steps_pred, None
+        return log_prob, value, steps_pred
 
     @torch.no_grad()
     def policy(self, state):

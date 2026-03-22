@@ -417,6 +417,8 @@ class AttentionExtractor:
     def __init__(self):
         self._q = None   # (B, seq, H, D) — q_norm output
         self._k = None   # (B, seq, H, D) — k_norm output
+        self._gate_raw = None  # (B, seq, H) — raw gate logits (before sigmoid)
+        self._num_heads = None
         self._handles = []
         # Precompute inverse permutation tables for Othello symmetries
         # All Othello Klein-4 symmetries are self-inverse (involutions)
@@ -431,18 +433,25 @@ class AttentionExtractor:
     def _hook_k(self, module, input, output):
         self._k = output.detach()
 
+    def _hook_gate(self, module, input, output):
+        # qkvg_proj output: (B, S, 3*D + H), gate is last H dims
+        self._gate_raw = output.detach()[..., -self._num_heads:]  # (B, S, H)
+
     def attach(self, net):
-        """Register hooks on net.hidden[-1].attn.{q_norm, k_norm}."""
+        """Register hooks on net.hidden[-1].attn.{q_norm, k_norm, qkvg_proj}."""
         self.detach()
         attn = net.hidden[-1].attn
         self._handles.append(attn.q_norm.register_forward_hook(self._hook_q))
         self._handles.append(attn.k_norm.register_forward_hook(self._hook_k))
+        if hasattr(attn, 'qkvg_proj'):
+            self._num_heads = attn.num_heads
+            self._handles.append(attn.qkvg_proj.register_forward_hook(self._hook_gate))
 
     def detach(self):
         for h in self._handles:
             h.remove()
         self._handles.clear()
-        self._q = self._k = None
+        self._q = self._k = self._gate_raw = None
 
     def get_weights(self):
         """Compute attention weights from captured Q, K.
@@ -476,6 +485,26 @@ class AttentionExtractor:
         else:
             return weights[0]  # (H, 64, 64)
 
+    def get_gate_scores(self):
+        """Compute gate scores with symmetry ensemble.
+
+        Returns: np.ndarray (64,) — mean gate score per position, or None.
+        """
+        if self._gate_raw is None:
+            return None
+        # gate_raw: (B, 64, H)
+        gate = torch.sigmoid(self._gate_raw).cpu().numpy()  # (B, 64, H)
+        K = len(self._sym_ids)
+        if gate.shape[0] == K and K > 1:
+            acc = gate[0]  # (64, H)
+            for i in range(1, K):
+                perm = self._perms[self._sym_ids[i]]
+                acc = acc + gate[i][perm]  # inverse-permute positions
+            gate_avg = acc / K  # (64, H)
+        else:
+            gate_avg = gate[0]  # (64, H)
+        return gate_avg.mean(axis=1)  # (64,) — average across heads
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Board Widget — Othello 8×8
@@ -508,7 +537,8 @@ class BoardWidget(QWidget):
 
         # Attention heatmap
         self.attn_weights = None   # (num_heads, 64, 64) or None
-        self.attn_head = -1        # -1=mean, 0/1=specific head
+        self.gate_scores = None    # (64,) or None — per-position gate score
+        self.attn_head = -1        # -1=mean, 0..H-1=specific head, 'gate'=gate overlay
         self.attn_visible = False  # controlled by checkbox
 
         # Valid moves cache for ghost/hover
@@ -649,8 +679,30 @@ class BoardWidget(QWidget):
         qp.drawEllipse(QPointF(cx - rad * 0.2, cy - rad * 0.35), rad * 0.4, rad * 0.3)
 
     def _draw_attention(self, qp):
-        """Draw attention heatmap overlay on the board."""
-        if not self.attn_visible or self.attn_weights is None:
+        """Draw attention heatmap or gate score overlay on the board."""
+        if not self.attn_visible:
+            return
+
+        # Gate mode: draw per-position gate score (no query dependency)
+        if self.attn_head == 'gate':
+            if self.gate_scores is None:
+                return
+            heat = self.gate_scores  # (64,) already in [0, 1]
+            m, cs = self.MARGIN, self.CELL
+            for idx in range(64):
+                r, c = idx // 8, idx % 8
+                val = float(heat[idx])
+                # Red (closed) to Green (open)
+                red = int((1 - val) * 200)
+                green = int(val * 200)
+                alpha = 100 + int(abs(val - 0.5) * 2 * 80)  # stronger near 0 or 1
+                x = m + c * cs
+                y = m + r * cs
+                qp.fillRect(int(x), int(y), cs, cs, QColor(red, green, 60, alpha))
+            return
+
+        # Attention mode
+        if self.attn_weights is None:
             return
         w = self.attn_weights  # (H, 64, 64)
         # Select head
@@ -1769,8 +1821,8 @@ class ParameterConsole(QWidget):
         attn_row.addWidget(self.attn_check)
 
         self.attn_head_cb = QComboBox()
-        self.attn_head_cb.addItems(["Mean", "Head 0", "Head 1"])
-        self.attn_head_cb.setToolTip("Select attention head to visualize")
+        self.attn_head_cb.addItems(["Mean"] + [f"Head {i}" for i in range(4)] + ["Gate"])
+        self.attn_head_cb.setToolTip("Select attention head or gate score to visualize")
         self.attn_head_cb.setFixedWidth(90)
         attn_row.addWidget(self.attn_head_cb)
         attn_row.addStretch()
@@ -2240,7 +2292,12 @@ class OthelloGUI(QWidget):
         self.board.update()
 
     def _on_attn_head_changed(self, idx):
-        self.board.attn_head = idx - 1  # 0→Mean(-1), 1→Head0(0), 2→Head1(1)
+        # 0→Mean(-1), 1..4→Head0..3, 5→Gate
+        num_heads = 4
+        if idx == num_heads + 1:
+            self.board.attn_head = 'gate'
+        else:
+            self.board.attn_head = idx - 1
         self.board.update()
 
     def closeEvent(self, event):
@@ -2695,10 +2752,11 @@ class OthelloGUI(QWidget):
                 expected = -expected
             self.status.set_nn_diff(expected)
 
-            # Extract attention weights — hooks captured K symmetry variants,
-            # get_weights() inverse-permutes and averages them
-            attn_w = self._attn_extractor.get_weights()
-            self.board.attn_weights = attn_w
+            # Extract attention weights and gate scores — hooks captured K
+            # symmetry variants, get_weights/get_gate_scores inverse-permute
+            # and average them
+            self.board.attn_weights = self._attn_extractor.get_weights()
+            self.board.gate_scores = self._attn_extractor.get_gate_scores()
 
     def _update_status_mcts(self, stats_0):
         d = float(stats_0['root_D'])

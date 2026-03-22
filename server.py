@@ -91,7 +91,7 @@ g_train.add_argument('--q_size', type=int, default=1,
 g_train.add_argument('--replay_ratio', type=float, default=0.025,
                       help='Fraction of buffer sampled per training step')
 g_train.add_argument('--n_epochs', type=int, default=2, help='Training epochs per update')
-g_train.add_argument('--policy_lr_scale', type=float, default=0.3,
+g_train.add_argument('--policy_lr_scale', type=float, default=1,
                       help='Policy head LR multiplier')
 g_train.add_argument('--dropout', type=float, default=0.1, help='Dropout rate')
 g_train.add_argument('--distill_alpha', type=float, default=0.75,
@@ -114,8 +114,7 @@ g_train.add_argument('--td_alpha', type=float, default=0.5,
                            '(0=disabled)')
 g_train.add_argument('--target_tau', type=float, default=0.97,
                       help='EMA decay for target network used in TD consistency (higher=slower update)')
-g_train.add_argument('--spr_alpha', type=float, default=0.1,
-                      help='SPR (Self-Predictive Representations) loss weight (0=disabled)')
+
 
 # ── Evaluation ────────────────────────────────────────────────────────────────
 g_eval = parser.add_argument_group('Evaluation')
@@ -166,7 +165,6 @@ config = {"lr": args.lr,
           "td_steps": args.td_steps,
           "td_alpha": args.td_alpha,
           "target_tau": args.target_tau,
-          "spr_alpha": args.spr_alpha,
           "compile": args.compile}
 
 
@@ -231,7 +229,6 @@ def print_config():
             "td_steps": args.td_steps,
             "td_alpha": args.td_alpha,
             "target_tau": args.target_tau,
-            "spr_alpha": args.spr_alpha,
             "compile": args.compile,
         }),
         ("Evaluation", {
@@ -411,7 +408,6 @@ def get_config():
         'eps': pipeline.eps,
         'td_steps': getattr(pipeline, 'td_steps', 0),
         'td_alpha': getattr(pipeline, 'td_alpha', 0.0),
-        'spr_alpha': getattr(pipeline, 'spr_alpha', 0.0),
     })
 
 
@@ -421,7 +417,7 @@ _BOOL_PARAMS = {'use_symmetry'}
 _TUNABLE_PARAMS = {
     # Training
     'batch_size', 'entropy_lambda', 'psw_beta', 'distill_alpha',
-    'distill_temp', 'value_decay', 'n_epochs', 'td_alpha', 'target_tau', 'spr_alpha',
+    'distill_temp', 'value_decay', 'n_epochs', 'td_alpha', 'target_tau',
     # Self-play (clients pull via GET /config)
     'temp', 'temp_decay_moves', 'temp_endgame',
     'dirichlet_alpha', 'eps', 'noise_steps', 'noise_eps_min',

@@ -135,23 +135,6 @@ class Base(ABC, nn.Module):
         return F.nll_loss(steps_pred, aux_target)
 
     @staticmethod
-    def _spr_loss(online_pred, target_hidden, td_mask):
-        """SPR loss: 负余弦相似度，仅对非终局位置计算。
-
-        online_pred:   predictor(online_hidden)   (B, C, H, W) — 有梯度
-        target_hidden: target_net.hidden(future)   (B, C, H, W) — 已 detach
-        td_mask: (B,) float mask, 1 = valid position
-        """
-        B = online_pred.shape[0]
-        online_flat = online_pred.reshape(B, -1)
-        target_flat = target_hidden.reshape(B, -1)
-        online_flat = F.normalize(online_flat, dim=1)
-        target_flat = F.normalize(target_flat, dim=1)
-        cos_sim = (online_flat * target_flat).sum(dim=1)  # (B,)
-        n_valid = td_mask.sum().clamp(min=1)
-        return ((1 - cos_sim) * td_mask).sum() / n_valid
-
-    @staticmethod
     def _td_consistency_loss(value_pred, future_wdl_target, batch_data, td_steps,
                              value_decay=1.0):
         """N-step TD consistency: KL(stopgrad(γ^k·v(S_{t+k})+(1-γ^k)·U) || v(S_t)).
@@ -202,7 +185,7 @@ class Base(ABC, nn.Module):
         """用 target network 计算 future state 的 WDL target。"""
         future_state = batch_data['future_state']
         with torch.no_grad():
-            _, future_value_log, _, _ = self._target_net(future_state)
+            _, future_value_log, _ = self._target_net(future_state)
             future_wdl = future_value_log.exp()  # (B, 3) [draw, win, loss]
 
         # Determine perspective: compare turn plane of current vs future state
@@ -218,24 +201,18 @@ class Base(ABC, nn.Module):
 
     def _optimize_batch(self, model, batch_data, use_soft, value_decay, distill_alpha, distill_temp,
                         psw_beta=0.0, entropy_lambda=0.0, td_alpha=0.0, td_steps=5,
-                        target_tau=0.995, spr_alpha=0.0):
+                        target_tau=0.995):
         has_future = 'future_state' in batch_data
-        need_target = (td_alpha > 0 or spr_alpha > 0) and has_future
+        need_target = td_alpha > 0 and has_future
 
         # 用 target network 计算 future state WDL（在主前向传播之前，避免 inplace op 破坏计算图）
         future_wdl_target = None
-        target_hidden = None
         if need_target:
             self._ensure_target_net()
-            if td_alpha > 0:
-                future_wdl_target = self._prepare_future_wdl(batch_data)
-            if spr_alpha > 0:
-                with torch.no_grad():
-                    fs = batch_data['future_state']
-                    target_hidden = self._target_net.hidden(self._target_net._embed_state(fs))
+            future_wdl_target = self._prepare_future_wdl(batch_data)
 
         self.opt.zero_grad()
-        log_p_pred, value_pred, steps_pred, spr_pred = model(batch_data['state'])
+        log_p_pred, value_pred, steps_pred = model(batch_data['state'])
         p_loss = self._policy_loss(log_p_pred, batch_data['prob'], batch_data['policy_mask'],
                                    psw_beta, entropy_lambda)
         v_loss = self._value_loss(
@@ -253,21 +230,14 @@ class Base(ABC, nn.Module):
                                                     value_decay)
             v_loss = (1 - td_alpha) * v_loss + td_alpha * td_loss
 
-        # SPR loss
-        spr_loss_val = torch.tensor(0.0, device=batch_data['state'].device)
-        if target_hidden is not None:
-            online_pred = spr_pred
-            td_mask = (batch_data['steps_to_end'].view(-1) > td_steps).float()
-            spr_loss_val = self._spr_loss(online_pred, target_hidden, td_mask)
-
         aux_loss = self._aux_loss(steps_pred, batch_data['aux_target'])
-        loss = p_loss + v_loss + 0.1 * aux_loss + spr_alpha * spr_loss_val
+        loss = p_loss + v_loss + 0.1 * aux_loss
         loss.backward()
         nn.utils.clip_grad_norm_(self.parameters(), 5)
         self.opt.step()
         if need_target:
             self._update_target_net(target_tau)
-        return p_loss, v_loss, aux_loss, spr_loss_val, log_p_pred
+        return p_loss, v_loss, aux_loss, log_p_pred
 
     @staticmethod
     def _grad_norm(parameters):
@@ -280,7 +250,7 @@ class Base(ABC, nn.Module):
 
     def _final_train_metrics(self, last_batch, last_log_p_pred):
         with torch.no_grad():
-            _, new_v, _, _ = self(last_batch['state'])
+            _, new_v, _ = self(last_batch['state'])
             f1 = f1_score(
                 last_batch['value_class'].cpu().numpy(),
                 torch.argmax(new_v, dim=-1).cpu().numpy(),
@@ -384,7 +354,7 @@ class Base(ABC, nn.Module):
                 aux_target = self.encode_aux_target(aux_target)
                 mask = (prob.sum(dim=1) > 0).float()
                 self.opt.zero_grad()
-                log_p_pred, value_pred, steps_pred, _ = model(state)
+                log_p_pred, value_pred, steps_pred = model(state)
                 aux_target = aux_target.clamp(0, steps_pred.shape[-1] - 1)
 
                 if use_soft:
@@ -436,7 +406,7 @@ class Base(ABC, nn.Module):
 
         self.scheduler.step()
         with torch.no_grad():
-            _, new_v, _, _ = self(state)
+            _, new_v, _ = self(state)
         f1 = f1_score(value_class.cpu().numpy(), torch.argmax(new_v, dim=-1).cpu().numpy(), average='macro')
         with torch.no_grad():
             entropy = -torch.mean(torch.sum(log_p_pred.exp() * log_p_pred, dim=-1))
@@ -451,9 +421,9 @@ class Base(ABC, nn.Module):
     def train_step(self, dataloader, augment, ddp_model=None, n_epochs=10,
                    distill_alpha=0.0, value_decay=1.0, distill_temp=1.0,
                    psw_beta=0.0, entropy_lambda=0.0, td_alpha=0.0, td_steps=5,
-                   target_tau=0.995, spr_alpha=0.0):
+                   target_tau=0.995):
         model = ddp_model if ddp_model is not None else self
-        p_l, v_l, aux_l, spr_l = [], [], [], []
+        p_l, v_l, aux_l = [], [], []
         use_soft = value_decay < 1.0 or distill_alpha > 0
         last_batch = None
         last_log_p_pred = None
@@ -462,7 +432,7 @@ class Base(ABC, nn.Module):
             self.train()
             for batch in dataloader:
                 last_batch = self._prepare_training_batch(batch, augment)
-                p_loss, v_loss, aux_loss, spr_loss, last_log_p_pred = self._optimize_batch(
+                p_loss, v_loss, aux_loss, last_log_p_pred = self._optimize_batch(
                     model,
                     last_batch,
                     use_soft,
@@ -474,14 +444,12 @@ class Base(ABC, nn.Module):
                     td_alpha,
                     td_steps,
                     target_tau,
-                    spr_alpha,
                 )
                 p_l.append(p_loss.item())
                 v_l.append(v_loss.item())
                 aux_l.append(aux_loss.item())
-                spr_l.append(spr_loss.item())
 
         self.eval()
         self.scheduler.step()
         entropy, total_norm, f1 = self._final_train_metrics(last_batch, last_log_p_pred)
-        return np.mean(p_l), np.mean(v_l), np.mean(aux_l), np.mean(spr_l), float(entropy), total_norm, f1
+        return np.mean(p_l), np.mean(v_l), np.mean(aux_l), float(entropy), total_norm, f1

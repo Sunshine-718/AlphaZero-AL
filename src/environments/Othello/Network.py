@@ -45,14 +45,14 @@ class ResidualBlock(nn.Module):
         return self.dropout(x) + residual
 
 
-class Attention(nn.Module):
-    def __init__(self, h_dim: int, num_head: int, dropout: float = 0.):
+class GatedAttention(nn.Module):
+    def __init__(self, h_dim: int, num_heads: int, dropout: float = 0.):
         super().__init__()
-        assert h_dim % num_head == 0
-        self.num_heads = num_head
-        self.head_dim = h_dim // num_head
+        assert h_dim % num_heads == 0
+        self.num_heads = num_heads
+        self.head_dim = h_dim // num_heads
         self.prenorm = nn.RMSNorm(h_dim, eps=1e-5)
-        self.qkv_proj = nn.Linear(h_dim, 3 * h_dim, bias=False)   # ① fused QKV
+        self.qkvg_proj = nn.Linear(h_dim, 3 * h_dim + num_heads, bias=False)   # ① fused QKV
         self.o_proj = nn.Linear(h_dim, h_dim, bias=False)
         self.q_norm = nn.RMSNorm(self.head_dim, eps=1e-5)
         self.k_norm = nn.RMSNorm(self.head_dim, eps=1e-5)
@@ -63,7 +63,10 @@ class Attention(nn.Module):
         residual = x
         x = self.prenorm(x)
 
-        qkv = self.qkv_proj(x).view(B, S, 3, self.num_heads, self.head_dim)
+        qkvg = self.qkvg_proj(x)
+        qkv, gate = qkvg.split([3 * D, self.num_heads], dim=-1)
+
+        qkv = qkv.view(B, S, 3, self.num_heads, self.head_dim)
         q, k, v = qkv.unbind(2)                    # 3 × (B, S, H, d)
 
         q = self.q_norm(q).transpose(1, 2)          # (B, H, S, d)
@@ -75,21 +78,79 @@ class Attention(nn.Module):
             dropout_p=self.dropout_p if self.training else 0.,
         )
 
+        out = out * gate.unsqueeze(-1).transpose(1, 2).sigmoid()
         out = out.transpose(1, 2).contiguous().view(B, S, D)
         return self.o_proj(out) + residual
+
+
+class ValueHead(nn.Module):
+    """Global pooling → MLP → WDL logits."""
+    def __init__(self, h_dim, n_classes=3, dropout=0.):
+        super().__init__()
+        self.pool_norm = nn.RMSNorm(h_dim, eps=1e-5)
+        self.pool_fc = nn.Linear(h_dim, h_dim)
+        self.pool_drop = nn.Dropout(dropout)
+        self.norm = nn.RMSNorm(h_dim, eps=1e-5)
+        self.fc = nn.Linear(h_dim, h_dim)
+        self.out_norm = nn.RMSNorm(h_dim, eps=1e-5)
+        self.out = nn.Linear(h_dim, n_classes)
+
+    def forward(self, x):
+        # x: (B, S, D) → pool → (B, D)
+        x = x.mean(dim=1)
+        x = x + self.pool_drop(nn.functional.silu(self.pool_fc(self.pool_norm(x))))
+        x = self.out_norm(nn.functional.silu(self.fc(self.norm(x))))
+        return nn.functional.log_softmax(self.out(x), dim=-1)
+
+
+class AuxHead(nn.Module):
+    """Global pooling → MLP → disc-diff distribution logits."""
+    def __init__(self, h_dim, n_classes, dropout=0.):
+        super().__init__()
+        self.pool_norm = nn.RMSNorm(h_dim, eps=1e-5)
+        self.pool_fc = nn.Linear(h_dim, h_dim)
+        self.pool_drop = nn.Dropout(dropout)
+        self.norm = nn.RMSNorm(h_dim, eps=1e-5)
+        self.fc = nn.Linear(h_dim, n_classes)
+        self.out_norm = nn.RMSNorm(n_classes, eps=1e-5)
+        self.out = nn.Linear(n_classes, n_classes)
+
+    def forward(self, x):
+        # x: (B, S, D) → pool → (B, D)
+        x = x.mean(dim=1)
+        x = x + self.pool_drop(nn.functional.silu(self.pool_fc(self.pool_norm(x))))
+        x = nn.functional.silu(self.fc(self.norm(x)))
+        return nn.functional.log_softmax(self.out(self.out_norm(x)), dim=-1)
+
+
+class PolicyHead(nn.Module):
+    """Per-token MLP policy head: each token independently produces a logit."""
+    def __init__(self, h_dim, dropout=0.):
+        super().__init__()
+        self.norm = nn.RMSNorm(h_dim, eps=1e-5)
+        self.fc = nn.Linear(h_dim, h_dim)
+        self.out = nn.Linear(h_dim, 1)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        # x: (B, 65, D)
+        x = self.norm(x)
+        x = self.dropout(nn.functional.silu(self.fc(x)))
+        x = self.out(x).squeeze(-1)   # (B, 65)
+        return nn.functional.log_softmax(x, dim=-1)
 
 
 class AttentionBlock(nn.Module):
     def __init__(self, h_dim, num_head, dropout=0.):
         super().__init__()
-        self.attn = Attention(h_dim, num_head, dropout)
-    
+        self.attn = GatedAttention(h_dim, num_head, dropout)
+        self.pass_token = nn.Parameter(torch.zeros((1, 1, h_dim)))
+
     def forward(self, x):
         batch_size, num_channels, h, w = x.shape
         x = x.reshape(batch_size, num_channels, h * w).transpose(1, 2)
-        attn_output = self.attn(x)
-        output = attn_output.transpose(1, 2).reshape(batch_size, num_channels, h, w)
-        return output
+        x = torch.cat([x, self.pass_token.expand(batch_size, -1, -1)], dim=1)
+        return self.attn(x)
 
 
 class CNN(Base):
@@ -117,55 +178,27 @@ class CNN(Base):
             AttentionBlock(h_dim, 4, dropout),
         )
 
-        # Policy head: conv → flatten → linear → log_softmax
-        policy_conv_flat = 5 * 8 * 8
-        self.policy_head = nn.Sequential(
-            ResidualBlock(h_dim, 5, dropout=dropout),
-            nn.Flatten(),
-            nn.RMSNorm(policy_conv_flat, eps=1e-5),
-            nn.Linear(policy_conv_flat, out_dim),
-            nn.LogSoftmax(dim=-1)
-        )
+        # Policy head: per-token MLP (works on 65 tokens including pass)
+        self.policy_head = PolicyHead(h_dim, dropout)
 
         # Value head: WDL (draw, p1_win, p2_win)
-        self.value_head = nn.Sequential(
-            ResidualBlock(h_dim, 5, dropout=dropout),
-            nn.Flatten(),
-            nn.Linear(policy_conv_flat, policy_conv_flat),
-            nn.SiLU(inplace=True),
-            nn.RMSNorm(policy_conv_flat, eps=1e-5),
-            nn.Linear(policy_conv_flat, 3),
-            nn.LogSoftmax(dim=-1)
-        )
+        self.value_head = ValueHead(h_dim, 3, dropout)
 
         # Auxiliary head: terminal disc diff from current-player perspective, in [-64, 64].
-        self.aux_head = nn.Sequential(
-            ResidualBlock(h_dim, 5, dropout=dropout),
-            nn.Flatten(),
-            nn.RMSNorm(policy_conv_flat, eps=1e-5),
-            nn.Linear(policy_conv_flat, 129),
-            nn.LogSoftmax(dim=-1)
-        )
-
-        # SPR (Self-Predictive Representations) predictor
-        # 直接在 feature map 上预测 target network 的 hidden 输出
-        self.spr_predictor = nn.Sequential(
-            ResidualBlock(h_dim, h_dim, dropout=dropout),
-            nn.Conv2d(h_dim, h_dim, kernel_size=1),
-        )
+        n_aux = 2 * self.aux_target_offset + 1
+        self.aux_head = AuxHead(h_dim, n_aux, dropout)
 
         self.apply(self.init_weights)
-        nn.init.constant_(self.policy_head[-2].weight, 0)
-        nn.init.constant_(self.value_head[-2].weight, 0)
-        nn.init.constant_(self.aux_head[-2].weight, 0)
+        nn.init.constant_(self.policy_head.out.weight, 0)
+        nn.init.constant_(self.value_head.out.weight, 0)
+        nn.init.constant_(self.aux_head.out.weight, 0)
 
         self.opt = torch.optim.AdamW([
             {'params': self.hidden.parameters()},
             {'params': self.value_head.parameters()},
             {'params': self.aux_head.parameters()},
-            {'params': self.spr_predictor.parameters()},
-            {'params': self.piece_emb.parameters(), 'weight_decay': 1e-4},
-            {'params': self.pos_emb.parameters(), 'weight_decay': 1e-4},
+            {'params': self.piece_emb.parameters(), 'weight_decay': 0},
+            {'params': self.pos_emb.parameters(), 'weight_decay': 0},
             {'params': self.policy_head.parameters(), 'lr': lr * policy_lr_scale},
         ], lr=lr, weight_decay=1e-2)
 
@@ -202,12 +235,11 @@ class CNN(Base):
 
     def forward(self, x):
         x = self._embed_state(x)
-        hidden = self.hidden(x)
-        spr_pred = self.spr_predictor(hidden)
+        hidden = self.hidden(x)              # (B, 65, D) — 64 positions + pass token
         log_prob = self.policy_head(hidden)
         value = self.value_head(hidden)
         steps_pred = self.aux_head(hidden)
-        return log_prob, value, steps_pred, spr_pred
+        return log_prob, value, steps_pred
 
     @torch.no_grad()
     def policy(self, state):

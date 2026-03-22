@@ -53,7 +53,6 @@ with torch.no_grad():
     bench(lambda: net.policy_head(hidden_out), "policy_head")
     bench(lambda: net.value_head(hidden_out), "value_head")
     bench(lambda: net.aux_head(hidden_out), "aux_head")
-    bench(lambda: net.spr_predictor(hidden_out), "spr_predictor")
 
 # ── Forward + Backward (training) ──
 print("\n" + "=" * 70)
@@ -66,12 +65,12 @@ target_wdl = torch.randn(BATCH, 3, device=DEVICE).softmax(dim=-1)
 target_aux = torch.randint(0, 129, (BATCH,), device=DEVICE)
 
 def train_forward():
-    log_prob, value, steps, spr = net.forward(state)
-    return log_prob, value, steps, spr
+    log_prob, value, steps = net.forward(state)
+    return log_prob, value, steps
 
 def train_forward_backward():
     net.opt.zero_grad(set_to_none=True)
-    log_prob, value, steps, spr = net.forward(state)
+    log_prob, value, steps = net.forward(state)
     loss_p = -(target_pi * log_prob).sum(dim=1).mean()
     loss_v = -(target_wdl * value).sum(dim=1).mean()
     loss_aux = torch.nn.functional.cross_entropy(steps, target_aux)
@@ -81,7 +80,7 @@ def train_forward_backward():
 
 def train_full_step():
     net.opt.zero_grad(set_to_none=True)
-    log_prob, value, steps, spr = net.forward(state)
+    log_prob, value, steps = net.forward(state)
     loss_p = -(target_pi * log_prob).sum(dim=1).mean()
     loss_v = -(target_wdl * value).sum(dim=1).mean()
     loss_aux = torch.nn.functional.cross_entropy(steps, target_aux)
@@ -122,8 +121,6 @@ bench_backward(lambda: net.value_head(hidden_out), "value_head fwd+bwd")
 hidden_out = net.hidden(net._embed_state(state)).detach().requires_grad_(True)
 bench_backward(lambda: net.aux_head(hidden_out), "aux_head fwd+bwd")
 
-hidden_out = net.hidden(net._embed_state(state)).detach().requires_grad_(True)
-bench_backward(lambda: net.spr_predictor(hidden_out), "spr_predictor fwd+bwd")
 
 # hidden breakdown
 print("\n[Hidden body backward breakdown]")
