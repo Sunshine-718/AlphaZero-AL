@@ -123,6 +123,7 @@ GAME_CONFIGS = {
         best_model='params/AZ_Connect4_CNN_best.pt',
         network_module='src.environments.Connect4.Network',
         utils_module='src.environments.Connect4.utils',
+        env_module='src.environments.Connect4',
         plot_top_k=7,
         orbit_labels=_C4_ORBIT_LABELS,
     ),
@@ -139,6 +140,7 @@ GAME_CONFIGS = {
         best_model='params/AZ_Othello_CNN_best.pt',
         network_module='src.environments.Othello.Network',
         utils_module='src.environments.Othello.utils',
+        env_module='src.environments.Othello',
         plot_top_k=10,
         orbit_labels=_OTHELLO_ORBIT_LABELS,
     ),
@@ -847,17 +849,15 @@ def _extract_attention_data(net, state_tensor):
                 def _hk(module, input, output):
                     captured[mid]['k'] = output.detach()
                 def _hg(module, input, output):
-                    # qkvg_proj output: (B, S, 3*D + H), gate is last H dims
-                    num_heads = mod.num_heads
-                    gate = output.detach()[..., -num_heads:]  # (B, S, H)
-                    captured[mid]['gate'] = torch.sigmoid(gate)
+                    # gate_proj output: (B, S, H)
+                    captured[mid]['gate'] = torch.sigmoid(output.detach())
                 return _hq, _hk, _hg
 
             hq, hk, hg = _make_hooks(mid, m)
             hooks.append(m.q_norm.register_forward_hook(hq))
             hooks.append(m.k_norm.register_forward_hook(hk))
-            if hasattr(m, 'qkvg_proj'):
-                hooks.append(m.qkvg_proj.register_forward_hook(hg))
+            if hasattr(m, 'gate_proj'):
+                hooks.append(m.gate_proj.register_forward_hook(hg))
 
     if not hooks:
         return [], []
@@ -995,7 +995,9 @@ def analyze_nn(model_path, gcfg, device='cpu', output_dir=None):
 
     net_mod = importlib.import_module(gcfg['network_module'])
     utils_mod = importlib.import_module(gcfg['utils_module'])
+    env_mod = importlib.import_module(gcfg['env_module'])
     CNN = net_mod.CNN
+    Env = env_mod.Env
     board_to_state = utils_mod.board_to_state
 
     action_label = gcfg['action_label']
@@ -1013,11 +1015,22 @@ def analyze_nn(model_path, gcfg, device='cpu', output_dir=None):
         player = 'X' if turn == 1 else 'O'
         state = board_to_state(board, turn)
         t = torch.from_numpy(state).to(device)
+
+        # Get valid mask from environment
+        env = Env(board.astype(np.float32))
+        mask = np.array(env.valid_mask(), dtype=bool)
+
         with torch.no_grad():
             log_p, log_v, log_s, *_ = net(t)
             prob = log_p.exp().cpu().numpy().flatten()
             vdist = log_v.exp().cpu().numpy().flatten()  # [draw, win(to-move), loss(to-move)]
             sdist = log_s.exp().cpu().numpy().flatten()
+
+        # Mask and renormalize policy
+        prob[~mask] = 0.0
+        total = prob.sum()
+        if total > 0:
+            prob /= total
 
         nn_policies[fname] = prob
         scalar_v = vdist[1] - vdist[2]
