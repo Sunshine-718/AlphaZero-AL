@@ -463,27 +463,32 @@ class AttentionExtractor:
         """
         if self._q is None or self._k is None:
             return None
-        # q_norm output: (B, 64, H, D) — before transpose in Attention.forward
-        B = self._q.shape[0]
-        q = self._q.permute(0, 2, 1, 3)  # (B, H, 64, D)
-        k = self._k.permute(0, 2, 1, 3)  # (B, H, 64, D)
+        # q_norm output: (B, S, H, D) — S=64 or 65 (with pass token)
+        B, S = self._q.shape[0], self._q.shape[1]
+        q = self._q.permute(0, 2, 1, 3)  # (B, H, S, D)
+        k = self._k.permute(0, 2, 1, 3)  # (B, H, S, D)
         head_dim = q.shape[-1]
-        # (B, H, 64, 64)
+        # (B, H, S, S)
         scores = torch.matmul(q, k.transpose(-2, -1)) / (head_dim ** 0.5)
         weights = torch.softmax(scores, dim=-1).cpu().numpy()
 
         K = len(self._sym_ids)
         if B == K and K > 1:
             # Symmetry ensemble: inverse-permute rows & cols, then average
-            acc = weights[0]  # sym_id=0 is identity, no permutation needed
+            # Extend perm to handle pass token (position 64 maps to itself)
+            acc = weights[0]  # sym_id=0 is identity
             for i in range(1, K):
                 perm = self._perms[self._sym_ids[i]]
+                if S > 64:
+                    perm = np.append(perm, np.arange(64, S))
                 w = weights[i]
-                # Inverse-permute: attn[perm][:, perm] (self-inverse symmetries)
                 acc = acc + w[:, perm][:, :, perm]
-            return acc / K
+            weights = acc / K
         else:
-            return weights[0]  # (H, 64, 64)
+            weights = weights[0]  # (H, S, S)
+
+        # Strip pass token — return only board positions (H, 64, 64)
+        return weights[:, :64, :64]
 
     def get_gate_scores(self):
         """Compute gate scores with symmetry ensemble.
@@ -492,17 +497,17 @@ class AttentionExtractor:
         """
         if self._gate_raw is None:
             return None
-        # gate_raw: (B, 64, H)
-        gate = torch.sigmoid(self._gate_raw).cpu().numpy()  # (B, 64, H)
+        # gate_raw: (B, S, H) — S=64 or 65 (with pass token)
+        gate = torch.sigmoid(self._gate_raw).cpu().numpy()  # (B, S, H)
         K = len(self._sym_ids)
         if gate.shape[0] == K and K > 1:
-            acc = gate[0]  # (64, H)
+            acc = gate[0, :64]  # (64, H) — strip pass token
             for i in range(1, K):
                 perm = self._perms[self._sym_ids[i]]
-                acc = acc + gate[i][perm]  # inverse-permute positions
+                acc = acc + gate[i, :64][perm]  # inverse-permute board positions only
             gate_avg = acc / K  # (64, H)
         else:
-            gate_avg = gate[0]  # (64, H)
+            gate_avg = gate[0, :64]  # (64, H)
         return gate_avg.mean(axis=1)  # (64,) — average across heads
 
 
