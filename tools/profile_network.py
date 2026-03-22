@@ -51,8 +51,7 @@ with torch.no_grad():
     hidden_out = x
 
     bench(lambda: net.policy_head(hidden_out), "policy_head")
-    bench(lambda: net.value_head(hidden_out), "value_head")
-    bench(lambda: net.aux_head(hidden_out), "aux_head")
+    bench(lambda: net.dual_head(hidden_out), "dual_head")
 
 # ── Forward + Backward (training) ──
 print("\n" + "=" * 70)
@@ -116,10 +115,7 @@ hidden_out = net.hidden(net._embed_state(state)).detach().requires_grad_(True)
 bench_backward(lambda: net.policy_head(hidden_out), "policy_head fwd+bwd")
 
 hidden_out = net.hidden(net._embed_state(state)).detach().requires_grad_(True)
-bench_backward(lambda: net.value_head(hidden_out), "value_head fwd+bwd")
-
-hidden_out = net.hidden(net._embed_state(state)).detach().requires_grad_(True)
-bench_backward(lambda: net.aux_head(hidden_out), "aux_head fwd+bwd")
+bench_backward(lambda: net.dual_head(hidden_out), "dual_head fwd+bwd")
 
 
 # hidden breakdown

@@ -48,11 +48,18 @@ def inspect(net, board=None):
 
 
 def augment(batch):
-    if len(batch) == 7:
-        state, prob, winner, steps_to_end, aux_target, root_wdl, future_state = batch
+    future_state = None
+    valid_mask = None
+    if len(batch) == 8:
+        state, prob, winner, steps_to_end, aux_target, root_wdl, valid_mask, future_state = batch
+    elif len(batch) == 7:
+        state, prob, winner, steps_to_end, aux_target, root_wdl, extra = batch
+        if extra.dtype == torch.bool:
+            valid_mask = extra
+        else:
+            future_state = extra
     else:
         state, prob, winner, steps_to_end, aux_target, root_wdl = batch
-        future_state = None
 
     state_flipped = torch.flip(state, dims=[3])
     prob_flipped = torch.flip(prob, dims=[1])
@@ -64,10 +71,12 @@ def augment(batch):
     aux_target = torch.cat([aux_target, aux_target], dim=0)
     root_wdl = torch.cat([root_wdl, root_wdl], dim=0)
 
+    result = [state, prob, winner, steps_to_end, aux_target, root_wdl]
+    if valid_mask is not None:
+        result.append(torch.cat([valid_mask, torch.flip(valid_mask, dims=[1])], dim=0))
     if future_state is not None:
-        future_state = torch.cat([future_state, torch.flip(future_state, dims=[3])], dim=0)
-        return state, prob, winner, steps_to_end, aux_target, root_wdl, future_state
-    return state, prob, winner, steps_to_end, aux_target, root_wdl
+        result.append(torch.cat([future_state, torch.flip(future_state, dims=[3])], dim=0))
+    return tuple(result)
 
 
 def print_row(action, probX, probO, max_X, max_O):

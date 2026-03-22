@@ -70,7 +70,8 @@ class Game:
         for env in envs:
             env.reset()
             player.mcts.reset_env(envs.index(env))
-        trajectories = [{'states': [], 'actions': [], 'probs': [], 'players': [], 'root_wdls': [], 'steps': 0}
+        trajectories = [{'states': [], 'actions': [], 'probs': [], 'players': [], 'root_wdls': [],
+                         'valid_masks': [], 'steps': 0}
                         for _ in range(n_games)]
         active_indices = list(range(n_games))
         completed_data = [None] * n_games
@@ -99,6 +100,7 @@ class Game:
                 traj['actions'].append(action)
                 traj['probs'].append(prob)
                 traj['root_wdls'].append(root_wdls[i])
+                traj['valid_masks'].append(np.array(env.valid_mask(), dtype=np.bool_))
                 traj['players'].append(env.turn)
                 traj['steps'] += 1
 
@@ -127,16 +129,19 @@ class Game:
                                 future_states.append(end_state_feature)
                         play_data = list(zip(states, traj['probs'], winner_z,
                                              steps_to_end, aux_targets, traj['root_wdls'],
-                                             future_states))
+                                             traj['valid_masks'], future_states))
                     else:
                         play_data = list(zip(states, traj['probs'], winner_z,
-                                             steps_to_end, aux_targets, traj['root_wdls']))
+                                             steps_to_end, aux_targets, traj['root_wdls'],
+                                             traj['valid_masks']))
 
                     # 追加终局状态: steps_to_end=0, prob 全零, root_wdl 全零
                     zero_prob = np.zeros_like(traj['probs'][0])
                     zero_wdl = np.zeros(3, dtype=np.float32)
+                    zero_mask = np.ones_like(traj['valid_masks'][0])
                     terminal_tuple = [end_state_feature, zero_prob, winner, 0,
-                                      self._terminal_aux_target(env), zero_wdl]
+                                      self._terminal_aux_target(env), zero_wdl,
+                                      zero_mask]
                     if k > 0:
                         terminal_tuple.append(end_state_feature)
                     play_data.append(tuple(terminal_tuple))

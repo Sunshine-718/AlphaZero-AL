@@ -164,7 +164,7 @@ class CNN(Base):
         x = pe + po.unsqueeze(0)                 # (B, 42, d)
         return x.permute(0, 2, 1).view(B, self.embed_dim, 6, 7)
 
-    def forward(self, x):
+    def forward(self, x, action_mask=None):
         x = self._embed_state(x)
         hidden = self.hidden(x)
         log_prob = self.policy_head(hidden)

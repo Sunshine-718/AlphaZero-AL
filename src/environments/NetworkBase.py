@@ -17,7 +17,8 @@ class Base(ABC, nn.Module):
     aux_target_offset = 0
 
     def encode_aux_target(self, aux_target):
-        return aux_target.view(-1).long() + int(getattr(self, 'aux_target_offset', 0))
+        offset = float(getattr(self, 'aux_target_offset', 1))
+        return aux_target.view(-1).float() / offset  # normalize to [-1, 1]
 
     @staticmethod
     def _turn_sign_from_state(state, winner_flat):
@@ -38,11 +39,19 @@ class Base(ABC, nn.Module):
 
     def _prepare_training_batch(self, batch, augment):
         augmented = augment(batch)
-        if len(augmented) == 7:
-            state, prob, winner, steps_to_end, aux_target, root_wdl, future_state = augmented
+        # Unpack: 6 base fields + optional valid_mask + optional future_state
+        future_state = None
+        valid_mask = None
+        if len(augmented) == 8:
+            state, prob, winner, steps_to_end, aux_target, root_wdl, valid_mask, future_state = augmented
+        elif len(augmented) == 7:
+            state, prob, winner, steps_to_end, aux_target, root_wdl, extra = augmented
+            if extra.dtype == torch.bool:
+                valid_mask = extra
+            else:
+                future_state = extra
         else:
             state, prob, winner, steps_to_end, aux_target, root_wdl = augmented
-            future_state = None
         value_class, turn_sign = self._value_class_from_batch(state, winner)
         result = {
             'state': state,
@@ -54,6 +63,8 @@ class Base(ABC, nn.Module):
             'turn_sign': turn_sign,
             'policy_mask': (prob.sum(dim=1) > 0).float(),
         }
+        if valid_mask is not None:
+            result['valid_mask'] = valid_mask
         if future_state is not None:
             result['future_state'] = future_state
         return result
@@ -108,8 +119,9 @@ class Base(ABC, nn.Module):
 
     @staticmethod
     def _policy_loss(log_p_pred, prob, policy_mask, psw_beta=0.0, entropy_lambda=0.0):
-        # KL(π || p) per sample
-        per_sample_kl = F.kl_div(log_p_pred, prob, reduction='none').sum(dim=1)
+        # KL(π || p) per action; nan_to_num handles 0*log(0) and 0*(-inf) edge cases
+        kl_per_action = F.kl_div(log_p_pred, prob, reduction='none').nan_to_num(0.0)
+        per_sample_kl = kl_per_action.sum(dim=1)
 
         # PSW: weight by surprise
         if psw_beta > 0:
@@ -124,15 +136,14 @@ class Base(ABC, nn.Module):
         # Entropy regularization: maximize H(p) = -Σ p log p
         if entropy_lambda > 0:
             p_pred = log_p_pred.exp()
-            entropy = -torch.sum(p_pred * log_p_pred, dim=1)
+            entropy = -torch.sum((p_pred * log_p_pred).nan_to_num(0.0), dim=1)
             p_loss = p_loss - entropy_lambda * (entropy * policy_mask).mean()
 
         return p_loss
 
     @staticmethod
     def _aux_loss(steps_pred, aux_target):
-        aux_target = aux_target.clamp(0, steps_pred.shape[-1] - 1)
-        return F.nll_loss(steps_pred, aux_target)
+        return F.smooth_l1_loss(steps_pred, aux_target)
 
     @staticmethod
     def _td_consistency_loss(value_pred, future_wdl_target, batch_data, td_steps,
@@ -194,10 +205,10 @@ class Base(ABC, nn.Module):
         diff_perspective = (current_turn * future_turn) < 0
 
         # Swap win/loss for different perspective
-        future_wdl_adj = future_wdl.clone()
-        future_wdl_adj[diff_perspective, 1] = future_wdl[diff_perspective, 2]
-        future_wdl_adj[diff_perspective, 2] = future_wdl[diff_perspective, 1]
-        return future_wdl_adj
+        swap = diff_perspective.unsqueeze(1)
+        win = torch.where(swap, future_wdl[:, 2:3], future_wdl[:, 1:2])
+        loss = torch.where(swap, future_wdl[:, 1:2], future_wdl[:, 2:3])
+        return torch.cat([future_wdl[:, 0:1], win, loss], dim=1)
 
     def _optimize_batch(self, model, batch_data, use_soft, value_decay, distill_alpha, distill_temp,
                         psw_beta=0.0, entropy_lambda=0.0, td_alpha=0.0, td_steps=5,
@@ -211,8 +222,9 @@ class Base(ABC, nn.Module):
             self._ensure_target_net()
             future_wdl_target = self._prepare_future_wdl(batch_data)
 
-        self.opt.zero_grad()
-        log_p_pred, value_pred, steps_pred = model(batch_data['state'])
+        self.opt.zero_grad(set_to_none=True)
+        log_p_pred, value_pred, steps_pred = model(batch_data['state'],
+                                                    action_mask=batch_data.get('valid_mask'))
         p_loss = self._policy_loss(log_p_pred, batch_data['prob'], batch_data['policy_mask'],
                                    psw_beta, entropy_lambda)
         v_loss = self._value_loss(
@@ -231,22 +243,13 @@ class Base(ABC, nn.Module):
             v_loss = (1 - td_alpha) * v_loss + td_alpha * td_loss
 
         aux_loss = self._aux_loss(steps_pred, batch_data['aux_target'])
-        loss = p_loss + v_loss + 0.1 * aux_loss
+        loss = p_loss + v_loss + aux_loss
         loss.backward()
-        nn.utils.clip_grad_norm_(self.parameters(), 5)
+        grad_norm = nn.utils.clip_grad_norm_(self.parameters(), 5)
         self.opt.step()
         if need_target:
             self._update_target_net(target_tau)
-        return p_loss, v_loss, aux_loss, log_p_pred
-
-    @staticmethod
-    def _grad_norm(parameters):
-        total_norm = 0.0
-        for param in parameters:
-            if param.grad is not None:
-                param_norm = param.grad.data.norm(2)
-                total_norm += param_norm.item() ** 2
-        return total_norm ** 0.5
+        return p_loss.detach(), v_loss.detach(), aux_loss.detach(), log_p_pred, grad_norm
 
     def _final_train_metrics(self, last_batch, last_log_p_pred):
         with torch.no_grad():
@@ -256,9 +259,10 @@ class Base(ABC, nn.Module):
                 torch.argmax(new_v, dim=-1).cpu().numpy(),
                 average='macro'
             )
-            entropy = -torch.mean(torch.sum(last_log_p_pred.exp() * last_log_p_pred, dim=-1))
-        total_norm = self._grad_norm(self.parameters())
-        return float(entropy), total_norm, f1
+            plogp = last_log_p_pred.exp() * last_log_p_pred
+            plogp = plogp.nan_to_num(0.0)  # mask 导致的 0 * -inf → NaN 置零
+            entropy = -torch.mean(torch.sum(plogp, dim=-1))
+        return float(entropy), f1
 
     def save(self, dir_path=None):
         """Save model weights and training state to a directory.
@@ -330,109 +334,26 @@ class Base(ABC, nn.Module):
         object.__setattr__(self, '_target_net', None)
         return self
 
-    def _train_step_legacy(self, dataloader, augment, ddp_model=None, n_epochs=10,
-                   distill_alpha=0.0, value_decay=1.0, distill_temp=1.0):
-        model = ddp_model if ddp_model is not None else self
-        p_l, v_l, aux_l = [], [], []
-        use_soft = value_decay < 1.0 or distill_alpha > 0
-        for _ in range(n_epochs):
-            self.train()
-            for batch in dataloader:
-                state, prob, winner, steps_to_end, aux_target, root_wdl = augment(batch)
-                # Value target in relative perspective:
-                # class 0=draw, 1=win(to-move), 2=loss(to-move)
-                winner_flat = winner.view(-1).long()
-                turn_sign = torch.where(
-                    state[:, 2, 0, 0] >= 0,
-                    torch.ones_like(winner_flat),
-                    -torch.ones_like(winner_flat),
-                )
-                value_class = torch.zeros_like(winner_flat)
-                non_draw = winner_flat != 0
-                value_class[non_draw & (winner_flat == turn_sign)] = 1
-                value_class[non_draw & (winner_flat != turn_sign)] = 2
-                aux_target = self.encode_aux_target(aux_target)
-                mask = (prob.sum(dim=1) > 0).float()
-                self.opt.zero_grad()
-                log_p_pred, value_pred, steps_pred = model(state)
-                aux_target = aux_target.clamp(0, steps_pred.shape[-1] - 1)
-
-                if use_soft:
-                    z_target = F.one_hot(value_class, 3).float()
-
-                    # Game-length discount: γ^steps × one_hot + (1-γ^steps) × uniform
-                    if value_decay < 1.0:
-                        discount = (value_decay ** steps_to_end.float().view(-1)).unsqueeze(1)
-                        z_target = discount * z_target + (1 - discount) * (1.0 / 3.0)
-
-                    # Hard label loss: CE(student, z_target)
-                    v_loss = -torch.sum(z_target * value_pred, dim=1).mean()
-
-                    # Knowledge distillation from MCTS root WDL
-                    if distill_alpha > 0:
-                        # root_wdl is absolute [draw, p1w, p2w]; convert to relative [draw, win, loss]
-                        turn_pos = (turn_sign > 0).view(-1, 1)
-                        root_draw = root_wdl[:, 0:1]
-                        root_win = torch.where(turn_pos, root_wdl[:, 1:2], root_wdl[:, 2:3])
-                        root_loss = torch.where(turn_pos, root_wdl[:, 2:3], root_wdl[:, 1:2])
-                        root_wdl_rel = torch.cat([root_draw, root_win, root_loss], dim=1)
-
-                        has_q = (root_wdl_rel.sum(dim=1, keepdim=True) > 0).float()
-
-                        # Teacher: softmax(log(root_wdl) / T)
-                        teacher_log = torch.log(root_wdl_rel.clamp(min=1e-8))
-                        teacher_soft = F.softmax(teacher_log / distill_temp, dim=1)
-                        # Student: softmax(logits / T)  (value_pred is log_softmax)
-                        student_log_soft = F.log_softmax(value_pred / distill_temp, dim=1)
-                        # KL(teacher || student) per sample, masked by has_q
-                        kl = F.kl_div(student_log_soft, teacher_soft, reduction='none').sum(dim=1)
-                        distill_loss = (kl * has_q.squeeze(1)).mean() * (distill_temp ** 2)
-
-                        v_loss = (1 - distill_alpha) * v_loss + distill_alpha * distill_loss
-                else:
-                    v_loss = F.nll_loss(value_pred, value_class)
-
-                per_sample_kl = F.kl_div(log_p_pred, prob, reduction='none').sum(dim=1)
-                p_loss = torch.mean(per_sample_kl * mask)
-                s_loss = F.nll_loss(steps_pred, aux_target)
-                loss = p_loss + v_loss + 0.5 * s_loss
-                loss.backward()
-                nn.utils.clip_grad_norm_(self.parameters(), 5)
-                self.opt.step()
-                p_l.append(p_loss.item())
-                v_l.append(v_loss.item())
-                s_l.append(s_loss.item())
-        self.eval()
-
-        self.scheduler.step()
-        with torch.no_grad():
-            _, new_v, _ = self(state)
-        f1 = f1_score(value_class.cpu().numpy(), torch.argmax(new_v, dim=-1).cpu().numpy(), average='macro')
-        with torch.no_grad():
-            entropy = -torch.mean(torch.sum(log_p_pred.exp() * log_p_pred, dim=-1))
-            total_norm = 0
-            for param in self.parameters():
-                if param.grad is not None:
-                    param_norm = param.grad.data.norm(2)
-                    total_norm += param_norm.item() ** 2
-            total_norm = total_norm ** 0.5
-        return np.mean(p_l), np.mean(v_l), np.mean(s_l), float(entropy), total_norm, f1
-
     def train_step(self, dataloader, augment, ddp_model=None, n_epochs=10,
                    distill_alpha=0.0, value_decay=1.0, distill_temp=1.0,
                    psw_beta=0.0, entropy_lambda=0.0, td_alpha=0.0, td_steps=5,
                    target_tau=0.995):
         model = ddp_model if ddp_model is not None else self
-        p_l, v_l, aux_l = [], [], []
+        device = next(self.parameters()).device
+        p_sum = torch.zeros(1, device=device)
+        v_sum = torch.zeros(1, device=device)
+        aux_sum = torch.zeros(1, device=device)
+        n_batches = 0
         use_soft = value_decay < 1.0 or distill_alpha > 0
         last_batch = None
         last_log_p_pred = None
+        last_grad_norm = 0.0
 
         for _ in range(n_epochs):
             self.train()
             for batch in dataloader:
                 last_batch = self._prepare_training_batch(batch, augment)
-                p_loss, v_loss, aux_loss, last_log_p_pred = self._optimize_batch(
+                p_loss, v_loss, aux_loss, last_log_p_pred, last_grad_norm = self._optimize_batch(
                     model,
                     last_batch,
                     use_soft,
@@ -445,11 +366,20 @@ class Base(ABC, nn.Module):
                     td_steps,
                     target_tau,
                 )
-                p_l.append(p_loss.item())
-                v_l.append(v_loss.item())
-                aux_l.append(aux_loss.item())
+                p_sum += p_loss
+                v_sum += v_loss
+                aux_sum += aux_loss
+                n_batches += 1
 
         self.eval()
         self.scheduler.step()
-        entropy, total_norm, f1 = self._final_train_metrics(last_batch, last_log_p_pred)
-        return np.mean(p_l), np.mean(v_l), np.mean(aux_l), float(entropy), total_norm, f1
+        n_batches = max(n_batches, 1)
+        entropy, f1 = self._final_train_metrics(last_batch, last_log_p_pred)
+        return (
+            (p_sum / n_batches).item(),
+            (v_sum / n_batches).item(),
+            (aux_sum / n_batches).item(),
+            float(entropy),
+            float(last_grad_norm),
+            f1,
+        )

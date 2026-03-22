@@ -32,10 +32,7 @@ class ResidualBlock(nn.Module):
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, padding=padding, bias=True)
         self.norm = nn.GroupNorm(1, in_channels)
         self.dropout = nn.Dropout2d(dropout, inplace=True)
-        if in_channels == out_channels:
-            self.resid = True
-        else:
-            self.resid = False
+        self.resid = (in_channels == out_channels)
 
     def forward(self, x):
         residual = x if self.resid else 0
@@ -52,7 +49,8 @@ class GatedAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = h_dim // num_heads
         self.prenorm = nn.RMSNorm(h_dim, eps=1e-5)
-        self.qkvg_proj = nn.Linear(h_dim, 3 * h_dim + num_heads, bias=False)   # ① fused QKV
+        self.qkv_proj = nn.Linear(h_dim, 3 * h_dim, bias=False)
+        self.gate_proj = nn.Linear(h_dim, num_heads, bias=False)
         self.o_proj = nn.Linear(h_dim, h_dim, bias=False)
         self.q_norm = nn.RMSNorm(self.head_dim, eps=1e-5)
         self.k_norm = nn.RMSNorm(self.head_dim, eps=1e-5)
@@ -63,13 +61,11 @@ class GatedAttention(nn.Module):
         residual = x
         x = self.prenorm(x)
 
-        qkvg = self.qkvg_proj(x)
-        qkv, gate = qkvg.split([3 * D, self.num_heads], dim=-1)
+        qkv = self.qkv_proj(x).view(B, S, 3, self.num_heads, self.head_dim)
+        gate = self.gate_proj(x)                     # (B, S, H)
+        q, k, v = qkv.unbind(2)                      # 3 × (B, S, H, d)
 
-        qkv = qkv.view(B, S, 3, self.num_heads, self.head_dim)
-        q, k, v = qkv.unbind(2)                    # 3 × (B, S, H, d)
-
-        q = self.q_norm(q).transpose(1, 2)          # (B, H, S, d)
+        q = self.q_norm(q).transpose(1, 2)           # (B, H, S, d)
         k = self.k_norm(k).transpose(1, 2)
         v = v.transpose(1, 2)
 
@@ -83,8 +79,9 @@ class GatedAttention(nn.Module):
         return self.o_proj(out) + residual
 
 
-class ValueHead(nn.Module):
-    """Global pooling → MLP → WDL logits."""
+class DualHead(nn.Module):
+    """Shared trunk for value (WDL) and aux (disc-diff) predictions.
+    Global pooling → shared MLP → value logits + aux scalar."""
     def __init__(self, h_dim, n_classes=3, dropout=0.):
         super().__init__()
         self.pool_norm = nn.RMSNorm(h_dim, eps=1e-5)
@@ -93,34 +90,17 @@ class ValueHead(nn.Module):
         self.norm = nn.RMSNorm(h_dim, eps=1e-5)
         self.fc = nn.Linear(h_dim, h_dim)
         self.out_norm = nn.RMSNorm(h_dim, eps=1e-5)
-        self.out = nn.Linear(h_dim, n_classes)
+        self.value_out = nn.Linear(h_dim, n_classes)
+        self.aux_out = nn.Linear(h_dim, 1)
 
     def forward(self, x):
         # x: (B, S, D) → pool → (B, D)
         x = x.mean(dim=1)
         x = x + self.pool_drop(nn.functional.silu(self.pool_fc(self.pool_norm(x))))
-        x = self.out_norm(nn.functional.silu(self.fc(self.norm(x))))
-        return nn.functional.log_softmax(self.out(x), dim=-1)
-
-
-class AuxHead(nn.Module):
-    """Global pooling → MLP → disc-diff distribution logits."""
-    def __init__(self, h_dim, n_classes, dropout=0.):
-        super().__init__()
-        self.pool_norm = nn.RMSNorm(h_dim, eps=1e-5)
-        self.pool_fc = nn.Linear(h_dim, h_dim)
-        self.pool_drop = nn.Dropout(dropout)
-        self.norm = nn.RMSNorm(h_dim, eps=1e-5)
-        self.fc = nn.Linear(h_dim, n_classes)
-        self.out_norm = nn.RMSNorm(n_classes, eps=1e-5)
-        self.out = nn.Linear(n_classes, n_classes)
-
-    def forward(self, x):
-        # x: (B, S, D) → pool → (B, D)
-        x = x.mean(dim=1)
-        x = x + self.pool_drop(nn.functional.silu(self.pool_fc(self.pool_norm(x))))
-        x = nn.functional.silu(self.fc(self.norm(x)))
-        return nn.functional.log_softmax(self.out(self.out_norm(x)), dim=-1)
+        h = self.out_norm(nn.functional.silu(self.fc(self.norm(x))))
+        value = nn.functional.log_softmax(self.value_out(h), dim=-1)
+        aux = torch.tanh(self.aux_out(h).squeeze(-1))
+        return value, aux
 
 
 class PolicyHead(nn.Module):
@@ -132,12 +112,14 @@ class PolicyHead(nn.Module):
         self.out = nn.Linear(h_dim, 1)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x):
+    def forward(self, x, action_mask=None):
         # x: (B, 65, D)
         x = self.norm(x)
         x = self.dropout(nn.functional.silu(self.fc(x)))
-        x = self.out(x).squeeze(-1)   # (B, 65)
-        return nn.functional.log_softmax(x, dim=-1)
+        logits = self.out(x).squeeze(-1)   # (B, 65)
+        if action_mask is not None:
+            logits = logits.masked_fill(~action_mask, -1e9)
+        return nn.functional.log_softmax(logits, dim=-1)
 
 
 class AttentionBlock(nn.Module):
@@ -157,7 +139,7 @@ class CNN(Base):
     aux_target_offset = 64
     score_scale = 8.0  # atan mapping scale, synced from SearchConfig at runtime
 
-    def __init__(self, lr, embed_dim=32, h_dim=64, out_dim=65, dropout=0.1, device='cpu', num_res_blocks=2, policy_lr_scale=0.3):
+    def __init__(self, lr, embed_dim=32, h_dim=64, out_dim=65, dropout=0.1, device='cpu', num_res_blocks=3, policy_lr_scale=0.3):
         super().__init__()
         self.embed_dim = embed_dim
         self.in_dim = 3  # 保持与 server.py ReplayBuffer 的兼容性
@@ -171,32 +153,26 @@ class CNN(Base):
 
         # Body: Stem + Residual Blocks (spatial dims stay 8x8, all convs use padding=1)
         self.hidden = nn.Sequential(
-            ResidualBlock(embed_dim, h_dim, dropout=dropout),
+            nn.Conv2d(embed_dim, h_dim, kernel_size=3, padding=1),
+            nn.SiLU(True),
             *[ResidualBlock(h_dim, h_dim, dropout=dropout) for _ in range(num_res_blocks)],
-            nn.GroupNorm(1, h_dim),
-            nn.Conv2d(h_dim, h_dim, kernel_size=3, padding=1, bias=False),
             AttentionBlock(h_dim, 4, dropout),
         )
 
         # Policy head: per-token MLP (works on 65 tokens including pass)
         self.policy_head = PolicyHead(h_dim, dropout)
 
-        # Value head: WDL (draw, p1_win, p2_win)
-        self.value_head = ValueHead(h_dim, 3, dropout)
-
-        # Auxiliary head: terminal disc diff from current-player perspective, in [-64, 64].
-        n_aux = 2 * self.aux_target_offset + 1
-        self.aux_head = AuxHead(h_dim, n_aux, dropout)
+        # Dual head: shared trunk for value (WDL) and aux (disc-diff)
+        self.dual_head = DualHead(h_dim, 3, dropout)
 
         self.apply(self.init_weights)
         nn.init.constant_(self.policy_head.out.weight, 0)
-        nn.init.constant_(self.value_head.out.weight, 0)
-        nn.init.constant_(self.aux_head.out.weight, 0)
+        nn.init.constant_(self.dual_head.value_out.weight, 0)
+        nn.init.constant_(self.dual_head.aux_out.weight, 0)
 
         self.opt = torch.optim.AdamW([
             {'params': self.hidden.parameters()},
-            {'params': self.value_head.parameters()},
-            {'params': self.aux_head.parameters()},
+            {'params': self.dual_head.parameters()},
             {'params': self.piece_emb.parameters(), 'weight_decay': 0},
             {'params': self.pos_emb.parameters(), 'weight_decay': 0},
             {'params': self.policy_head.parameters(), 'lr': lr * policy_lr_scale},
@@ -233,27 +209,26 @@ class CNN(Base):
         x = pe + po.unsqueeze(0)             # (B, 64, d)
         return x.permute(0, 2, 1).view(B, self.embed_dim, 8, 8)
 
-    def forward(self, x):
+    def forward(self, x, action_mask=None):
         x = self._embed_state(x)
         hidden = self.hidden(x)              # (B, 65, D) — 64 positions + pass token
-        log_prob = self.policy_head(hidden)
-        value = self.value_head(hidden)
-        steps_pred = self.aux_head(hidden)
-        return log_prob, value, steps_pred
+        log_prob = self.policy_head(hidden, action_mask)
+        value, aux = self.dual_head(hidden)
+        return log_prob, value, aux
 
     @torch.no_grad()
     def policy(self, state):
         if isinstance(state, np.ndarray):
             state = torch.from_numpy(state).float().to(self.device)
-        x = self._embed_state(state)
-        hidden = self.hidden(x)
-        return self.policy_head(hidden).exp().cpu().numpy()
+        with torch.autocast(self.device, dtype=torch.bfloat16, enabled=self.device != 'cpu'):
+            return self(state)[0].exp().cpu().numpy()
 
     @torch.no_grad()
     def value(self, state):
-        x = self._embed_state(state)
-        hidden = self.hidden(x)
-        return self.value_head(hidden).exp().cpu().numpy()
+        if isinstance(state, np.ndarray):
+            state = torch.from_numpy(state).float().to(self.device)
+        with torch.autocast(self.device, dtype=torch.bfloat16, enabled=self.device != 'cpu'):
+            return self(state)[1].exp().cpu().numpy()
 
     @torch.no_grad()
     def predict(self, state):
@@ -262,23 +237,21 @@ class CNN(Base):
             t = t.pin_memory().to(self.device, dtype=torch.float32, non_blocking=True)
         else:
             t = t.float()
-        x = self._embed_state(t)
-        hidden = self.hidden(x)
-        log_prob = self.policy_head(hidden)
-        value_log_prob = self.value_head(hidden)
-        log_steps = self.aux_head(hidden)
-        # Value head outputs: [P(draw), P(win to-move), P(loss to-move)]
-        wdl = value_log_prob.exp()  # (batch, 3)
+        with torch.autocast(self.device, dtype=torch.bfloat16, enabled=self.device != 'cpu'):
+            log_prob, value_log_prob, aux_scalar = self(t)
+        wdl = value_log_prob.exp()
 
-        # Third head predicts terminal disc diff in current-player perspective.
-        # Compute E[atan(x/scale)] * (2/pi) — uncertainty-aware score utility.
-        steps_prob = log_steps.exp()
-        idx = torch.arange(log_steps.shape[-1], dtype=torch.float32, device=self.device)
-        disc_diff = idx - float(self.aux_target_offset)
+        # Denormalize scalar to disc-diff, then apply atan mapping for utility.
+        disc_diff = aux_scalar * float(self.aux_target_offset)
         score_scale = getattr(self, 'score_scale', 8.0)
-        atan_vals = torch.atan(disc_diff / score_scale) * (2.0 / math.pi)
-        expected_utility = (steps_prob * atan_vals).sum(dim=1)
+        expected_utility = torch.atan(disc_diff / score_scale) * (2.0 / math.pi)
 
+        if self.device != 'cpu':
+            p = log_prob.float().exp().to('cpu', non_blocking=True)
+            w = wdl.float().to('cpu', non_blocking=True)
+            u = expected_utility.float().view(-1, 1).to('cpu', non_blocking=True)
+            torch.cuda.synchronize()
+            return p.numpy(), w.numpy(), u.numpy()
         return (log_prob.exp().cpu().numpy(),
                 wdl.cpu().numpy(),
                 expected_utility.cpu().view(-1, 1).numpy())

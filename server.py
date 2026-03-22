@@ -109,7 +109,7 @@ g_train.add_argument('--entropy_lambda', type=float, default=0.01,
                            'policy collapse (0=disabled)')
 g_train.add_argument('--td_steps', type=int, default=10,
                       help='N-step TD: number of steps k for future state S_{t+k} (0=disabled)')
-g_train.add_argument('--td_alpha', type=float, default=0.5,
+g_train.add_argument('--td_alpha', type=float, default=0.2,
                       help='N-step TD consistency weight: v_loss = (1-α)×base + α×KL(v(S_{t+k})||v(S_t)) '
                            '(0=disabled)')
 g_train.add_argument('--target_tau', type=float, default=0.97,
