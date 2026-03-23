@@ -7,6 +7,8 @@ from src.player import Human, AlphaZeroPlayer
 from src.symmetry import (get_sym_config, apply_sym_board, apply_sym_action,
                           inverse_sym_visits, inverse_sym_stats)
 _SYM_IDS = get_sym_config('Othello')['sym_ids']
+_AUTO_SYM_ENSEMBLE = True
+_AUTO_N_TREES = len(_SYM_IDS) if _AUTO_SYM_ENSEMBLE else 1
 from src.environments import load
 # On Windows, importing PyQt before torch can break torch DLL initialization.
 import torch
@@ -33,8 +35,6 @@ from PyQt5.QtWidgets import (
 
 ENV_NAME = 'Othello'
 PARAMS_DIR = './params'
-N_ACTIONS = 65      # 64 squares + 1 pass
-BOARD_SIZE = 8
 CHUNK = 50
 
 
@@ -100,23 +100,18 @@ BOOK_LINE = _parse_book(
 
 
 class Def:
-    network = 'CNN'
-    model_type = 'current'
     n_playout = 40000
     c_init = 1.4
     c_base = 2000
     fpu = 0.2
     alpha = 0.
     noise_eps = 0.
-    symmetry = True
     cache = 10000
-    n_trees = 1
     vl_batch = 4
     score_utility_factor = 0.15
     score_scale = 8.0
     reuse_tree = True
     no_search = False
-    sym_ensemble = True
     use_book = False
     time_budget = 0.0  # 秒，0=禁用（按 sims 停），>0 时间到即落子
 
@@ -146,19 +141,13 @@ class C:
 
     # Accents
     ACCENT = "#a78bfa"
-    ACCENT2 = "#c4b5fd"
     CYAN = "#38bdf8"
-    CYAN2 = "#0ea5e9"
     MAGENTA = "#c084fc"
     GREEN = "#4ade80"
     RED_HEX = "#fb7185"
     YEL_HEX = "#fbbf24"
 
     # QColor objects — accent
-    ACCENT_CLR = QColor(167, 139, 250)
-    ACCENT_DIM = QColor(167, 139, 250, 40)
-    ACCENT_GLOW = QColor(167, 139, 250, 80)
-    MAGENTA_CLR = QColor(192, 132, 252)
 
     # Piece colors  — Black & White for Othello
     BLACK = QColor(30, 30, 50)
@@ -174,12 +163,8 @@ class C:
     GRID_CORE = QColor(255, 255, 255, 18)
     GRID_GLOW = QColor(167, 139, 250, 12)
     HOVER = QColor(167, 139, 250, 25)
-    WIN_GLOW = QColor(167, 139, 250, 150)
 
     # Glass
-    GLASS_FILL = QColor(255, 255, 255, 10)
-    GLASS_BORDER = QColor(255, 255, 255, 25)
-    GLASS_HL = QColor(255, 255, 255, 15)
 
     # Board surface — dark green for Othello
     BOARD_GREEN = QColor(0, 80, 50, 180)
@@ -393,12 +378,6 @@ def _draw_glass(qp, rect, radius=10, fill_alpha=10, border_alpha=25):
     qp.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
 
 
-def _draw_soft_glow(qp, x1, y1, x2, y2, color, core_w=1):
-    for w, alpha in [(core_w + 4, 10), (core_w + 2, 30), (core_w, 100)]:
-        c = QColor(color)
-        c.setAlpha(alpha)
-        qp.setPen(QPen(c, w))
-        qp.drawLine(int(x1), int(y1), int(x2), int(y2))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -434,17 +413,24 @@ class AttentionExtractor:
         self._k = output.detach()
 
     def _hook_gate(self, module, input, output):
-        # qkvg_proj output: (B, S, 3*D + H), gate is last H dims
-        self._gate_raw = output.detach()[..., -self._num_heads:]  # (B, S, H)
+        gate = output.detach()
+        # Newer Othello nets expose gate logits directly via gate_proj: (B, S, H).
+        # Older experiments may still use a fused qkvg projection, where gate lives
+        # in the last H channels.
+        if self._num_heads is not None and gate.shape[-1] != self._num_heads:
+            gate = gate[..., -self._num_heads:]
+        self._gate_raw = gate  # (B, S, H)
 
     def attach(self, net):
-        """Register hooks on net.hidden[-1].attn.{q_norm, k_norm, qkvg_proj}."""
+        """Register hooks on net.hidden[-1].attn.{q_norm, k_norm, gate_proj/qkvg_proj}."""
         self.detach()
         attn = net.hidden[-1].attn
+        self._num_heads = attn.num_heads
         self._handles.append(attn.q_norm.register_forward_hook(self._hook_q))
         self._handles.append(attn.k_norm.register_forward_hook(self._hook_k))
-        if hasattr(attn, 'qkvg_proj'):
-            self._num_heads = attn.num_heads
+        if hasattr(attn, 'gate_proj'):
+            self._handles.append(attn.gate_proj.register_forward_hook(self._hook_gate))
+        elif hasattr(attn, 'qkvg_proj'):
             self._handles.append(attn.qkvg_proj.register_forward_hook(self._hook_gate))
 
     def detach(self):
@@ -1722,20 +1708,6 @@ class ParameterConsole(QWidget):
         row_tb.addWidget(self.time_budget_spin)
         lay.addLayout(row_tb)
 
-        row2 = QHBoxLayout()
-        lbl2 = QLabel("trees")
-        lbl2.setFixedWidth(76)
-        lbl2.setStyleSheet(f"color: {C.DIM}; font-size: 11px; font-family: Consolas;")
-        lbl2.setToolTip("Root-parallel: independent MCTS trees on the same position.\n"
-                         "Visit counts are aggregated for stronger play.\n"
-                         "Tip: set noise epsilon > 0 for tree diversity.")
-        row2.addWidget(lbl2)
-        self.n_trees_spin = NoWheelSpinBox()
-        self.n_trees_spin.setRange(1, 9999)
-        self.n_trees_spin.setValue(Def.n_trees)
-        row2.addWidget(self.n_trees_spin)
-        lay.addLayout(row2)
-
         row3 = QHBoxLayout()
         lbl3 = QLabel("vl_batch")
         lbl3.setFixedWidth(76)
@@ -1762,18 +1734,11 @@ class ParameterConsole(QWidget):
         self.cache_sl = _make_slider(lay, "cache", 0, 1000000, 1000, Def.cache, decimals=0,
                                      tooltip="LRU transposition table size (0=disabled)")
 
-        self.sym_check = QCheckBox("SYMMETRY AUG")
-        self.sym_check.setChecked(Def.symmetry)
-        self.sym_check.setToolTip("Random symmetry transform on leaf nodes")
-        lay.addWidget(self.sym_check)
-
-        self.sym_ensemble_check = QCheckBox("SYM ENSEMBLE")
-        self.sym_ensemble_check.setChecked(Def.sym_ensemble)
-        self.sym_ensemble_check.setToolTip(
-            "Run 4 parallel MCTS trees with different board symmetries\n"
-            "(identity, 180°, main-diag, anti-diag), then merge visit counts.\n"
-            "Stronger than random per-leaf symmetry augmentation.")
-        lay.addWidget(self.sym_ensemble_check)
+        auto_sym = QLabel(
+            f"<font color='{C.MUTED}' style='font-family:Consolas;font-size:10px;'>"
+            f"symmetry ensemble: auto ({_AUTO_N_TREES} views)</font>")
+        auto_sym.setTextFormat(Qt.RichText)
+        lay.addWidget(auto_sym)
 
         self.book_check = QCheckBox("BOOK")
         self.book_check.setChecked(Def.use_book)
@@ -1826,15 +1791,35 @@ class ParameterConsole(QWidget):
         attn_row.addWidget(self.attn_check)
 
         self.attn_head_cb = QComboBox()
-        self.attn_head_cb.addItems(["Mean"] + [f"Head {i}" for i in range(4)] + ["Gate"])
         self.attn_head_cb.setToolTip("Select attention head or gate score to visualize")
         self.attn_head_cb.setFixedWidth(90)
+        self.set_attention_head_count(0)
         attn_row.addWidget(self.attn_head_cb)
         attn_row.addStretch()
         lay.addLayout(attn_row)
 
         lay.addStretch()
         self.tabs.addTab(w, "Aux")
+
+    def set_attention_head_count(self, num_heads):
+        num_heads = max(0, int(num_heads))
+        current_text = self.attn_head_cb.currentText() or "Mean"
+        old_block = self.attn_head_cb.blockSignals(True)
+        self.attn_head_cb.clear()
+        self.attn_head_cb.addItems(["Mean"] + [f"Head {i}" for i in range(num_heads)] + ["Gate"])
+
+        idx = self.attn_head_cb.findText(current_text)
+        if idx < 0 and current_text.startswith("Head "):
+            try:
+                head_idx = int(current_text.split()[-1])
+                idx = min(head_idx + 1, num_heads) if num_heads > 0 else 0
+            except ValueError:
+                idx = -1
+        if idx < 0:
+            idx = self.attn_head_cb.count() - 1 if current_text == "Gate" else 0
+
+        self.attn_head_cb.setCurrentIndex(max(0, idx))
+        self.attn_head_cb.blockSignals(old_block)
 
     def reset_defaults(self):
         self.mode_cb.setCurrentIndex(MODE_HVA)
@@ -1843,7 +1828,6 @@ class ParameterConsole(QWidget):
         self.player_cb.setCurrentIndex(0)
         self.n_playout_spin.setValue(Def.n_playout)
         self.time_budget_spin.setValue(Def.time_budget)
-        self.n_trees_spin.setValue(Def.n_trees)
         self.vl_batch_spin.setValue(Def.vl_batch)
         self.c_init_sl.setValue(int(Def.c_init * self.c_init_sl._scale))
         self.c_base_sl.setValue(int(Def.c_base * self.c_base_sl._scale))
@@ -1851,13 +1835,12 @@ class ParameterConsole(QWidget):
         self.alpha_sl.setValue(int(Def.alpha * self.alpha_sl._scale))
         self.eps_sl.setValue(int(Def.noise_eps * self.eps_sl._scale))
         self.cache_sl.setValue(int(Def.cache * self.cache_sl._scale))
-        self.sym_check.setChecked(Def.symmetry)
-        self.sym_ensemble_check.setChecked(Def.sym_ensemble)
         self.book_check.setChecked(Def.use_book)
         self.reuse_tree_check.setChecked(Def.reuse_tree)
         self.no_search_check.setChecked(Def.no_search)
         self.score_factor_sl.setValue(int(Def.score_utility_factor * self.score_factor_sl._scale))
         self.score_scale_sl.setValue(int(Def.score_scale * self.score_scale_sl._scale))
+        self.attn_head_cb.setCurrentIndex(0)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1899,27 +1882,6 @@ class MoveLog(QTextEdit):
 # ═══════════════════════════════════════════════════════════════════════════════
 # MCTS Search Worker (background thread)
 # ═══════════════════════════════════════════════════════════════════════════════
-
-def _aggregate_root_stats(raw):
-    """Aggregate root stats across multiple trees (root-parallel mode)."""
-    stats = {}
-    weights = raw['N']
-    total_w = weights.sum(axis=0)
-    mask = total_w > 0
-    stats['root_N'] = float(raw['root_N'].sum())
-    stats['per_tree_N'] = float(raw['root_N'][0])
-    for k in ('root_Q', 'root_M', 'root_D', 'root_P1W', 'root_P2W'):
-        stats[k] = float(raw[k].mean())
-    stats['N'] = total_w.copy()
-    for k in ('prior', 'noise'):
-        stats[k] = raw[k][0].copy()
-    for k in ('Q', 'M', 'D', 'P1W', 'P2W'):
-        result = np.zeros_like(raw[k][0])
-        if mask.any():
-            result[mask] = (raw[k] * weights).sum(axis=0)[mask] / total_w[mask]
-        stats[k] = result.copy()
-    return stats
-
 
 def _aggregate_root_stats_sym_ensemble(raw, sym_ids):
     """Aggregate root stats with inverse symmetry transform for sym_ensemble mode."""
@@ -2022,15 +1984,6 @@ class ContinuousSearchWorker(QThread):
                 for i, sid in enumerate(_SYM_IDS):
                     transformed_visits[i] = inverse_sym_visits(all_visits[i], sid, 'Othello')
                 visits = transformed_visits.sum(axis=0).copy()
-            elif self._n_trees > 1:
-                stats_0 = _aggregate_root_stats(raw)
-                visits = all_visits.sum(axis=0).copy()
-            else:
-                stats_0 = {}
-                for k, v in raw.items():
-                    val = v[0]
-                    stats_0[k] = val.copy() if hasattr(val, 'copy') else float(val)
-                visits = all_visits[0].copy()
 
             self.progress.emit(stats_0, visits)
 
@@ -2080,16 +2033,18 @@ class OthelloGUI(QWidget):
             None, c_init=None, c_base=Def.c_base, n_playout=None,
             alpha=Def.alpha, noise_epsilon=Def.noise_eps,
             is_selfplay=0, cache_size=Def.cache,
-            fpu_reduction=Def.fpu, use_symmetry=Def.symmetry,
+            fpu_reduction=Def.fpu, use_symmetry=False,
             game_name='Othello',
             score_utility_factor=Def.score_utility_factor,
             score_scale=Def.score_scale,
-            vl_batch=Def.vl_batch)
+            vl_batch=Def.vl_batch,
+            n_trees=1,
+            sym_ensemble=_AUTO_SYM_ENSEMBLE)
         self.az_player2 = None   # second MCTS player for AvA white side
         self.player_color = 1    # 1 = Black (first player)
         self.mode = MODE_HVA
         self.net2 = None         # second network for AvA white side
-        self._n_trees = 1
+        self._n_trees = _AUTO_N_TREES
         self.move_count = 0
         self._book_on = False    # book active for current game
         self._book_idx = 0       # next move index in BOOK_LINE
@@ -2258,10 +2213,6 @@ class OthelloGUI(QWidget):
         def _model_delayed(_=None): return self.settings_timer.start(400)
         self.console.model_type_cb.currentIndexChanged.connect(_model_delayed)
 
-        def _trees_delayed(_=None): return self.settings_timer.start(400)
-        self.console.n_trees_spin.valueChanged.connect(_trees_delayed)
-        self.console.sym_ensemble_check.stateChanged.connect(_trees_delayed)
-
         def _param_delayed(_=None): return self.param_timer.start(150)
         self.console.n_playout_spin.valueChanged.connect(self._on_sims_changed)
         self.console.time_budget_spin.valueChanged.connect(self._on_sims_changed)
@@ -2271,7 +2222,6 @@ class OthelloGUI(QWidget):
         self.console.alpha_sl.valueChanged.connect(_param_delayed)
         self.console.eps_sl.valueChanged.connect(_param_delayed)
         self.console.cache_sl.valueChanged.connect(_param_delayed)
-        self.console.sym_check.stateChanged.connect(_param_delayed)
         self.console.score_factor_sl.valueChanged.connect(_param_delayed)
         self.console.score_scale_sl.valueChanged.connect(_param_delayed)
         self.console.vl_batch_spin.valueChanged.connect(_param_delayed)
@@ -2296,13 +2246,26 @@ class OthelloGUI(QWidget):
         self.board.attn_visible = bool(state)
         self.board.update()
 
+    def _sync_attn_head_selector(self):
+        num_heads = 0
+        try:
+            num_heads = int(self.net.hidden[-1].attn.num_heads)
+        except Exception:
+            pass
+        self.console.set_attention_head_count(num_heads)
+        self._on_attn_head_changed(self.console.attn_head_cb.currentIndex())
+
     def _on_attn_head_changed(self, idx):
-        # 0→Mean(-1), 1..4→Head0..3, 5→Gate
-        num_heads = 4
-        if idx == num_heads + 1:
+        label = self.console.attn_head_cb.itemText(idx)
+        if label == "Gate":
             self.board.attn_head = 'gate'
+        elif label.startswith("Head "):
+            try:
+                self.board.attn_head = int(label.split()[-1])
+            except ValueError:
+                self.board.attn_head = -1
         else:
-            self.board.attn_head = idx - 1
+            self.board.attn_head = -1
         self.board.update()
 
     def closeEvent(self, event):
@@ -2414,22 +2377,23 @@ class OthelloGUI(QWidget):
 
         # Re-attach attention hooks to new model
         self._attn_extractor.attach(self.net)
+        self._sync_attn_head_selector()
 
         p = self.az_player
         p._c_base = int(_sv(self.console.c_base_sl))
         p._fpu_reduction = _sv(self.console.fpu_sl)
         p._noise_eps = _sv(self.console.eps_sl)
         p.noise_eps_init = _sv(self.console.eps_sl)
-        p._use_symmetry = self.console.sym_check.isChecked()
+        p._use_symmetry = False
         p._cache_size = int(_sv(self.console.cache_sl))
         p._score_utility_factor = _sv(self.console.score_factor_sl)
         p._score_scale = _sv(self.console.score_scale_sl)
         self.ai_root_stats.score_scale = p._score_scale
         self.hint_root_stats.score_scale = p._score_scale
         self.status.util_bar.score_scale = p._score_scale
-        p.n_trees = self.console.n_trees_spin.value()
+        p.n_trees = 1
         p._vl_batch = self.console.vl_batch_spin.value()
-        p.sym_ensemble = self.console.sym_ensemble_check.isChecked()
+        p.sym_ensemble = _AUTO_SYM_ENSEMBLE
 
         p.reload(self.net,
                  c_puct=_sv(self.console.c_init_sl),
@@ -2437,7 +2401,7 @@ class OthelloGUI(QWidget):
                  alpha=_sv(self.console.alpha_sl),
                  is_self_play=0)
         p.eval()
-        self._n_trees = len(_SYM_IDS) if p.sym_ensemble else p.n_trees
+        self._n_trees = _AUTO_N_TREES
         self.player_color = 1 if self.console.player_cb.currentIndex() == 0 else -1
         self.mode = self.console.mode_cb.currentIndex()
         self.console._update_game_visibility(self.mode)
@@ -2457,11 +2421,8 @@ class OthelloGUI(QWidget):
         m.set_alpha(_sv(self.console.alpha_sl))
         m.set_fpu_reduction(_sv(self.console.fpu_sl))
         m.set_noise_epsilon(_sv(self.console.eps_sl))
-        # sym_ensemble 模式下禁用 C++ 层随机对称（已在 Python 层手动变换）
-        if self.az_player.sym_ensemble:
-            m.set_use_symmetry(False)
-        else:
-            m.set_use_symmetry(self.console.sym_check.isChecked())
+        # Symmetry ensemble is always handled in Python at the GUI layer.
+        m.set_use_symmetry(False)
         scale = _sv(self.console.score_scale_sl)
         m.set_score_utility_params(_sv(self.console.score_factor_sl), scale)
         self.ai_root_stats.score_scale = scale
@@ -2483,10 +2444,7 @@ class OthelloGUI(QWidget):
             m2.set_alpha(_sv(self.console.alpha_sl))
             m2.set_fpu_reduction(_sv(self.console.fpu_sl))
             m2.set_noise_epsilon(_sv(self.console.eps_sl))
-            if self.az_player2.sym_ensemble:
-                m2.set_use_symmetry(False)
-            else:
-                m2.set_use_symmetry(self.console.sym_check.isChecked())
+            m2.set_use_symmetry(False)
             m2.set_score_utility_params(_sv(self.console.score_factor_sl), scale)
             new_cache2 = int(_sv(self.console.cache_sl))
             old_cache2 = getattr(m2, 'cache_size', 0) or 0
@@ -2602,14 +2560,16 @@ class OthelloGUI(QWidget):
             None, c_init=None, c_base=p._c_base, n_playout=None,
             alpha=p._alpha, noise_epsilon=p._noise_eps,
             is_selfplay=0, cache_size=p._cache_size,
-            fpu_reduction=p._fpu_reduction, use_symmetry=p._use_symmetry,
+            fpu_reduction=p._fpu_reduction, use_symmetry=False,
             game_name='Othello',
             score_utility_factor=p._score_utility_factor,
             score_scale=p._score_scale,
-            vl_batch=p._vl_batch)
+            vl_batch=p._vl_batch,
+            n_trees=1,
+            sym_ensemble=_AUTO_SYM_ENSEMBLE)
         p2 = self.az_player2
-        p2.sym_ensemble = p.sym_ensemble
-        p2.n_trees = p.n_trees
+        p2.sym_ensemble = _AUTO_SYM_ENSEMBLE
+        p2.n_trees = 1
         p2.reload(net2,
                   c_puct=p.mcts.mcts.config.c_init,
                   n_playout=p._n_playout,
@@ -2641,8 +2601,7 @@ class OthelloGUI(QWidget):
         for i in range(self._n_trees):
             self.az_player.mcts.reset_env(i)
         if self.az_player2 is not None:
-            K2 = len(_SYM_IDS) if self.az_player2.sym_ensemble else self._n_trees
-            for i in range(K2):
+            for i in range(_AUTO_N_TREES):
                 self.az_player2.mcts.reset_env(i)
         self.board.last_move = None
         self.board.interactive = True
@@ -2750,9 +2709,15 @@ class OthelloGUI(QWidget):
                 win_pct, lose_pct = vp[2] * 100, vp[1] * 100
             self.status.set_nn_rates(win_pct, draw_pct, lose_pct)
 
-            sp = sl[0].exp().cpu()
+            aux_0 = sl[0].detach().cpu()
             offset = float(getattr(self.net, 'aux_target_offset', 0))
-            expected = (sp * torch.arange(len(sp), dtype=torch.float32)).sum().item() - offset
+            if aux_0.ndim == 0 or aux_0.numel() == 1:
+                # Current Othello models emit a normalized disc-diff scalar.
+                expected = aux_0.item() * offset if offset > 0 else aux_0.item()
+            else:
+                # Backward compatibility for older aux heads that emitted log-prob distributions.
+                sp = aux_0.exp()
+                expected = (sp * torch.arange(sp.numel(), dtype=torch.float32)).sum().item() - offset
             if self.player_color != self.env.turn:
                 expected = -expected
             self.status.set_nn_diff(expected)
@@ -2800,8 +2765,7 @@ class OthelloGUI(QWidget):
     def _nn_direct_eval(self, is_ai_turn):
         """NO SEARCH 模式：NN 前向 + 合法 mask，绕过 MCTS。支持对称增强。"""
         pv_fn = self._pv_fn_for_turn()
-        p = self._active_player()
-        if p.sym_ensemble and len(_SYM_IDS) > 1:
+        if len(_SYM_IDS) > 1:
             # 对称增强：对所有对称变换取平均
             base = self.env.current_state()  # (1, 3, R, C)
             sym_states = []
@@ -2816,11 +2780,6 @@ class OthelloGUI(QWidget):
                 all_probs[i] = inverse_sym_visits(all_probs[i], s, 'Othello')
             probs = all_probs.mean(axis=0)  # (A,)
             wdl = all_wdl.mean(axis=0)      # (3,)
-        else:
-            state = self.env.current_state()               # (1, 3, R, C)
-            probs, wdl, _ = pv_fn.predict(state)           # probs (1, A), wdl (1, 3)
-            probs = probs[0]                                 # (A,)
-            wdl = wdl[0]                                     # (3,)
         mask = np.array(self.env.valid_mask(), dtype=bool)
         probs[~mask] = 0.0
         total = probs.sum()
@@ -2862,21 +2821,16 @@ class OthelloGUI(QWidget):
             self._nn_direct_eval(is_ai_turn)
             return
         p = self._active_player()
-        sym_ens = p.sym_ensemble
-        if sym_ens:
-            K = len(_SYM_IDS)
-            board = np.stack([apply_sym_board(self.env.board, s, 'Othello')
-                              for s in _SYM_IDS])
-        else:
-            K = self._n_trees
-            board = np.tile(self.env.board, (K, 1, 1))
+        K = len(_SYM_IDS)
+        board = np.stack([apply_sym_board(self.env.board, s, 'Othello')
+                          for s in _SYM_IDS])
         turns = np.full(K, self.env.turn, dtype=np.int32)
         threshold = self.console.n_playout_spin.value()
         tb = self.console.time_budget_spin.value()
         pv_fn = self._pv_fn_for_turn()
         self.worker.set_position(p.mcts, pv_fn, board, turns,
                                  is_ai_turn, threshold, n_trees=K,
-                                 sym_ensemble=sym_ens,
+                                 sym_ensemble=True,
                                  vl_batch=p._vl_batch, time_budget=tb)
         if not self._search_paused:
             self.worker.resume()
@@ -2931,23 +2885,12 @@ class OthelloGUI(QWidget):
             raw = ap.mcts.get_root_stats()
             root_n = float(raw['root_N'][0])
             if root_n >= new_thr:
-                K = self._n_trees
                 all_visits = ap.mcts.get_visits_count()
-                if ap.sym_ensemble:
-                    stats_0 = _aggregate_root_stats_sym_ensemble(raw, _SYM_IDS)
-                    transformed = all_visits.copy()
-                    for i, sid in enumerate(_SYM_IDS):
-                        transformed[i] = inverse_sym_visits(all_visits[i], sid, 'Othello')
-                    visits = transformed.sum(axis=0).copy()
-                elif K > 1:
-                    stats_0 = _aggregate_root_stats(raw)
-                    visits = all_visits.sum(axis=0).copy()
-                else:
-                    stats_0 = {}
-                    for k, v in raw.items():
-                        val = v[0]
-                        stats_0[k] = val.copy() if hasattr(val, 'copy') else float(val)
-                    visits = all_visits[0].copy()
+                stats_0 = _aggregate_root_stats_sym_ensemble(raw, _SYM_IDS)
+                transformed = all_visits.copy()
+                for i, sid in enumerate(_SYM_IDS):
+                    transformed[i] = inverse_sym_visits(all_visits[i], sid, 'Othello')
+                visits = transformed.sum(axis=0).copy()
                 elapsed = time.time() - self.worker._t0
                 self._on_ai_ready(stats_0, visits, elapsed)
                 return
@@ -2992,7 +2935,6 @@ class OthelloGUI(QWidget):
         self.status.set_thinking(elapsed)
         self._stop_scan()
 
-        K = self._n_trees
         ai_turn = self.env.turn
         action = int(np.argmax(visits))
 
@@ -3012,22 +2954,12 @@ class OthelloGUI(QWidget):
                 hint_player = self.az_player
             hint_raw = hint_player.mcts.get_root_stats()
             all_hint_v = hint_player.mcts.get_visits_count()
-            if hint_player.sym_ensemble:
-                hint_s0 = _aggregate_root_stats_sym_ensemble(
-                    hint_raw, _SYM_IDS)
-                transformed = all_hint_v.copy()
-                for i, sid in enumerate(_SYM_IDS):
-                    transformed[i] = inverse_sym_visits(all_hint_v[i], sid, 'Othello')
-                hint_v = transformed.sum(axis=0).copy()
-            elif K > 1:
-                hint_s0 = _aggregate_root_stats(hint_raw)
-                hint_v = all_hint_v.sum(axis=0).copy()
-            else:
-                hint_s0 = {}
-                for k, v in hint_raw.items():
-                    val = v[0]
-                    hint_s0[k] = val.copy() if hasattr(val, 'copy') else float(val)
-                hint_v = all_hint_v[0].copy()
+            hint_s0 = _aggregate_root_stats_sym_ensemble(
+                hint_raw, _SYM_IDS)
+            transformed = all_hint_v.copy()
+            for i, sid in enumerate(_SYM_IDS):
+                transformed[i] = inverse_sym_visits(all_hint_v[i], sid, 'Othello')
+            hint_v = transformed.sum(axis=0).copy()
             human_turn = -ai_turn
             if hint_s0['root_N'] > 0:
                 best_hint = int(np.argmax(hint_v))
@@ -3054,17 +2986,15 @@ class OthelloGUI(QWidget):
 
     def _prune_or_reset_player(self, player, action):
         """Prune a single player's tree to action's subtree, or reset."""
-        K = len(_SYM_IDS) if player.sym_ensemble else self._n_trees
+        K = _AUTO_N_TREES
         if not self.console.reuse_tree_check.isChecked():
             for i in range(K):
                 player.mcts.reset_env(i)
-        elif player.sym_ensemble:
+        else:
             sym_actions = np.array(
                 [apply_sym_action(action, s, 'Othello') for s in _SYM_IDS],
                 dtype=np.int32)
             player.mcts.prune_roots(sym_actions)
-        else:
-            player.mcts.prune_roots(np.full(K, action, dtype=np.int32))
 
     def _prune_or_reset(self, action):
         """Prune tree(s) to action's subtree, or reset if reuse is disabled."""
@@ -3283,8 +3213,7 @@ class OthelloGUI(QWidget):
         for i in range(self._n_trees):
             self.az_player.mcts.reset_env(i)
         if self.az_player2 is not None:
-            K2 = len(_SYM_IDS) if self.az_player2.sym_ensemble else self._n_trees
-            for i in range(K2):
+            for i in range(_AUTO_N_TREES):
                 self.az_player2.mcts.reset_env(i)
         self.board.last_move = saved_last
         self.board.overlay_data = None
