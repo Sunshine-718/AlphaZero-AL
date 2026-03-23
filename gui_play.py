@@ -2306,8 +2306,8 @@ class Connect4GUI(QWidget):
                 win_pct, lose_pct = vp[2] * 100, vp[1] * 100
             self.status.set_nn_rates(win_pct, draw_pct, lose_pct)
 
-            sp = sl[0].exp().cpu()
-            expected = (sp * torch.arange(len(sp), dtype=torch.float32)).sum().item()
+            steps_norm = sl.reshape(-1)[0].detach().cpu()
+            expected = float(steps_norm.item()) * float(self.net.aux_target_offset)
             self.status.set_nn_steps(expected)
 
     def _update_status_mcts(self, stats_0):
