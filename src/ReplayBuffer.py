@@ -127,12 +127,19 @@ class ReplayBuffer:
                 self.steps_to_end[indices], self.aux_target[indices], self.root_wdl[indices],
                 self.valid_mask[indices], self.future_state[indices].float())
 
-    def sample(self, batch_size):
+    def sample(self, batch_size, full_batches=False):
         total_samples = len(self)
         assert len(self) > 0
         max_samples = int(total_samples * self.replay_ratio) if len(self) > 10000 / self.replay_ratio else min(total_samples, 10000)
+        sample_size = max_samples
+        if full_batches:
+            batch_size = int(batch_size)
+            if batch_size <= 0:
+                raise ValueError('batch_size must be positive')
+            # Keep training shapes stable for torch.compile by avoiding a short final batch.
+            sample_size = max(batch_size, (max_samples // batch_size) * batch_size)
 
-        idx = torch.from_numpy(np.random.randint(0, len(self), max_samples, dtype=np.int64))
+        idx = torch.from_numpy(np.random.randint(0, len(self), sample_size, dtype=np.int64))
 
         dataset = TensorDataset(*self.get(idx))
-        return DataLoader(dataset, batch_size, True)
+        return DataLoader(dataset, batch_size, True, drop_last=full_batches)

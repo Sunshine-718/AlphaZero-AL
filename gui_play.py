@@ -264,6 +264,94 @@ QFrame#sep { background: rgba(255, 255, 255, 12); max-height: 1px; }
 # Board Widget — Glass Grid
 # ═══════════════════════════════════════════════════════════════════════════════
 
+class AttentionExtractor:
+    """Extract attention weights and gate scores from Connect4's attention block."""
+
+    def __init__(self):
+        self._q = None
+        self._k = None
+        self._gate_raw = None
+        self._num_heads = None
+        self._handles = []
+
+        from src.symmetry import SYM_REGISTRY
+        reg = SYM_REGISTRY['Connect4']
+        self._sym_ids = reg['sym_ids']
+        self._board_shape = reg['board_shape']
+        self._board_cells = self._board_shape[0] * self._board_shape[1]
+        self._perms = reg['board_perms']
+
+    def _hook_q(self, module, input, output):
+        self._q = output.detach().float()
+
+    def _hook_k(self, module, input, output):
+        self._k = output.detach().float()
+
+    def _hook_gate(self, module, input, output):
+        gate = output.detach().float()
+        if self._num_heads is not None and gate.shape[-1] != self._num_heads:
+            gate = gate[..., -self._num_heads:]
+        self._gate_raw = gate
+
+    def attach(self, net):
+        """Register hooks on net.hidden[-1].attn.{q_norm, k_norm, gate_proj/qkvg_proj}."""
+        self.detach()
+        attn = net.hidden[-1].attn
+        self._num_heads = attn.num_heads
+        self._handles.append(attn.q_norm.register_forward_hook(self._hook_q))
+        self._handles.append(attn.k_norm.register_forward_hook(self._hook_k))
+        if hasattr(attn, 'gate_proj'):
+            self._handles.append(attn.gate_proj.register_forward_hook(self._hook_gate))
+        elif hasattr(attn, 'qkvg_proj'):
+            self._handles.append(attn.qkvg_proj.register_forward_hook(self._hook_gate))
+
+    def detach(self):
+        for h in self._handles:
+            h.remove()
+        self._handles.clear()
+        self._q = self._k = self._gate_raw = None
+
+    def get_weights(self):
+        """Return symmetry-averaged attention weights with shape (H, 42, 42)."""
+        if self._q is None or self._k is None:
+            return None
+
+        q = self._q.permute(0, 2, 1, 3)
+        k = self._k.permute(0, 2, 1, 3)
+        head_dim = q.shape[-1]
+        scores = torch.matmul(q, k.transpose(-2, -1)) / (head_dim ** 0.5)
+        weights = torch.softmax(scores, dim=-1).float().cpu().numpy()
+
+        K = len(self._sym_ids)
+        if weights.shape[0] == K and K > 1:
+            acc = weights[0]
+            for i in range(1, K):
+                perm = self._perms[self._sym_ids[i]]
+                acc = acc + weights[i][:, perm][:, :, perm]
+            weights = acc / K
+        else:
+            weights = weights[0]
+
+        return weights[:, :self._board_cells, :self._board_cells]
+
+    def get_gate_scores(self):
+        """Return symmetry-averaged gate scores per board cell with shape (42,)."""
+        if self._gate_raw is None:
+            return None
+
+        gate = torch.sigmoid(self._gate_raw).float().cpu().numpy()
+        K = len(self._sym_ids)
+        if gate.shape[0] == K and K > 1:
+            acc = gate[0, :self._board_cells]
+            for i in range(1, K):
+                perm = self._perms[self._sym_ids[i]]
+                acc = acc + gate[i, :self._board_cells][perm]
+            gate_avg = acc / K
+        else:
+            gate_avg = gate[0, :self._board_cells]
+        return gate_avg.mean(axis=1)
+
+
 class BoardWidget(QWidget):
     CELL = 76
     MARGIN = 28
@@ -295,6 +383,12 @@ class BoardWidget(QWidget):
         self.overlay_data = None
         self.overlay_best = -1
 
+        # Attention heatmap
+        self.attn_weights = None   # (num_heads, 42, 42) or None
+        self.gate_scores = None    # (42,) or None
+        self.attn_head = -1        # -1=mean, 0..H-1=specific head, 'gate'=gate overlay
+        self.attn_visible = False
+
     def _board(self):
         state = self.env.current_state()
         turn = 1 if state[0, 2, 0, 0] >= 0 else -1
@@ -308,6 +402,7 @@ class BoardWidget(QWidget):
         self._draw_hover_col(qp)
         self._draw_grid(qp)
         self._draw_pieces(qp)
+        self._draw_attention(qp)
         self._draw_last_move(qp)
         self._draw_win_glow(qp)
         self._draw_overlay(qp)
@@ -418,6 +513,143 @@ class BoardWidget(QWidget):
         spec.setColorAt(1, QColor(255, 255, 255, 0))
         qp.setBrush(spec)
         qp.drawEllipse(QPointF(cx - rad * 0.2, cy - rad * 0.35), rad * 0.4, rad * 0.3)
+
+    def _attention_query_index(self):
+        if self.hover_col < 0:
+            return None
+        row = self.find_drop_row(self.hover_col)
+        if row < 0:
+            return None
+        return row * 7 + self.hover_col
+
+    def _draw_attention(self, qp):
+        """Draw attention heatmap or gate score overlay on the board."""
+        if not self.attn_visible:
+            return
+
+        cs = self.CELL
+        m = self.MARGIN
+        pit_rad = self.CELL // 2 - 10
+        board = self._board()
+
+        def _cell_center(row, col):
+            return (
+                m + col * cs + cs / 2.0,
+                m + row * cs + cs / 2.0,
+            )
+
+        def _draw_corner_brackets(row, col, color, length, pen_w):
+            x0 = m + col * cs + 8
+            y0 = m + row * cs + 8
+            x1 = x0 + cs - 16
+            y1 = y0 + cs - 16
+            pen = QPen(color, pen_w)
+            pen.setCapStyle(Qt.RoundCap)
+            qp.setPen(pen)
+            qp.setBrush(Qt.NoBrush)
+
+            qp.drawLine(QPointF(x0, y0 + length), QPointF(x0, y0))
+            qp.drawLine(QPointF(x0, y0), QPointF(x0 + length, y0))
+
+            qp.drawLine(QPointF(x1 - length, y0), QPointF(x1, y0))
+            qp.drawLine(QPointF(x1, y0), QPointF(x1, y0 + length))
+
+            qp.drawLine(QPointF(x0, y1 - length), QPointF(x0, y1))
+            qp.drawLine(QPointF(x0, y1), QPointF(x0 + length, y1))
+
+            qp.drawLine(QPointF(x1 - length, y1), QPointF(x1, y1))
+            qp.drawLine(QPointF(x1, y1 - length), QPointF(x1, y1))
+
+        def _draw_empty_circle(row, col, color, fill_alpha):
+            cx, cy = _cell_center(row, col)
+            qp.setPen(Qt.NoPen)
+            qp.setBrush(QColor(color.red(), color.green(), color.blue(), fill_alpha))
+            qp.drawEllipse(QPointF(cx, cy), pit_rad, pit_rad)
+
+        if self.attn_head == 'gate':
+            if self.gate_scores is None:
+                return
+            gate = np.clip(self.gate_scores, 0.0, 1.0)
+            for idx, raw_val in enumerate(gate):
+                r, c = divmod(idx, 7)
+                occupied = board[r][c] != 0
+                val = float(raw_val)
+                if occupied:
+                    track_w = 28
+                    track_h = 5
+                    x = m + c * cs + (cs - track_w) / 2.0
+                    y = m + r * cs + 9.0
+                    track = QRectF(x, y, track_w, track_h)
+                    qp.setPen(Qt.NoPen)
+                    qp.setBrush(QColor(255, 255, 255, 22))
+                    qp.drawRoundedRect(track, 2.5, 2.5)
+                    fill_w = track_w * val
+                    if fill_w > 1.0:
+                        fill = QRectF(x, y, fill_w, track_h)
+                        qp.setBrush(QColor(120, 220, 255, 70 + int(val * 130)))
+                        qp.drawRoundedRect(fill, 2.5, 2.5)
+                else:
+                    cx, cy = _cell_center(r, c)
+                    arc_rect = QRectF(cx - pit_rad, cy - pit_rad, pit_rad * 2, pit_rad * 2)
+                    qp.setBrush(Qt.NoBrush)
+                    qp.setPen(QPen(QColor(255, 255, 255, 22), 3))
+                    qp.drawEllipse(arc_rect)
+                    qp.setPen(QPen(QColor(120, 220, 255, 70 + int(val * 130)), 3))
+                    qp.drawArc(arc_rect, 90 * 16, int(-360 * 16 * val))
+            return
+
+        if self.attn_weights is None:
+            return
+
+        weights = self.attn_weights
+        if self.attn_head < 0:
+            attn = weights.mean(axis=0)
+        else:
+            attn = weights[min(self.attn_head, weights.shape[0] - 1)]
+
+        query_idx = self._attention_query_index()
+        if query_idx is None:
+            heat = attn.mean(axis=0)
+        else:
+            heat = attn[query_idx]
+
+        vmin = float(heat.min())
+        vmax = float(heat.max())
+        if vmax - vmin > 1e-8:
+            heat = (heat - vmin) / (vmax - vmin)
+        else:
+            heat = np.zeros_like(heat)
+
+        for idx, raw_val in enumerate(heat):
+            val = float(raw_val)
+            if val < 0.02:
+                continue
+            r, c = divmod(idx, 7)
+            occupied = board[r][c] != 0
+            if occupied:
+                color = QColor(120, 220, 255, 45 + int(val * 170))
+                _draw_corner_brackets(
+                    r, c,
+                    color,
+                    length=7 + val * 10,
+                    pen_w=1.2 + val * 1.6,
+                )
+            else:
+                _draw_empty_circle(
+                    r, c,
+                    QColor(120, 220, 255),
+                    fill_alpha=18 + int(val * 120),
+                )
+
+        if query_idx is not None:
+            qr, qc = divmod(query_idx, 7)
+            if board[qr][qc] != 0:
+                _draw_corner_brackets(qr, qc, QColor(255, 255, 255, 215), length=12, pen_w=2.3)
+            else:
+                cx, cy = _cell_center(qr, qc)
+                qp.setBrush(Qt.NoBrush)
+                qp.setPen(QPen(QColor(255, 255, 255, 215), 2))
+                qp.drawEllipse(QPointF(cx, cy), pit_rad - 2, pit_rad - 2)
 
     def _draw_last_move(self, qp):
         if self.last_move is None:
@@ -1517,8 +1749,50 @@ class ParameterConsole(QWidget):
                                              tooltip="KataGo-style score utility weight")
         self.score_scale_sl = _make_slider(lay, "score_scale", 1, 32, 1, Def.score_scale,
                                             tooltip="Score atan mapping scale")
+
+        sep = _sep()
+        lay.addWidget(sep)
+        attn_info = QLabel(f"<font color='{C.DIM}' style='font-family:Consolas;font-size:10px;'>"
+                           f"Attention Heatmap</font>")
+        attn_info.setTextFormat(Qt.RichText)
+        lay.addWidget(attn_info)
+
+        attn_row = QHBoxLayout()
+        self.attn_check = QCheckBox("Show")
+        self.attn_check.setChecked(False)
+        self.attn_check.setToolTip("Overlay attention heatmap on board")
+        attn_row.addWidget(self.attn_check)
+
+        self.attn_head_cb = NoWheelComboBox()
+        self.attn_head_cb.setToolTip("Select attention head or gate score to visualize")
+        self.attn_head_cb.setFixedWidth(90)
+        self.set_attention_head_count(0)
+        attn_row.addWidget(self.attn_head_cb)
+        attn_row.addStretch()
+        lay.addLayout(attn_row)
+
         lay.addStretch()
         self.tabs.addTab(w, "Aux")
+
+    def set_attention_head_count(self, num_heads):
+        num_heads = max(0, int(num_heads))
+        current_text = self.attn_head_cb.currentText() or "Mean"
+        old_block = self.attn_head_cb.blockSignals(True)
+        self.attn_head_cb.clear()
+        self.attn_head_cb.addItems(["Mean"] + [f"Head {i}" for i in range(num_heads)] + ["Gate"])
+
+        idx = self.attn_head_cb.findText(current_text)
+        if idx < 0 and current_text.startswith("Head "):
+            try:
+                head_idx = int(current_text.split()[-1])
+                idx = min(head_idx + 1, num_heads) if num_heads > 0 else 0
+            except ValueError:
+                idx = -1
+        if idx < 0:
+            idx = self.attn_head_cb.count() - 1 if current_text == "Gate" else 0
+
+        self.attn_head_cb.setCurrentIndex(max(0, idx))
+        self.attn_head_cb.blockSignals(old_block)
 
     def reset_defaults(self):
         self.mode_cb.setCurrentIndex(MODE_HVA)
@@ -1540,6 +1814,7 @@ class ParameterConsole(QWidget):
         self.mlh_cap_sl.setValue(int(Def.mlh_cap * self.mlh_cap_sl._scale))
         self.score_factor_sl.setValue(int(Def.score_utility_factor * self.score_factor_sl._scale))
         self.score_scale_sl.setValue(int(Def.score_scale * self.score_scale_sl._scale))
+        self.attn_head_cb.setCurrentIndex(0)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1869,6 +2144,7 @@ class Connect4GUI(QWidget):
         self.worker.start()
 
         self._history = []
+        self._attn_extractor = AttentionExtractor()
 
         self._reload_model()
 
@@ -1900,10 +2176,39 @@ class Connect4GUI(QWidget):
         self.pause_btn.clicked.connect(self._toggle_search_pause)
         self.hint_btn.clicked.connect(self._toggle_hint)
         self.log_btn.clicked.connect(self._toggle_log)
+        self.console.attn_check.stateChanged.connect(self._on_attn_toggle)
+        self.console.attn_head_cb.currentIndexChanged.connect(self._on_attn_head_changed)
 
         self._start_game()
 
+    def _on_attn_toggle(self, state):
+        self.board.attn_visible = bool(state)
+        self.board.update()
+
+    def _sync_attn_head_selector(self):
+        num_heads = 0
+        try:
+            num_heads = int(self.net.hidden[-1].attn.num_heads)
+        except Exception:
+            pass
+        self.console.set_attention_head_count(num_heads)
+        self._on_attn_head_changed(self.console.attn_head_cb.currentIndex())
+
+    def _on_attn_head_changed(self, idx):
+        label = self.console.attn_head_cb.itemText(idx)
+        if label == "Gate":
+            self.board.attn_head = 'gate'
+        elif label.startswith("Head "):
+            try:
+                self.board.attn_head = int(label.split()[-1])
+            except ValueError:
+                self.board.attn_head = -1
+        else:
+            self.board.attn_head = -1
+        self.board.update()
+
     def closeEvent(self, event):
+        self._attn_extractor.detach()
         self.worker.stop()
         self.worker.wait()
         super().closeEvent(event)
@@ -2011,6 +2316,9 @@ class Connect4GUI(QWidget):
             self.net.load(path)
         except Exception:
             self.status.set_result("MODEL ERROR", C.RED_HEX)
+
+        self._attn_extractor.attach(self.net)
+        self._sync_attn_head_selector()
 
         p = self.az_player
         p._c_base = int(_sv(self.console.c_base_sl))
@@ -2292,10 +2600,14 @@ class Connect4GUI(QWidget):
 
     def _update_analysis(self):
         with torch.no_grad():
-            state = self.env.current_state()
-            t = torch.from_numpy(state).float().to(self.net.device).unsqueeze(0)
-            if t.dim() == 5:
-                t = t.squeeze(1)
+            base = self.env.current_state()
+            sym_states = []
+            for s in _SYM_IDS:
+                st = np.stack([apply_sym_board(base[0, c], s, 'Connect4')
+                               for c in range(3)], axis=0)
+                sym_states.append(st)
+            batch = np.stack(sym_states)
+            t = torch.from_numpy(batch).float().to(self.net.device)
             _, vl, sl, *_ = self.net(t)
 
             vp = vl[0].exp().cpu().tolist()
@@ -2306,9 +2618,12 @@ class Connect4GUI(QWidget):
                 win_pct, lose_pct = vp[2] * 100, vp[1] * 100
             self.status.set_nn_rates(win_pct, draw_pct, lose_pct)
 
-            steps_norm = sl.reshape(-1)[0].detach().cpu()
+            steps_norm = sl[0].reshape(-1)[0].detach().cpu()
             expected = float(steps_norm.item()) * float(self.net.aux_target_offset)
             self.status.set_nn_steps(expected)
+
+            self.board.attn_weights = self._attn_extractor.get_weights()
+            self.board.gate_scores = self._attn_extractor.get_gate_scores()
 
     def _update_status_mcts(self, stats_0):
         d = float(stats_0['root_D'])

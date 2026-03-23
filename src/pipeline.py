@@ -79,10 +79,14 @@ class TrainPipeline(ABC):
         self.net.load(self.current)
         print(f'Experiment directory: {self.experiment_dir}')
 
+        self.compile_enabled = bool(getattr(self, 'compile', False))
+
         # torch.compile acceleration (PyTorch 2.0+)
-        if getattr(self, 'compile', False):
+        if self.compile_enabled:
             print('torch.compile enabled — compiling model (first iteration will be slow)...')
-            self.net = torch.compile(self.net, mode='reduce-overhead')
+            # Training batches are shape-aligned below, and dynamic batch support
+            # prevents evaluation / inference paths from recompiling on dim-0 changes.
+            self.net = torch.compile(self.net, mode='reduce-overhead', dynamic=True)
 
         if self.is_ddp:
             self.ddp_net = DDP(self.net, device_ids=[self.local_rank], find_unused_parameters=True)
@@ -129,7 +133,10 @@ class TrainPipeline(ABC):
         """Rank 0 从 buffer 采样完整 dataset 并广播给所有 rank。
         各 rank 用各自的随机种子 shuffle，配合 per-GPU batch_size 实现数据并行。"""
         if self.rank == 0:
-            dataloader = self.buffer.sample(self.batch_size * self.world_size)
+            dataloader = self.buffer.sample(
+                self.batch_size,
+                full_batches=self.compile_enabled,
+            )
             dataset = dataloader.dataset
             state = dataset.tensors[0].to(self.device).contiguous()
             prob = dataset.tensors[1].to(self.device).contiguous()
@@ -173,14 +180,22 @@ class TrainPipeline(ABC):
         aux_target = aux_target.to(torch.int16)
         dataset = TensorDataset(state, prob, winner, steps_to_end, aux_target, root_wdl,
                                 valid_mask, future_state)
-        return DataLoader(dataset, self.batch_size, shuffle=True)
+        return DataLoader(
+            dataset,
+            self.batch_size,
+            shuffle=True,
+            drop_last=self.compile_enabled,
+        )
 
     def policy_update(self):
         if self.is_ddp:
             dist.barrier()
             dataloader = self._broadcast_dataloader()
         else:
-            dataloader = self.buffer.sample(self.batch_size)
+            dataloader = self.buffer.sample(
+                self.batch_size,
+                full_batches=self.compile_enabled,
+            )
 
         model_for_training = self.ddp_net if self.is_ddp else None
         p_l, v_l, aux_l, ent, g_n, f1 = self.net.train_step(
