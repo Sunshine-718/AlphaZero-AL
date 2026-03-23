@@ -5,10 +5,10 @@ os.environ["OMP_NUM_THREADS"] = "1"
 
 from src.player import Human, AlphaZeroPlayer
 from src.symmetry import (get_sym_config, apply_sym_board, apply_sym_action,
-                          inverse_sym_visits, inverse_sym_stats)
+                          inverse_sym_visits)
 _SYM_IDS = get_sym_config('Othello')['sym_ids']
 _AUTO_SYM_ENSEMBLE = True
-_AUTO_N_TREES = len(_SYM_IDS) if _AUTO_SYM_ENSEMBLE else 1
+_AUTO_N_TREES = len(_SYM_IDS)
 from src.environments import load
 # On Windows, importing PyQt before torch can break torch DLL initialization.
 import torch
@@ -16,6 +16,20 @@ import time
 import math
 import threading
 import numpy as np
+
+from gui_common import (
+    BaseMoveLog,
+    NoWheelComboBox,
+    NoWheelSlider,
+    NoWheelSpinBox,
+    SymmetrySearchWorker,
+    _draw_glass,
+    _make_slider,
+    _scan_experiments as _scan_experiments_common,
+    _sep,
+    _sv,
+    aggregate_root_stats_sym_ensemble,
+)
 
 from PyQt5.QtCore import Qt, QTimer, QRectF, QPointF, pyqtSignal, QThread
 from PyQt5.QtGui import (
@@ -39,24 +53,7 @@ CHUNK = 50
 
 
 def _scan_experiments(env_name=ENV_NAME):
-    """Scan params/{env}/ for experiment directories.
-    Returns sorted list of entries like '001/current', '001/best', etc.
-    Latest experiment first, current before best within each experiment."""
-    env_dir = os.path.join(PARAMS_DIR, env_name)
-    entries = []
-    if not os.path.isdir(env_dir):
-        return entries
-    exp_ids = []
-    for name in os.listdir(env_dir):
-        if os.path.isdir(os.path.join(env_dir, name)) and name.isdigit():
-            exp_ids.append(name)
-    exp_ids.sort(key=int, reverse=True)  # latest first
-    for exp_id in exp_ids:
-        for variant in ('current', 'best'):
-            model_file = os.path.join(env_dir, exp_id, variant, 'model.pt')
-            if os.path.exists(model_file):
-                entries.append(f'{exp_id}/{variant}')
-    return entries
+    return _scan_experiments_common(env_name, PARAMS_DIR)
 
 
 # Action ↔ board coordinate helpers
@@ -304,78 +301,6 @@ QFrame#sep { background: rgba(255, 255, 255, 12); max-height: 1px; }
 # Helpers
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _sv(slider):
-    return slider.value() / slider._scale
-
-
-class NoWheelSpinBox(QSpinBox):
-    def wheelEvent(self, event):
-        event.ignore()
-
-
-class NoWheelComboBox(QComboBox):
-    def wheelEvent(self, event):
-        event.ignore()
-
-
-class NoWheelSlider(QSlider):
-    def wheelEvent(self, event):
-        event.ignore()
-
-
-def _make_slider(layout, label, lo, hi, step, default, decimals=2, tooltip=""):
-    row = QHBoxLayout()
-    name = QLabel(label)
-    name.setFixedWidth(76)
-    name.setStyleSheet(f"color: {C.DIM}; font-size: 11px; font-family: Consolas;")
-    if tooltip:
-        name.setToolTip(tooltip)
-    row.addWidget(name)
-
-    scale = 10 ** decimals
-    s = NoWheelSlider(Qt.Horizontal)
-    s._scale = scale
-    s._decimals = decimals
-    s.setRange(int(lo * scale), int(hi * scale))
-    s.setSingleStep(max(1, int(step * scale)))
-    s.setValue(int(default * scale))
-    row.addWidget(s, stretch=1)
-
-    fmt = f"{{:.{decimals}f}}" if decimals else "{:.0f}"
-    vl = QLabel(fmt.format(default))
-    vl.setFixedWidth(55)
-    vl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-    vl.setStyleSheet(f"color: {C.GREEN_T}; font-family: Consolas; font-size: 11px;")
-    s.valueChanged.connect(lambda v: vl.setText(fmt.format(v / scale)))
-    row.addWidget(vl)
-    layout.addLayout(row)
-    return s
-
-
-def _sep():
-    f = QFrame()
-    f.setObjectName("sep")
-    f.setFrameShape(QFrame.HLine)
-    f.setFixedHeight(1)
-    return f
-
-
-def _draw_glass(qp, rect, radius=10, fill_alpha=10, border_alpha=25):
-    r = QRectF(rect)
-    path = QPainterPath()
-    path.addRoundedRect(r, radius, radius)
-    qp.fillPath(path, QColor(255, 255, 255, fill_alpha))
-    qp.save()
-    qp.setClipPath(path)
-    hl_h = min(50, r.height() * 0.3)
-    highlight = QLinearGradient(r.x(), r.y(), r.x(), r.y() + hl_h)
-    highlight.setColorAt(0, QColor(255, 255, 255, 18))
-    highlight.setColorAt(1, QColor(255, 255, 255, 0))
-    qp.fillRect(QRectF(r.x(), r.y(), r.width(), hl_h), highlight)
-    qp.restore()
-    qp.setPen(QPen(QColor(255, 255, 255, border_alpha), 1))
-    qp.setBrush(Qt.NoBrush)
-    qp.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
 
 
 
@@ -1847,36 +1772,19 @@ class ParameterConsole(QWidget):
 # Move Log
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class MoveLog(QTextEdit):
+class MoveLog(BaseMoveLog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setReadOnly(True)
         self.setFont(QFont("Consolas", 10))
-        self._lines = []
 
-    def add_move(self, num, player, action):
+    def format_move(self, num, player, action):
         color = C.TEXT if player == 1 else C.DIM
         symbol = "\u25cf" if player == 1 else "\u25cb"  # ● / ○
-        self._lines.append(
+        return (
             f'<span style="color:{C.MUTED}">#{num:2d}</span> '
             f'<span style="color:{color}"><b>{symbol}</b></span> '
             f'<span style="color:{C.DIM}">&rarr; {action_label(action)}</span>')
-        self.setHtml('<br>'.join(self._lines))
-        sb = self.verticalScrollBar()
-        sb.setValue(sb.maximum())
 
-    def clear_log(self):
-        self._lines.clear()
-        self.clear()
-
-    def snapshot(self):
-        return list(self._lines)
-
-    def restore(self, lines):
-        self._lines = list(lines)
-        self.setHtml('<br>'.join(self._lines))
-        sb = self.verticalScrollBar()
-        sb.setValue(sb.maximum())
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1884,19 +1792,10 @@ class MoveLog(QTextEdit):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _aggregate_root_stats_sym_ensemble(raw, sym_ids):
-    """Aggregate root stats with inverse symmetry transform for sym_ensemble mode."""
-    merged = inverse_sym_stats(raw, sym_ids, 'Othello')
-    stats = {}
-    stats['root_N'] = float(merged['root_N'][0])
-    stats['per_tree_N'] = float(raw['root_N'][0])
-    for k in ('root_Q', 'root_M', 'root_D', 'root_P1W', 'root_P2W'):
-        stats[k] = float(merged[k][0])
-    for k in ('N', 'Q', 'prior', 'noise', 'M', 'D', 'P1W', 'P2W'):
-        stats[k] = merged[k][0].copy()
-    return stats
+    return aggregate_root_stats_sym_ensemble(raw, sym_ids, 'Othello')
 
 
-class ContinuousSearchWorker(QThread):
+class _LegacyContinuousSearchWorker(QThread):
     CHUNK = CHUNK
 
     progress = pyqtSignal(dict, object)
@@ -1921,6 +1820,11 @@ class ContinuousSearchWorker(QThread):
         self._wake = threading.Event()
         self._idle = threading.Event()
         self._idle.set()
+
+
+class ContinuousSearchWorker(SymmetrySearchWorker):
+    def __init__(self, parent=None):
+        super().__init__('Othello', _SYM_IDS, chunk=CHUNK, parent=parent)
 
     def set_position(self, bmcts, pv_fn, board, turns, is_ai_turn, threshold,
                      n_trees=1, sym_ensemble=False, vl_batch=1, time_budget=0.0):
