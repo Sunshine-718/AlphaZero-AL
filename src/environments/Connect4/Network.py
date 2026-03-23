@@ -159,7 +159,7 @@ class CNN(Base):
         self.n_actions = out_dim
 
         # Embedding 层
-        self.piece_emb = nn.Embedding(3, embed_dim)    # 0=空, 1=己方, 2=对方
+        self.piece_emb = nn.Embedding(2, embed_dim)    # 0=己方, 1=对方
         self.pos_emb = nn.Embedding(24, embed_dim)     # 24 个轨道 (左右镜像对称)
         self.register_buffer('orbit_map', torch.tensor(_ORBIT_MAP, dtype=torch.long))
 
@@ -226,10 +226,12 @@ class CNN(Base):
     def _embed_state(self, state):
         """将 (B, 3, 6, 7) 状态转为 (B, embed_dim, 6, 7) embedding 表示。"""
         B = state.size(0)
-        # ch0=1 → 己方棋子, ch1=1 → 对方棋子, 两者都为 0 → 空
-        piece_ids = (state[:, 0] + state[:, 1] * 2).long().view(B, _ROWS * _COLS)
-
-        pe = self.piece_emb(piece_ids)           # (B, 42, d)
+        # ch0=1 → 己方棋子, ch1=1 → 对方棋子; 空格位置没有 piece embedding
+        own = state[:, 0].view(B, _ROWS * _COLS)
+        opp = state[:, 1].view(B, _ROWS * _COLS)
+        emb_own = self.piece_emb.weight[0]
+        emb_opp = self.piece_emb.weight[1]
+        pe = own.unsqueeze(-1) * emb_own + opp.unsqueeze(-1) * emb_opp
         po = self.pos_emb(self.orbit_map)        # (42, d)
 
         x = pe + po.unsqueeze(0)                 # (B, 42, d)
