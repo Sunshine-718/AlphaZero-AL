@@ -1071,7 +1071,7 @@ def analyze_nn(model_path, gcfg, device='cpu', output_dir=None):
 def main():
     parser = argparse.ArgumentParser(description='Inspect buffer & NN for key board states')
     parser.add_argument('--game', default='Connect4', choices=list(GAME_CONFIGS.keys()))
-    parser.add_argument('--buffer', default='dataset/dataset.pt')
+    parser.add_argument('--buffer', default=None)
     parser.add_argument('--model', default=None)
     parser.add_argument('--best', action='store_true', help='Use best model')
     parser.add_argument('--device', default='cpu')
@@ -1084,6 +1084,10 @@ def main():
     args = parser.parse_args()
 
     gcfg = GAME_CONFIGS[args.game]
+    if args.buffer is None:
+        env_buffer = os.path.join('dataset', f'{args.game}_dataset.pt')
+        legacy_buffer = os.path.join('dataset', 'dataset.pt')
+        args.buffer = env_buffer if os.path.exists(env_buffer) else legacy_buffer
     if args.model is None:
         # Auto-detect latest experiment directory
         from src.pipeline import _latest_experiment_dir

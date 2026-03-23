@@ -51,6 +51,9 @@ class TrainPipeline(ABC):
         self.env = self.module.Env()
         self.game = Game(self.env)
         self.env_dir = f'./params/{env_name}'
+        self.dataset_dir = './dataset'
+        self.dataset_path = os.path.join(self.dataset_dir, f'{env_name}_dataset.pt')
+        self.legacy_dataset_path = os.path.join(self.dataset_dir, 'dataset.pt')
         if exp_id is not None:
             self.exp_id = exp_id
         else:
@@ -420,7 +423,10 @@ class TrainPipeline(ABC):
             run_config = {'env_name': self.env_name, 'model': self.net.name()}
             run_config.update(self.raw_config)
             swanlab.init(project="AlphaZero-AL", experiment_name=self.name, config=run_config)
-            self.buffer.load('./dataset/dataset.pt')
+            if os.path.exists(self.dataset_path):
+                self.buffer.load(self.dataset_path)
+            elif os.path.exists(self.legacy_dataset_path):
+                self.buffer.load(self.legacy_dataset_path)
 
         best_counter = 0
 
@@ -451,8 +457,8 @@ class TrainPipeline(ABC):
                         print('New best policy!!')
                         best_counter += 1
                         self.net.save(self.best)
-                        os.makedirs('dataset', exist_ok=True)
-                        self.buffer.save('./dataset/dataset.pt')
+                        os.makedirs(self.dataset_dir, exist_ok=True)
+                        self.buffer.save(self.dataset_path)
 
             if self.is_ddp:
                 dist.barrier()
