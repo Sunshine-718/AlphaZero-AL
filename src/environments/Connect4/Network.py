@@ -1,4 +1,3 @@
-import math
 import numpy as np
 import torch
 import torch.nn as nn
@@ -18,34 +17,141 @@ _ORBIT_MAP = [
     20, 21, 22, 23, 22, 21, 20,
 ]
 
+_ROWS = 6
+_COLS = 7
+
 
 class ResidualBlock(nn.Module):
-    """
-    Standard Residual Block with BatchNorm, SiLU activation, and Dropout.
-    Conv -> BN -> SiLU -> Dropout -> Conv -> BN -> Add -> SiLU
-    """
-
-    def __init__(self, in_channels, out_channels, dropout_rate=0.):
+    def __init__(self, in_channels, out_channels, kernel_size=3, padding=1, dropout=0.0):
         super().__init__()
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(out_channels)
-        self.silu = nn.SiLU(inplace=True)
-        self.dropout = nn.Dropout2d(p=dropout_rate)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(out_channels)
-
-        self.shortcut = nn.Sequential()
+        self.conv = nn.Conv2d(
+            in_channels,
+            out_channels,
+            kernel_size=kernel_size,
+            padding=padding,
+            bias=True,
+        )
+        self.norm = nn.GroupNorm(1, in_channels)
+        self.dropout = nn.Dropout2d(dropout, inplace=True)
+        self.resid = in_channels == out_channels
 
     def forward(self, x):
-        out = self.silu(self.bn1(self.conv1(x)))
-        out = self.dropout(out)
-        out = self.bn2(self.conv2(out))
-        out += self.shortcut(x)
-        return self.silu(out)
+        residual = x if self.resid else 0
+        x = self.norm(x)
+        x = self.conv(x)
+        x = nn.functional.silu(x)
+        return self.dropout(x) + residual
+
+
+class GatedAttention(nn.Module):
+    def __init__(self, h_dim: int, num_heads: int, dropout: float = 0.0):
+        super().__init__()
+        assert h_dim % num_heads == 0
+        self.num_heads = num_heads
+        self.head_dim = h_dim // num_heads
+        self.prenorm = nn.RMSNorm(h_dim, eps=1e-5)
+        self.qkv_proj = nn.Linear(h_dim, 3 * h_dim, bias=False)
+        self.gate_proj = nn.Linear(h_dim, num_heads, bias=False)
+        self.o_proj = nn.Linear(h_dim, h_dim, bias=False)
+        self.q_norm = nn.RMSNorm(self.head_dim, eps=1e-5)
+        self.k_norm = nn.RMSNorm(self.head_dim, eps=1e-5)
+        self.dropout_p = dropout
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        batch_size, seq_len, dim = x.shape
+        residual = x
+        x = self.prenorm(x)
+
+        qkv = self.qkv_proj(x).view(batch_size, seq_len, 3, self.num_heads, self.head_dim)
+        gate = self.gate_proj(x)
+        q, k, v = qkv.unbind(2)
+
+        q = self.q_norm(q).transpose(1, 2)
+        k = self.k_norm(k).transpose(1, 2)
+        v = v.transpose(1, 2)
+
+        out = nn.functional.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            dropout_p=self.dropout_p if self.training else 0.0,
+        )
+
+        out = out * gate.unsqueeze(-1).transpose(1, 2).sigmoid()
+        out = out.transpose(1, 2).contiguous().view(batch_size, seq_len, dim)
+        return self.o_proj(out) + residual
+
+
+class AttentionBlock(nn.Module):
+    def __init__(self, h_dim, num_heads, dropout=0.0):
+        super().__init__()
+        self.attn = GatedAttention(h_dim, num_heads, dropout)
+
+    def forward(self, x):
+        batch_size, num_channels, height, width = x.shape
+        x = x.reshape(batch_size, num_channels, height * width).transpose(1, 2)
+        return self.attn(x)
+
+
+class ColumnPolicyHead(nn.Module):
+    def __init__(self, h_dim, dropout=0.0, rows=_ROWS, cols=_COLS):
+        super().__init__()
+        self.rows = rows
+        self.cols = cols
+        self.norm = nn.RMSNorm(h_dim, eps=1e-5)
+        self.row_gate = nn.Linear(h_dim, 1)
+        self.fc = nn.Linear(h_dim, h_dim)
+        self.out = nn.Linear(h_dim, 1)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x, action_mask=None):
+        batch_size, _, dim = x.shape
+        x = self.norm(x).reshape(batch_size, self.rows, self.cols, dim).transpose(1, 2)
+        row_scores = self.row_gate(x).squeeze(-1)
+        row_weights = torch.softmax(row_scores, dim=-1)
+        col_feat = (row_weights.unsqueeze(-1) * x).sum(dim=2)
+        col_feat = self.dropout(nn.functional.silu(self.fc(col_feat)))
+        logits = self.out(col_feat).squeeze(-1)
+        if action_mask is not None:
+            logits = logits.masked_fill(~action_mask, -1e9)
+        return nn.functional.log_softmax(logits, dim=-1)
+
+
+class DualHead(nn.Module):
+    def __init__(self, h_dim, n_classes=3, dropout=0.0):
+        super().__init__()
+        self.pool_norm = nn.RMSNorm(h_dim, eps=1e-5)
+        self.pool_fc = nn.Linear(h_dim, h_dim)
+        self.pool_drop = nn.Dropout(dropout)
+        self.norm = nn.RMSNorm(h_dim, eps=1e-5)
+        self.fc = nn.Linear(h_dim, h_dim)
+        self.out_norm = nn.RMSNorm(h_dim, eps=1e-5)
+        self.value_out = nn.Linear(h_dim, n_classes)
+        self.aux_out = nn.Linear(h_dim, 1)
+
+    def forward(self, x):
+        x = x.mean(dim=1)
+        x = x + self.pool_drop(nn.functional.silu(self.pool_fc(self.pool_norm(x))))
+        h = self.out_norm(nn.functional.silu(self.fc(self.norm(x))))
+        value = nn.functional.log_softmax(self.value_out(h), dim=-1)
+        moves_left = torch.sigmoid(self.aux_out(h).squeeze(-1))
+        return value, moves_left
 
 
 class CNN(Base):
-    def __init__(self, lr, embed_dim=32, h_dim=64, out_dim=7, dropout=0.2, device='cpu', num_res_blocks=3, policy_lr_scale=0.3):
+    aux_target_offset = 42
+
+    def __init__(
+        self,
+        lr,
+        embed_dim=32,
+        h_dim=64,
+        out_dim=7,
+        dropout=0.2,
+        device='cpu',
+        num_res_blocks=3,
+        policy_lr_scale=0.3,
+    ):
         super().__init__()
         self.embed_dim = embed_dim
         self.in_dim = 3  # 保持与 server.py ReplayBuffer 的兼容性
@@ -58,91 +164,46 @@ class CNN(Base):
         self.register_buffer('orbit_map', torch.tensor(_ORBIT_MAP, dtype=torch.long))
 
         # 6x7 board with padding=2 → 8x9 feature maps
-        policy_conv_flat = 5 * 8 * 9
-
         # Body: Stem + Residual Blocks
         self.hidden = nn.Sequential(
-            nn.Conv2d(embed_dim, h_dim, kernel_size=3, padding=2, bias=False),
-            nn.BatchNorm2d(h_dim),
-            nn.SiLU(inplace=True),
-            *[ResidualBlock(h_dim, h_dim, dropout_rate=dropout) for _ in range(num_res_blocks)]
+            nn.Conv2d(embed_dim, h_dim, kernel_size=3, padding=1),
+            nn.SiLU(True),
+            *[ResidualBlock(h_dim, h_dim, dropout=dropout) for _ in range(num_res_blocks)],
+            AttentionBlock(h_dim, 4, dropout),
         )
 
         # Policy head: conv → flatten → linear → log_softmax
-        self.policy_head = nn.Sequential(
-            nn.Conv2d(h_dim, 5, kernel_size=1, bias=True),
-            nn.SiLU(inplace=True),
-            nn.Flatten(),
-            nn.LayerNorm(policy_conv_flat),
-            nn.Linear(policy_conv_flat, out_dim),
-            nn.LogSoftmax(dim=-1)
-        )
+        self.policy_head = ColumnPolicyHead(h_dim, dropout)
 
         # Value head: WDL (draw, p1_win, p2_win)
-        self.value_head = nn.Sequential(
-            nn.Conv2d(h_dim, 5, kernel_size=1, bias=True),
-            nn.SiLU(inplace=True),
-            nn.Flatten(),
-            nn.Linear(policy_conv_flat, policy_conv_flat),
-            nn.SiLU(inplace=True),
-            nn.LayerNorm(policy_conv_flat),
-            nn.Linear(policy_conv_flat, 3),
-            nn.LogSoftmax(dim=-1)
-        )
+        self.dual_head = DualHead(h_dim, 3, dropout)
 
         # Auxiliary head: moves to end, 0-42
-        self.steps_head = nn.Sequential(
-            nn.Conv2d(h_dim, 5, kernel_size=1, bias=True),
-            nn.SiLU(inplace=True),
-            nn.Flatten(),
-            nn.LayerNorm(policy_conv_flat),
-            nn.Linear(policy_conv_flat, 43),
-            nn.LogSoftmax(dim=-1)
-        )
-
         self.apply(self.init_weights)
-        nn.init.constant_(self.policy_head[-2].weight, 0)
-        nn.init.constant_(self.value_head[-2].weight, 0)
-        nn.init.constant_(self.steps_head[-2].weight, 0)
+        nn.init.constant_(self.policy_head.out.weight, 0)
+        nn.init.constant_(self.dual_head.value_out.weight, 0)
+        nn.init.constant_(self.dual_head.aux_out.weight, 0)
 
         self.opt = torch.optim.AdamW([
             {'params': self.hidden.parameters()},
-            {'params': self.value_head.parameters()},
-            {'params': self.steps_head.parameters()},
-            {'params': self.piece_emb.parameters(), 'weight_decay': 1e-4},
-            {'params': self.pos_emb.parameters(), 'weight_decay': 1e-4},
+            {'params': self.dual_head.parameters()},
+            {'params': self.piece_emb.parameters(), 'weight_decay': 0},
+            {'params': self.pos_emb.parameters(), 'weight_decay': 0},
             {'params': self.policy_head.parameters(), 'lr': lr * policy_lr_scale},
         ], lr=lr, weight_decay=1e-2)
 
         scheduler_warmup = LinearLR(self.opt, start_factor=0.001, total_iters=100)
         scheduler_train = LinearLR(self.opt, start_factor=1, end_factor=0.1, total_iters=1000)
-        self.scheduler = SequentialLR(self.opt, schedulers=[scheduler_warmup, scheduler_train], milestones=[100])
+        self.scheduler = SequentialLR(
+            self.opt,
+            schedulers=[scheduler_warmup, scheduler_train],
+            milestones=[100],
+        )
         self.to(self.device)
 
     def init_weights(self, m):
         if isinstance(m, nn.Embedding):
-            if m is self.piece_emb:
-                # 正交初始化: 空/己方/对方 三向量两两正交，等距分布
-                nn.init.orthogonal_(m.weight)
-            elif m is self.pos_emb:
-                # 正交初始化 + 按战略价值缩放范数
-                # 行0=顶行(最难填到), 行5=底行(最先填); 列0=边, 列3=中心
-                nn.init.orthogonal_(m.weight)
-                norm_scale = torch.tensor([
-                    # row 0 (top): col 0, 1, 2, 3
-                    0.30, 0.35, 0.40, 0.45,
-                    # row 1
-                    0.40, 0.50, 0.60, 0.65,
-                    # row 2
-                    0.50, 0.60, 0.75, 0.80,
-                    # row 3
-                    0.60, 0.70, 0.85, 0.90,
-                    # row 4
-                    0.65, 0.75, 0.90, 0.95,
-                    # row 5 (bottom): most accessible
-                    0.70, 0.80, 0.95, 1.00,
-                ])
-                m.weight.data.mul_(norm_scale.unsqueeze(1))
+            nn.init.orthogonal_(m.weight)
             return
         if isinstance(m, (nn.Conv2d, nn.Linear)):
             nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
@@ -152,58 +213,74 @@ class CNN(Base):
     def name(self):
         return 'CNN'
 
+    @staticmethod
+    def _normalize_action_mask(action_mask, device):
+        if action_mask is None:
+            return None
+        if isinstance(action_mask, np.ndarray):
+            action_mask = torch.from_numpy(action_mask)
+        if action_mask.ndim == 1:
+            action_mask = action_mask.unsqueeze(0)
+        return action_mask.to(device=device, dtype=torch.bool)
+
     def _embed_state(self, state):
         """将 (B, 3, 6, 7) 状态转为 (B, embed_dim, 6, 7) embedding 表示。"""
         B = state.size(0)
         # ch0=1 → 己方棋子, ch1=1 → 对方棋子, 两者都为 0 → 空
-        piece_ids = (state[:, 0] + state[:, 1] * 2).long().view(B, 42)
+        piece_ids = (state[:, 0] + state[:, 1] * 2).long().view(B, _ROWS * _COLS)
 
         pe = self.piece_emb(piece_ids)           # (B, 42, d)
         po = self.pos_emb(self.orbit_map)        # (42, d)
 
         x = pe + po.unsqueeze(0)                 # (B, 42, d)
-        return x.permute(0, 2, 1).view(B, self.embed_dim, 6, 7)
+        return x.permute(0, 2, 1).view(B, self.embed_dim, _ROWS, _COLS)
 
     def forward(self, x, action_mask=None):
+        action_mask = self._normalize_action_mask(action_mask, x.device)
         x = self._embed_state(x)
         hidden = self.hidden(x)
-        log_prob = self.policy_head(hidden)
-        value = self.value_head(hidden)
-        steps_pred = self.steps_head(hidden)
+        log_prob = self.policy_head(hidden, action_mask)
+        value, steps_pred = self.dual_head(hidden)
         return log_prob, value, steps_pred
 
-    @torch.no_grad()
-    def policy(self, state):
+    def _to_state_tensor(self, state):
         if isinstance(state, np.ndarray):
-            state = torch.from_numpy(state).float().to(self.device)
-        x = self._embed_state(state)
-        hidden = self.hidden(x)
-        return self.policy_head(hidden).exp().cpu().numpy()
+            state = torch.from_numpy(state)
+        return state.to(self.device, dtype=torch.float32)
 
     @torch.no_grad()
-    def value(self, state):
-        x = self._embed_state(state)
-        hidden = self.hidden(x)
-        return self.value_head(hidden).exp().cpu().numpy()
+    def policy(self, state, action_mask=None):
+        state = self._to_state_tensor(state)
+        action_mask = self._normalize_action_mask(action_mask, state.device)
+        with torch.autocast(self.device, dtype=torch.bfloat16, enabled=self.device != 'cpu'):
+            return self(state, action_mask=action_mask)[0].exp().cpu().numpy()
 
     @torch.no_grad()
-    def predict(self, state):
-        t = torch.from_numpy(state)
+    def value(self, state, action_mask=None):
+        state = self._to_state_tensor(state)
+        action_mask = self._normalize_action_mask(action_mask, state.device)
+        with torch.autocast(self.device, dtype=torch.bfloat16, enabled=self.device != 'cpu'):
+            return self(state, action_mask=action_mask)[1].exp().cpu().numpy()
+
+    @torch.no_grad()
+    def predict(self, state, action_mask=None):
+        t = torch.from_numpy(state) if isinstance(state, np.ndarray) else state
         if self.device != 'cpu':
             t = t.pin_memory().to(self.device, dtype=torch.float32, non_blocking=True)
         else:
-            t = t.float()
-        x = self._embed_state(t)
-        hidden = self.hidden(x)
-        log_prob = self.policy_head(hidden)
-        value_log_prob = self.value_head(hidden)
-        log_steps = self.aux_head(hidden)
-        wdl = value_log_prob.exp()  # (batch, 3)
+            t = t.to(self.device, dtype=torch.float32)
+        action_mask = self._normalize_action_mask(action_mask, t.device)
+        with torch.autocast(self.device, dtype=torch.bfloat16, enabled=self.device != 'cpu'):
+            log_prob, value_log_prob, steps_norm = self(t, action_mask=action_mask)
+        wdl = value_log_prob.exp()
+        expected_steps = steps_norm * float(self.aux_target_offset)
 
-        steps_prob = log_steps.exp()
-        idx = torch.arange(43, dtype=torch.float32, device=self.device)
-        expected_steps = (steps_prob * idx).sum(dim=1)
-
+        if self.device != 'cpu':
+            p = log_prob.float().exp().to('cpu', non_blocking=True)
+            w = wdl.float().to('cpu', non_blocking=True)
+            m = expected_steps.float().view(-1, 1).to('cpu', non_blocking=True)
+            torch.cuda.synchronize()
+            return p.numpy(), w.numpy(), m.numpy()
         return (log_prob.exp().cpu().numpy(),
                 wdl.cpu().numpy(),
                 expected_steps.cpu().view(-1, 1).numpy())
