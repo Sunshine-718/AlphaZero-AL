@@ -55,6 +55,22 @@ class GatedAttention(nn.Module):
         self.q_norm = nn.RMSNorm(self.head_dim, eps=1e-5)
         self.k_norm = nn.RMSNorm(self.head_dim, eps=1e-5)
         self.dropout_p = dropout
+        self._init_uniform_attention()
+
+    def _init_uniform_attention(self):
+        """Initialize attention to start from a uniform all-token distribution.
+
+        q/k = 0 => attention logits are all zeros, so softmax is uniform.
+        Keep v non-zero and o_proj small so the branch stays trainable while
+        remaining close to an identity residual at initialization.
+        """
+        h_dim = self.num_heads * self.head_dim
+        with torch.no_grad():
+            self.qkv_proj.weight[:h_dim].zero_()          # q
+            self.qkv_proj.weight[h_dim:2 * h_dim].zero_()  # k
+            nn.init.xavier_uniform_(self.qkv_proj.weight[2 * h_dim:])  # v
+            self.gate_proj.weight.zero_()                # sigmoid(0) = 0.5
+            nn.init.xavier_uniform_(self.o_proj.weight, gain=1e-2)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, S, D = x.shape
@@ -167,6 +183,7 @@ class CNN(Base):
         self.dual_head = DualHead(h_dim, 3, dropout)
 
         self.apply(self.init_weights)
+        self._reset_attention_uniform_init()
         nn.init.constant_(self.policy_head.out.weight, 0)
         nn.init.constant_(self.dual_head.value_out.weight, 0)
         nn.init.constant_(self.dual_head.aux_out.weight, 0)
@@ -196,6 +213,11 @@ class CNN(Base):
 
     def name(self):
         return 'CNN'
+
+    def _reset_attention_uniform_init(self):
+        for module in self.modules():
+            if isinstance(module, GatedAttention):
+                module._init_uniform_attention()
 
     def load_state_dict(self, state_dict, strict=True, assign=False):
         piece_key = 'piece_emb.weight'
