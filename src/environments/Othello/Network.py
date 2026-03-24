@@ -60,14 +60,14 @@ class GatedAttention(nn.Module):
     def _init_uniform_attention(self):
         """Initialize attention to start from a uniform all-token distribution.
 
-        q/k = 0 => attention logits are all zeros, so softmax is uniform.
-        Keep v non-zero and o_proj small so the branch stays trainable while
-        remaining close to an identity residual at initialization.
+        q = 0 => attention logits are all zeros for every query regardless of k,
+        so softmax is uniform. Keep k/v non-zero and o_proj small so the branch
+        stays trainable while remaining close to an identity residual at init.
         """
         h_dim = self.num_heads * self.head_dim
         with torch.no_grad():
             self.qkv_proj.weight[:h_dim].zero_()          # q
-            self.qkv_proj.weight[h_dim:2 * h_dim].zero_()  # k
+            nn.init.xavier_uniform_(self.qkv_proj.weight[h_dim:2 * h_dim])  # k
             nn.init.xavier_uniform_(self.qkv_proj.weight[2 * h_dim:])  # v
             self.gate_proj.weight.zero_()                # sigmoid(0) = 0.5
             nn.init.xavier_uniform_(self.o_proj.weight, gain=1e-2)
@@ -187,7 +187,6 @@ class CNN(Base):
         nn.init.constant_(self.policy_head.out.weight, 0)
         nn.init.constant_(self.dual_head.value_out.weight, 0)
         nn.init.constant_(self.dual_head.aux_out.weight, 0)
-        nn.init.constant_(self.phase_emb.weight, 0)
 
         self.opt = torch.optim.AdamW([
             {'params': self.hidden.parameters()},
