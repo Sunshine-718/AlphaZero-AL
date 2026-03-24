@@ -273,6 +273,7 @@ class AttentionExtractor:
         self._gate_raw = None
         self._num_heads = None
         self._handles = []
+        self._capture_thread_id = None
 
         from src.symmetry import SYM_REGISTRY
         reg = SYM_REGISTRY['Connect4']
@@ -282,12 +283,18 @@ class AttentionExtractor:
         self._perms = reg['board_perms']
 
     def _hook_q(self, module, input, output):
+        if threading.get_ident() != self._capture_thread_id:
+            return
         self._q = output.detach().float()
 
     def _hook_k(self, module, input, output):
+        if threading.get_ident() != self._capture_thread_id:
+            return
         self._k = output.detach().float()
 
     def _hook_gate(self, module, input, output):
+        if threading.get_ident() != self._capture_thread_id:
+            return
         gate = output.detach().float()
         if self._num_heads is not None and gate.shape[-1] != self._num_heads:
             gate = gate[..., -self._num_heads:]
@@ -309,11 +316,21 @@ class AttentionExtractor:
         for h in self._handles:
             h.remove()
         self._handles.clear()
+        self._capture_thread_id = None
         self._q = self._k = self._gate_raw = None
+
+    def begin_capture(self):
+        self._capture_thread_id = threading.get_ident()
+        self._q = self._k = self._gate_raw = None
+
+    def end_capture(self):
+        self._capture_thread_id = None
 
     def get_weights(self):
         """Return symmetry-averaged attention weights with shape (H, 42, 42)."""
         if self._q is None or self._k is None:
+            return None
+        if self._q.shape != self._k.shape:
             return None
 
         q = self._q.permute(0, 2, 1, 3)
@@ -1997,6 +2014,7 @@ class Connect4GUI(QWidget):
         self.player_color = 1
         self.mode = MODE_HVA
         self.net2 = None         # second network for AvA P2 side
+        self._p2_weights_linked = True
         self._n_trees = _AUTO_N_TREES
         self.move_count = 0
         self.animating = False
@@ -2145,12 +2163,13 @@ class Connect4GUI(QWidget):
 
         self._history = []
         self._attn_extractor = AttentionExtractor()
+        self._attn_net = None
 
         self._reload_model()
 
         # ── Connect signals ─────────────────────────────────────────────────
-        _model_delayed = lambda _=None: self.settings_timer.start(400)
-        self.console.model_type_cb.currentIndexChanged.connect(_model_delayed)
+        self.console.model_type_cb.currentIndexChanged.connect(
+            self._on_primary_model_changed)
 
         _param_delayed = lambda _=None: self.param_timer.start(150)
         self.console.n_playout_spin.valueChanged.connect(self._on_sims_changed)
@@ -2169,7 +2188,7 @@ class Connect4GUI(QWidget):
         self.console.mode_cb.currentIndexChanged.connect(self._on_mode_changed)
         self.console.player_cb.currentIndexChanged.connect(self._on_player_changed)
         self.console.model_type_cb2.currentIndexChanged.connect(
-            lambda _: self._reload_net2_delayed())
+            self._on_p2_model_changed)
         self.restart_btn.clicked.connect(self._reload_and_restart)
         self.undo_btn.clicked.connect(self._undo)
         self.reset_btn.clicked.connect(self.console.reset_defaults)
@@ -2318,6 +2337,7 @@ class Connect4GUI(QWidget):
             self.status.set_result("MODEL ERROR", C.RED_HEX)
 
         self._attn_extractor.attach(self.net)
+        self._attn_net = self.net
         self._sync_attn_head_selector()
 
         p = self.az_player
@@ -2416,11 +2436,41 @@ class Connect4GUI(QWidget):
             return self.az_player2
         return self.az_player
 
+    def _sync_p2_weights_selector(self, force=False):
+        if not force and not self._p2_weights_linked:
+            return
+        idx = self.console.model_type_cb.currentIndex()
+        if self.console.model_type_cb2.currentIndex() == idx:
+            self._p2_weights_linked = True
+            return
+        prev = self.console.model_type_cb2.blockSignals(True)
+        try:
+            self.console.model_type_cb2.setCurrentIndex(idx)
+        finally:
+            self.console.model_type_cb2.blockSignals(prev)
+        self._p2_weights_linked = True
+
+    def _on_primary_model_changed(self, _=None):
+        self._sync_p2_weights_selector()
+        self.settings_timer.start(400)
+
+    def _on_p2_model_changed(self, _=None):
+        self._p2_weights_linked = (
+            self.console.model_type_cb2.currentIndex()
+            == self.console.model_type_cb.currentIndex()
+        )
+        self._reload_net2_delayed()
+
     def _pv_fn_for_turn(self):
         """Return the correct pv_fn for the current turn, considering AvA."""
         if self.mode == MODE_AVA and self.net2 is not None and self.env.turn == -1:
             return self.net2
         return self.az_player.pv_fn
+
+    def _analysis_net_for_turn(self):
+        if self.mode == MODE_AVA and self.net2 is not None and self.env.turn == -1:
+            return self.net2
+        return self.net
 
     def _on_mode_changed(self):
         new_mode = self.console.mode_cb.currentIndex()
@@ -2432,6 +2482,7 @@ class Connect4GUI(QWidget):
         self.console._update_game_visibility(new_mode)
 
         if new_mode == MODE_AVA:
+            self._sync_p2_weights_selector()
             self._ensure_net2()
 
         # Reset MCTS trees — fresh search from current position
@@ -2496,9 +2547,11 @@ class Connect4GUI(QWidget):
             alpha=p._alpha, noise_epsilon=p._noise_eps,
             is_selfplay=0, cache_size=p._cache_size,
             fpu_reduction=p._fpu_reduction, use_symmetry=False,
-            game_name='Connect4',
+            game_name=p._game_name, board_converter=p._board_converter,
+            mlh_slope=p._mlh_slope, mlh_cap=p._mlh_cap,
             score_utility_factor=p._score_utility_factor,
             score_scale=p._score_scale,
+            value_decay=p._value_decay,
             vl_batch=p._vl_batch,
             n_trees=1,
             sym_ensemble=_AUTO_SYM_ENSEMBLE)
@@ -2600,6 +2653,10 @@ class Connect4GUI(QWidget):
 
     def _update_analysis(self):
         with torch.no_grad():
+            net = self._analysis_net_for_turn()
+            if self._attn_net is not net:
+                self._attn_extractor.attach(net)
+                self._attn_net = net
             base = self.env.current_state()
             sym_states = []
             for s in _SYM_IDS:
@@ -2607,8 +2664,12 @@ class Connect4GUI(QWidget):
                                for c in range(3)], axis=0)
                 sym_states.append(st)
             batch = np.stack(sym_states)
-            t = torch.from_numpy(batch).float().to(self.net.device)
-            _, vl, sl, *_ = self.net(t)
+            t = torch.from_numpy(batch).float().to(net.device)
+            self._attn_extractor.begin_capture()
+            try:
+                _, vl, sl, *_ = net(t)
+            finally:
+                self._attn_extractor.end_capture()
 
             vp = vl[0].exp().cpu().tolist()
             draw_pct = vp[0] * 100
@@ -2619,7 +2680,7 @@ class Connect4GUI(QWidget):
             self.status.set_nn_rates(win_pct, draw_pct, lose_pct)
 
             steps_norm = sl[0].reshape(-1)[0].detach().cpu()
-            expected = float(steps_norm.item()) * float(self.net.aux_target_offset)
+            expected = float(steps_norm.item()) * float(net.aux_target_offset)
             self.status.set_nn_steps(expected)
 
             self.board.attn_weights = self._attn_extractor.get_weights()
@@ -2836,7 +2897,6 @@ class Connect4GUI(QWidget):
         self.status.set_thinking(elapsed)
         self._stop_scan()
 
-        K = _AUTO_N_TREES
         ai_turn = self.env.turn
         action = int(np.argmax(visits))
 
@@ -2879,40 +2939,6 @@ class Connect4GUI(QWidget):
                 self.hint_root_stats.clear_data()
                 self.board.overlay_data = None
             self.hint_child_table.update()
-
-        env_copy = self.env.copy()
-        env_copy.step(action)
-        # Determine which player searches next (env_copy.turn is the next turn)
-        if self.mode == MODE_AVA and self.az_player2 is not None and env_copy.turn == -1:
-            next_player = self.az_player2
-        else:
-            next_player = self.az_player
-        next_board = np.stack([apply_sym_board(env_copy.board, s, 'Connect4')
-                               for s in _SYM_IDS])
-        next_turns = np.full(K, env_copy.turn, dtype=np.int32)
-        threshold = self.console.n_playout_spin.value()
-        tb = self.console.time_budget_spin.value()
-
-        if not env_copy.done():
-            # Select correct pv_fn for the next turn
-            if self.mode == MODE_AVA and self.net2 is not None and env_copy.turn == -1:
-                next_pv_fn = self.net2
-            else:
-                next_pv_fn = self.az_player.pv_fn
-            if self.mode == MODE_AVA:
-                next_is_ai = True
-            elif self.mode == MODE_HVH:
-                next_is_ai = False
-            else:
-                next_is_ai = (env_copy.turn != self.player_color)
-            self.worker.set_position(next_player.mcts, next_pv_fn,
-                                     next_board, next_turns,
-                                     is_ai_turn=next_is_ai, threshold=threshold,
-                                     n_trees=K,
-                                     vl_batch=self.az_player._vl_batch,
-                                     time_budget=tb)
-            if not self._search_paused:
-                self.worker.resume()
 
         row = self.board.find_drop_row(action)
         if row >= 0:
@@ -2964,9 +2990,7 @@ class Connect4GUI(QWidget):
         next_ai = self._is_ai_turn()
         if next_ai:
             self._start_scan()
-        # NO SEARCH 模式下需要显式触发下一步（正常模式下 worker 已在动画前预启动）
-        if self.console.no_search_check.isChecked():
-            self._resume_search(is_ai_turn=next_ai)
+        self._resume_search(is_ai_turn=next_ai)
 
     def _after_human_anim(self, col):
         current_player = self.env.turn

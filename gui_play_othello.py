@@ -324,6 +324,7 @@ class AttentionExtractor:
         self._gate_raw = None  # (B, seq, H) — raw gate logits (before sigmoid)
         self._num_heads = None
         self._handles = []
+        self._capture_thread_id = None
         # Precompute inverse permutation tables for Othello symmetries
         # All Othello Klein-4 symmetries are self-inverse (involutions)
         from src.symmetry import SYM_REGISTRY
@@ -332,12 +333,18 @@ class AttentionExtractor:
         self._perms = reg['board_perms']     # {sym_id: np.ndarray(64,)}
 
     def _hook_q(self, module, input, output):
+        if threading.get_ident() != self._capture_thread_id:
+            return
         self._q = output.detach()
 
     def _hook_k(self, module, input, output):
+        if threading.get_ident() != self._capture_thread_id:
+            return
         self._k = output.detach()
 
     def _hook_gate(self, module, input, output):
+        if threading.get_ident() != self._capture_thread_id:
+            return
         gate = output.detach()
         # Newer Othello nets expose gate logits directly via gate_proj: (B, S, H).
         # Older experiments may still use a fused qkvg projection, where gate lives
@@ -362,7 +369,15 @@ class AttentionExtractor:
         for h in self._handles:
             h.remove()
         self._handles.clear()
+        self._capture_thread_id = None
         self._q = self._k = self._gate_raw = None
+
+    def begin_capture(self):
+        self._capture_thread_id = threading.get_ident()
+        self._q = self._k = self._gate_raw = None
+
+    def end_capture(self):
+        self._capture_thread_id = None
 
     def get_weights(self):
         """Compute attention weights from captured Q, K.
@@ -373,6 +388,8 @@ class AttentionExtractor:
         Returns: np.ndarray (num_heads, 64, 64) or None.
         """
         if self._q is None or self._k is None:
+            return None
+        if self._q.shape != self._k.shape:
             return None
         # q_norm output: (B, S, H, D) — S=64 or 65 (with pass token)
         B, S = self._q.shape[0], self._q.shape[1]
@@ -1948,6 +1965,7 @@ class OthelloGUI(QWidget):
         self.player_color = 1    # 1 = Black (first player)
         self.mode = MODE_HVA
         self.net2 = None         # second network for AvA white side
+        self._p2_weights_linked = True
         self._n_trees = _AUTO_N_TREES
         self.move_count = 0
         self._book_on = False    # book active for current game
@@ -2110,12 +2128,13 @@ class OthelloGUI(QWidget):
 
         # ── Attention extractor ──────────────────────────────────────────
         self._attn_extractor = AttentionExtractor()
+        self._attn_net = None
 
         self._reload_model()
 
         # ── Connect signals ─────────────────────────────────────────────────
-        def _model_delayed(_=None): return self.settings_timer.start(400)
-        self.console.model_type_cb.currentIndexChanged.connect(_model_delayed)
+        self.console.model_type_cb.currentIndexChanged.connect(
+            self._on_primary_model_changed)
 
         def _param_delayed(_=None): return self.param_timer.start(150)
         self.console.n_playout_spin.valueChanged.connect(self._on_sims_changed)
@@ -2133,7 +2152,7 @@ class OthelloGUI(QWidget):
         self.console.mode_cb.currentIndexChanged.connect(self._on_mode_changed)
         self.console.player_cb.currentIndexChanged.connect(self._on_player_changed)
         self.console.model_type_cb2.currentIndexChanged.connect(
-            lambda _: self._reload_net2_delayed())
+            self._on_p2_model_changed)
         self.restart_btn.clicked.connect(self._reload_and_restart)
         self.undo_btn.clicked.connect(self._undo)
         self.pass_btn.clicked.connect(self._human_pass)
@@ -2281,6 +2300,7 @@ class OthelloGUI(QWidget):
 
         # Re-attach attention hooks to new model
         self._attn_extractor.attach(self.net)
+        self._attn_net = self.net
         self._sync_attn_head_selector()
 
         p = self.az_player
@@ -2378,11 +2398,41 @@ class OthelloGUI(QWidget):
             return self.az_player2
         return self.az_player
 
+    def _sync_p2_weights_selector(self, force=False):
+        if not force and not self._p2_weights_linked:
+            return
+        idx = self.console.model_type_cb.currentIndex()
+        if self.console.model_type_cb2.currentIndex() == idx:
+            self._p2_weights_linked = True
+            return
+        prev = self.console.model_type_cb2.blockSignals(True)
+        try:
+            self.console.model_type_cb2.setCurrentIndex(idx)
+        finally:
+            self.console.model_type_cb2.blockSignals(prev)
+        self._p2_weights_linked = True
+
+    def _on_primary_model_changed(self, _=None):
+        self._sync_p2_weights_selector()
+        self.settings_timer.start(400)
+
+    def _on_p2_model_changed(self, _=None):
+        self._p2_weights_linked = (
+            self.console.model_type_cb2.currentIndex()
+            == self.console.model_type_cb.currentIndex()
+        )
+        self._reload_net2_delayed()
+
     def _pv_fn_for_turn(self):
         """Return the correct pv_fn for the current turn, considering AvA."""
         if self.mode == MODE_AVA and self.net2 is not None and self.env.turn == -1:
             return self.net2
         return self.az_player.pv_fn
+
+    def _analysis_net_for_turn(self):
+        if self.mode == MODE_AVA and self.net2 is not None and self.env.turn == -1:
+            return self.net2
+        return self.net
 
     def _on_mode_changed(self):
         new_mode = self.console.mode_cb.currentIndex()
@@ -2394,6 +2444,7 @@ class OthelloGUI(QWidget):
         self.console._update_game_visibility(new_mode)
 
         if new_mode == MODE_AVA:
+            self._sync_p2_weights_selector()
             self._ensure_net2()
 
         # Reset MCTS trees — fresh search from current position
@@ -2465,9 +2516,10 @@ class OthelloGUI(QWidget):
             alpha=p._alpha, noise_epsilon=p._noise_eps,
             is_selfplay=0, cache_size=p._cache_size,
             fpu_reduction=p._fpu_reduction, use_symmetry=False,
-            game_name='Othello',
+            game_name=p._game_name, board_converter=p._board_converter,
             score_utility_factor=p._score_utility_factor,
             score_scale=p._score_scale,
+            value_decay=p._value_decay,
             vl_batch=p._vl_batch,
             n_trees=1,
             sym_ensemble=_AUTO_SYM_ENSEMBLE)
@@ -2593,6 +2645,10 @@ class OthelloGUI(QWidget):
         self.status.set_disc_count(black_count, white_count)
 
         with torch.no_grad():
+            net = self._analysis_net_for_turn()
+            if self._attn_net is not net:
+                self._attn_extractor.attach(net)
+                self._attn_net = net
             base = self.env.current_state()  # (1, 3, 8, 8)
             # Build symmetry-augmented batch (K states) for attention ensemble
             sym_states = []
@@ -2601,8 +2657,12 @@ class OthelloGUI(QWidget):
                                for c in range(3)], axis=0)  # (3, 8, 8)
                 sym_states.append(st)
             batch = np.stack(sym_states)  # (K, 3, 8, 8)
-            t = torch.from_numpy(batch).float().to(self.net.device)
-            _, vl, sl, *_ = self.net(t)
+            t = torch.from_numpy(batch).float().to(net.device)
+            self._attn_extractor.begin_capture()
+            try:
+                _, vl, sl, *_ = net(t)
+            finally:
+                self._attn_extractor.end_capture()
 
             # Use identity (index 0) for NN stats display
             vp = vl[0].exp().cpu().tolist()
@@ -2614,7 +2674,7 @@ class OthelloGUI(QWidget):
             self.status.set_nn_rates(win_pct, draw_pct, lose_pct)
 
             aux_0 = sl[0].detach().cpu()
-            offset = float(getattr(self.net, 'aux_target_offset', 0))
+            offset = float(getattr(net, 'aux_target_offset', 0))
             if aux_0.ndim == 0 or aux_0.numel() == 1:
                 # Current Othello models emit a normalized disc-diff scalar.
                 expected = aux_0.item() * offset if offset > 0 else aux_0.item()
