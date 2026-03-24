@@ -147,8 +147,9 @@ class CNN(Base):
         self.n_actions = out_dim
 
         # Embedding 层
-        self.piece_emb = nn.Embedding(2, embed_dim)    # 0=己方, 1=对方 (空格无 piece embedding)
+        self.piece_emb = nn.Embedding(3, embed_dim)    # 0=空格, 1=己方, 2=对方
         self.pos_emb = nn.Embedding(10, embed_dim)     # 10 个轨道 (D4 对称)
+        self.phase_emb = nn.Embedding(2, embed_dim)    # 0=opening, 1=endgame
         self.register_buffer('orbit_map', torch.tensor(_ORBIT_MAP, dtype=torch.long))
 
         # Body: Stem + Residual Blocks (spatial dims stay 8x8, all convs use padding=1)
@@ -169,12 +170,14 @@ class CNN(Base):
         nn.init.constant_(self.policy_head.out.weight, 0)
         nn.init.constant_(self.dual_head.value_out.weight, 0)
         nn.init.constant_(self.dual_head.aux_out.weight, 0)
+        nn.init.constant_(self.phase_emb.weight, 0)
 
         self.opt = torch.optim.AdamW([
             {'params': self.hidden.parameters()},
             {'params': self.dual_head.parameters()},
             {'params': self.piece_emb.parameters(), 'weight_decay': 0},
             {'params': self.pos_emb.parameters(), 'weight_decay': 0},
+            {'params': self.phase_emb.parameters(), 'weight_decay': 0},
             {'params': self.policy_head.parameters(), 'lr': lr * policy_lr_scale},
         ], lr=lr, weight_decay=1e-2)
 
@@ -194,20 +197,44 @@ class CNN(Base):
     def name(self):
         return 'CNN'
 
+    def load_state_dict(self, state_dict, strict=True, assign=False):
+        piece_key = 'piece_emb.weight'
+        phase_key = 'phase_emb.weight'
+        if phase_key not in state_dict:
+            state_dict = dict(state_dict)
+            state_dict[phase_key] = self.phase_emb.weight.detach().clone()
+        if piece_key in state_dict:
+            piece_w = state_dict[piece_key]
+            if piece_w.ndim == 2 and piece_w.shape[0] == 2 and piece_w.shape[1] == self.embed_dim:
+                # Backward-compat: old checkpoints only stored own/opp embeddings.
+                # Use a zero empty embedding so loaded models preserve prior behavior.
+                upgraded = piece_w.new_zeros((3, piece_w.shape[1]))
+                upgraded[1:] = piece_w
+                if not isinstance(state_dict, dict):
+                    state_dict = dict(state_dict)
+                state_dict[piece_key] = upgraded
+        return super().load_state_dict(state_dict, strict=strict, assign=assign)
+
     def _embed_state(self, state):
         """将 (B, 3, 8, 8) 状态转为 (B, embed_dim, 8, 8) embedding 表示。"""
         B = state.size(0)
-        # 己方=ch0, 对方=ch1; 空格位置无 piece embedding (仅 pos_emb)
-        own = state[:, 0].view(B, 64)       # (B, 64) float 0/1
-        opp = state[:, 1].view(B, 64)       # (B, 64) float 0/1
+        own = state[:, 0].view(B, 64) > 0.5
+        opp = state[:, 1].view(B, 64) > 0.5
 
-        emb_own = self.piece_emb.weight[0]   # (d,)
-        emb_opp = self.piece_emb.weight[1]   # (d,)
-        pe = own.unsqueeze(-1) * emb_own + opp.unsqueeze(-1) * emb_opp  # (B, 64, d)
-        po = self.pos_emb(self.orbit_map)    # (64, d)
+        # piece_id: 0=empty, 1=own, 2=opp
+        piece_id = own.long() + (opp.long() << 1)
+        x = self.piece_emb(piece_id) + self.pos_emb(self.orbit_map).unsqueeze(0)  # (B, 64, d)
 
-        x = pe + po.unsqueeze(0)             # (B, 64, d)
-        return x.permute(0, 2, 1).view(B, self.embed_dim, 8, 8)
+        empty_count = 64.0 - own.float().sum(dim=1) - opp.float().sum(dim=1)
+        phase_t = (1.0 - empty_count / 60.0).clamp(0.0, 1.0)
+        phase = torch.lerp(
+            self.phase_emb.weight[0].unsqueeze(0),
+            self.phase_emb.weight[1].unsqueeze(0),
+            phase_t.unsqueeze(1),
+        )  # (B, d)
+
+        x = x.transpose(1, 2).reshape(B, self.embed_dim, 8, 8)
+        return x + phase.unsqueeze(-1).unsqueeze(-1)
 
     def forward(self, x, action_mask=None):
         x = self._embed_state(x)
