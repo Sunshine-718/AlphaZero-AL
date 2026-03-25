@@ -67,10 +67,10 @@ class GatedAttention(nn.Module):
         h_dim = self.num_heads * self.head_dim
         with torch.no_grad():
             self.qkv_proj.weight[:h_dim].zero_()          # q
-            nn.init.xavier_uniform_(self.qkv_proj.weight[h_dim:2 * h_dim])  # k
-            nn.init.xavier_uniform_(self.qkv_proj.weight[2 * h_dim:])  # v
+            nn.init.orthogonal_(self.qkv_proj.weight[h_dim:2 * h_dim])  # k
+            nn.init.orthogonal_(self.qkv_proj.weight[2 * h_dim:])  # v
             self.gate_proj.weight.zero_()                # sigmoid(0) = 0.5
-            nn.init.xavier_uniform_(self.o_proj.weight, gain=1e-2)
+            nn.init.orthogonal_(self.o_proj.weight)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, S, D = x.shape
