@@ -55,6 +55,22 @@ class GatedAttention(nn.Module):
         self.q_norm = nn.RMSNorm(self.head_dim, eps=1e-5)
         self.k_norm = nn.RMSNorm(self.head_dim, eps=1e-5)
         self.dropout_p = dropout
+        self._init_uniform_attention()
+
+    def _init_uniform_attention(self):
+        """Initialize attention to start from a uniform all-token distribution.
+
+        q = 0 => attention logits are all zeros for every query regardless of k,
+        so softmax is uniform. Keep k/v non-zero and o_proj small so the branch
+        stays trainable while remaining close to an identity residual at init.
+        """
+        h_dim = self.num_heads * self.head_dim
+        with torch.no_grad():
+            self.qkv_proj.weight[:h_dim].zero_()          # q
+            nn.init.xavier_uniform_(self.qkv_proj.weight[h_dim:2 * h_dim])  # k
+            nn.init.xavier_uniform_(self.qkv_proj.weight[2 * h_dim:])  # v
+            self.gate_proj.weight.zero_()                # sigmoid(0) = 0.5
+            nn.init.xavier_uniform_(self.o_proj.weight, gain=1e-2)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, S, D = x.shape
@@ -147,8 +163,9 @@ class CNN(Base):
         self.n_actions = out_dim
 
         # Embedding 层
-        self.piece_emb = nn.Embedding(2, embed_dim)    # 0=己方, 1=对方 (空格无 piece embedding)
+        self.piece_emb = nn.Embedding(3, embed_dim)    # 0=空格, 1=己方, 2=对方
         self.pos_emb = nn.Embedding(10, embed_dim)     # 10 个轨道 (D4 对称)
+        self.phase_emb = nn.Embedding(2, embed_dim)    # 0=opening, 1=endgame
         self.register_buffer('orbit_map', torch.tensor(_ORBIT_MAP, dtype=torch.long))
 
         # Body: Stem + Residual Blocks (spatial dims stay 8x8, all convs use padding=1)
@@ -166,6 +183,7 @@ class CNN(Base):
         self.dual_head = DualHead(h_dim, 3, dropout)
 
         self.apply(self.init_weights)
+        self._reset_attention_uniform_init()
         nn.init.constant_(self.policy_head.out.weight, 0)
         nn.init.constant_(self.dual_head.value_out.weight, 0)
         nn.init.constant_(self.dual_head.aux_out.weight, 0)
@@ -175,6 +193,7 @@ class CNN(Base):
             {'params': self.dual_head.parameters()},
             {'params': self.piece_emb.parameters(), 'weight_decay': 0},
             {'params': self.pos_emb.parameters(), 'weight_decay': 0},
+            {'params': self.phase_emb.parameters(), 'weight_decay': 0},
             {'params': self.policy_head.parameters(), 'lr': lr * policy_lr_scale},
         ], lr=lr, weight_decay=1e-2)
 
@@ -194,20 +213,49 @@ class CNN(Base):
     def name(self):
         return 'CNN'
 
+    def _reset_attention_uniform_init(self):
+        for module in self.modules():
+            if isinstance(module, GatedAttention):
+                module._init_uniform_attention()
+
+    def load_state_dict(self, state_dict, strict=True, assign=False):
+        piece_key = 'piece_emb.weight'
+        phase_key = 'phase_emb.weight'
+        if phase_key not in state_dict:
+            state_dict = dict(state_dict)
+            state_dict[phase_key] = self.phase_emb.weight.detach().clone()
+        if piece_key in state_dict:
+            piece_w = state_dict[piece_key]
+            if piece_w.ndim == 2 and piece_w.shape[0] == 2 and piece_w.shape[1] == self.embed_dim:
+                # Backward-compat: old checkpoints only stored own/opp embeddings.
+                # Use a zero empty embedding so loaded models preserve prior behavior.
+                upgraded = piece_w.new_zeros((3, piece_w.shape[1]))
+                upgraded[1:] = piece_w
+                if not isinstance(state_dict, dict):
+                    state_dict = dict(state_dict)
+                state_dict[piece_key] = upgraded
+        return super().load_state_dict(state_dict, strict=strict, assign=assign)
+
     def _embed_state(self, state):
         """将 (B, 3, 8, 8) 状态转为 (B, embed_dim, 8, 8) embedding 表示。"""
         B = state.size(0)
-        # 己方=ch0, 对方=ch1; 空格位置无 piece embedding (仅 pos_emb)
-        own = state[:, 0].view(B, 64)       # (B, 64) float 0/1
-        opp = state[:, 1].view(B, 64)       # (B, 64) float 0/1
+        own = state[:, 0].view(B, 64) > 0.5
+        opp = state[:, 1].view(B, 64) > 0.5
 
-        emb_own = self.piece_emb.weight[0]   # (d,)
-        emb_opp = self.piece_emb.weight[1]   # (d,)
-        pe = own.unsqueeze(-1) * emb_own + opp.unsqueeze(-1) * emb_opp  # (B, 64, d)
-        po = self.pos_emb(self.orbit_map)    # (64, d)
+        # piece_id: 0=empty, 1=own, 2=opp
+        piece_id = own.long() + (opp.long() << 1)
+        x = self.piece_emb(piece_id) + self.pos_emb(self.orbit_map).unsqueeze(0)  # (B, 64, d)
 
-        x = pe + po.unsqueeze(0)             # (B, 64, d)
-        return x.permute(0, 2, 1).view(B, self.embed_dim, 8, 8)
+        empty_count = 64.0 - own.float().sum(dim=1) - opp.float().sum(dim=1)
+        phase_t = (1.0 - empty_count / 60.0).clamp(0.0, 1.0)
+        phase = torch.lerp(
+            self.phase_emb.weight[0].unsqueeze(0),
+            self.phase_emb.weight[1].unsqueeze(0),
+            phase_t.unsqueeze(1),
+        )  # (B, d)
+
+        x = x.transpose(1, 2).reshape(B, self.embed_dim, 8, 8)
+        return x + phase.unsqueeze(-1).unsqueeze(-1)
 
     def forward(self, x, action_mask=None):
         x = self._embed_state(x)

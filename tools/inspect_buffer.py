@@ -586,10 +586,18 @@ def _cosine_sim(a, b):
     return float(torch.nn.functional.cosine_similarity(a.unsqueeze(0), b.unsqueeze(0)))
 
 
+def _fmt_top_dims(vec, k=6):
+    top_idx = torch.argsort(vec.abs(), descending=True)[:k].tolist()
+    return ', '.join(f'd{idx}={vec[idx]:+.3f}' for idx in top_idx)
+
+
 def analyze_embeddings(net, output_dir, gcfg):
     """分析并可视化 Piece / Position Embedding。"""
     piece_w = net.piece_emb.weight.detach().cpu()    # (n_pieces, d)
     pos_w = net.pos_emb.weight.detach().cpu()        # (n_orbits, d)
+    has_phase = hasattr(net, 'phase_emb')
+    if has_phase:
+        phase_w = net.phase_emb.weight.detach().cpu()  # (2, d)
     has_player = hasattr(net, 'player_emb')
     if has_player:
         player_w = net.player_emb.weight.detach().cpu()  # (2, d)
@@ -624,7 +632,32 @@ def analyze_embeddings(net, output_dir, gcfg):
         piece_table.add_row('L2 dist Opp-Empty', f'{opp_empty_dist:.4f}', '', '', '')
     console.print(piece_table)
 
-    # ── 2. Player Embedding 表格（仅在存在时显示） ──
+    piece_dims_table = Table(title='Piece Embedding Top Dimensions', show_header=True, header_style='bold')
+    piece_dims_table.add_column('Piece', style='bold')
+    piece_dims_table.add_column('Top-|value| dims')
+    for i, name in enumerate(PIECE_NAMES):
+        piece_dims_table.add_row(name, _fmt_top_dims(piece_w[i]))
+    console.print(piece_dims_table)
+
+    # ── 2. Phase Embedding 表格（仅在存在时显示） ──
+    if has_phase:
+        phase_names = ['Opening', 'Endgame']
+        phase_norms = phase_w.norm(dim=1)
+        phase_cos = _cosine_sim(phase_w[0], phase_w[1])
+        phase_dist = float((phase_w[0] - phase_w[1]).norm())
+
+        phase_table = Table(title='Phase Embedding', show_header=True, header_style='bold')
+        phase_table.add_column('', style='bold')
+        phase_table.add_column('L2 Norm', justify='right')
+        phase_table.add_column('Top-|value| dims')
+        for i, name in enumerate(phase_names):
+            phase_table.add_row(name, f'{phase_norms[i]:.4f}', _fmt_top_dims(phase_w[i]))
+        phase_table.add_section()
+        phase_table.add_row('cos(Open, End)', f'{phase_cos:+.4f}', '')
+        phase_table.add_row('L2 dist(Open, End)', f'{phase_dist:.4f}', '')
+        console.print(phase_table)
+
+    # ── 3. Player Embedding 表格（仅在存在时显示） ──
     if has_player:
         player_norms = player_w.norm(dim=1)
         p_cos = _cosine_sim(player_w[0], player_w[1])
@@ -639,7 +672,7 @@ def analyze_embeddings(net, output_dir, gcfg):
         player_table.add_row('L2 dist(P1, P2)', f'{p_dist:.4f}')
         console.print(player_table)
 
-    # ── 3. Position Embedding 表格（关键轨道） ──
+    # ── 4. Position Embedding 表格（关键轨道） ──
     pos_norms = pos_w.norm(dim=1)
     ref_orbit = pos_w[0]
 
@@ -658,10 +691,10 @@ def analyze_embeddings(net, output_dir, gcfg):
         pos_table.add_row(str(orbit_id), label, norm_val, cos_val)
     console.print(pos_table)
 
-    # ── 4. 绘图 ──
+    # ── 5. 绘图 ──
     os.makedirs(output_dir, exist_ok=True)
 
-    # 4-ref. 轨道参考图
+    # 5-ref. 轨道参考图
     orbit_board = np.array(orbit_map).reshape(rows, cols)
     fig, ax = plt.subplots(figsize=(max(6, cols * 0.8), max(5, rows * 0.8)))
     cmap = plt.cm.get_cmap('tab10' if n_orbits <= 10 else 'tab20', n_orbits)
@@ -682,7 +715,7 @@ def analyze_embeddings(net, output_dir, gcfg):
     plt.close(fig)
     console.print(f'    [dim]\\[saved] {path}[/dim]')
 
-    # 4a. Position L2 Norm 热力图
+    # 5a. Position L2 Norm 热力图
     board_norms = pos_norms[orbit_map].reshape(rows, cols).numpy()
     fig, ax = plt.subplots(figsize=(max(6, cols * 0.8), max(5, rows * 0.8)))
     im = ax.imshow(board_norms, cmap='YlOrRd')
@@ -699,7 +732,7 @@ def analyze_embeddings(net, output_dir, gcfg):
     plt.close(fig)
     console.print(f'    [dim]\\[saved] {path}[/dim]')
 
-    # 4b. Position cosine similarity to orbit-0 热力图
+    # 5b. Position cosine similarity to orbit-0 热力图
     cos_to_ref = torch.nn.functional.cosine_similarity(
         pos_w, ref_orbit.unsqueeze(0), dim=1
     )
@@ -719,7 +752,7 @@ def analyze_embeddings(net, output_dir, gcfg):
     plt.close(fig)
     console.print(f'    [dim]\\[saved] {path}[/dim]')
 
-    # 4c. Position Embedding PCA 散点图
+    # 5c. Position Embedding PCA 散点图
     from sklearn.decomposition import PCA
     pca = PCA(n_components=2)
     pos_2d = pca.fit_transform(pos_w.numpy())
@@ -741,7 +774,7 @@ def analyze_embeddings(net, output_dir, gcfg):
     plt.close(fig)
     console.print(f'    [dim]\\[saved] {path}[/dim]')
 
-    # 4d. PCA 前两个主成分的棋盘热力图
+    # 5d. PCA 前两个主成分的棋盘热力图
     orbit_map_t = torch.tensor(orbit_map, dtype=torch.long)
     fig, axes = plt.subplots(1, 2, figsize=(13, max(5, rows * 0.8)))
     for k, ax in enumerate(axes):
@@ -763,7 +796,7 @@ def analyze_embeddings(net, output_dir, gcfg):
     plt.close(fig)
     console.print(f'    [dim]\\[saved] {path}[/dim]')
 
-    # 4e. 轨道余弦相似度矩阵
+    # 5e. 轨道余弦相似度矩阵
     pos_norm = pos_w / pos_w.norm(dim=1, keepdim=True).clamp(min=1e-8)
     cos_matrix = (pos_norm @ pos_norm.T).numpy()
     orbit_labels = [orbit_labels_dict.get(i, str(i)) for i in range(n_orbits)]
@@ -783,7 +816,7 @@ def analyze_embeddings(net, output_dir, gcfg):
     plt.close(fig)
     console.print(f'    [dim]\\[saved] {path}[/dim]')
 
-    # 4f. Piece (+ Player) Embedding PCA 散点图
+    # 5f. Piece (+ Player) Embedding PCA 散点图
     piece_colors = ['#55A868', '#4C72B0', '#DD8452'][:n_pieces]
     piece_markers = (['o', 's', 's'] if n_pieces == 3 else ['s', 's'])[:n_pieces]
     if has_player:
@@ -816,6 +849,62 @@ def analyze_embeddings(net, output_dir, gcfg):
     fig.savefig(path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     console.print(f'    [dim]\\[saved] {path}[/dim]')
+
+    # 5g. Phase Embedding interpolation trajectory
+    if has_phase:
+        t_vals = torch.linspace(0.0, 1.0, 11).unsqueeze(1)
+        phase_traj = torch.lerp(phase_w[0].unsqueeze(0), phase_w[1].unsqueeze(0), t_vals)
+        phase_np = phase_traj.numpy()
+        if np.allclose(phase_np, phase_np[0]):
+            phase_2d = np.column_stack([t_vals.squeeze(1).numpy(), np.zeros(len(t_vals))])
+            phase_x_label = 't'
+            phase_y_label = 'degenerate'
+        else:
+            phase_pca = PCA(n_components=2)
+            phase_2d = phase_pca.fit_transform(phase_np)
+            phase_x_label = f'PC1 ({phase_pca.explained_variance_ratio_[0]*100:.1f}%)'
+            phase_y_label = f'PC2 ({phase_pca.explained_variance_ratio_[1]*100:.1f}%)'
+
+        fig, ax = plt.subplots(figsize=(7, 5))
+        ax.plot(phase_2d[:, 0], phase_2d[:, 1], color='#4C72B0', linewidth=2, alpha=0.9)
+        ax.scatter(phase_2d[:, 0], phase_2d[:, 1], c=t_vals.squeeze(1).numpy(),
+                   cmap='viridis', s=70, edgecolors='black', linewidths=0.4, zorder=5)
+        ax.annotate('Opening (t=0.0)', (phase_2d[0, 0], phase_2d[0, 1]),
+                    textcoords='offset points', xytext=(8, 8), fontsize=9, fontweight='bold')
+        ax.annotate('Endgame (t=1.0)', (phase_2d[-1, 0], phase_2d[-1, 1]),
+                    textcoords='offset points', xytext=(8, -14), fontsize=9, fontweight='bold')
+        for idx, t in enumerate(t_vals.squeeze(1).tolist()):
+            if idx in (0, len(phase_2d) - 1):
+                continue
+            ax.annotate(f'{t:.1f}', (phase_2d[idx, 0], phase_2d[idx, 1]),
+                        textcoords='offset points', xytext=(4, 4), fontsize=7)
+        ax.set_xlabel(phase_x_label)
+        ax.set_ylabel(phase_y_label)
+        ax.set_title('Phase Embedding Interpolation')
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        path = os.path.join(output_dir, 'emb_phase_interp.png')
+        fig.savefig(path, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        console.print(f'    [dim]\\[saved] {path}[/dim]')
+
+        # 5h. Top phase dimensions over t
+        phase_delta = (phase_w[1] - phase_w[0]).abs()
+        top_dims = torch.argsort(phase_delta, descending=True)[:6].tolist()
+        fig, ax = plt.subplots(figsize=(8, 5))
+        for dim in top_dims:
+            ax.plot(t_vals.squeeze(1).numpy(), phase_traj[:, dim].numpy(),
+                    marker='o', linewidth=1.8, label=f'd{dim}')
+        ax.set_xlabel('t')
+        ax.set_ylabel('Embedding value')
+        ax.set_title('Phase Embedding Top Dimensions vs t')
+        ax.grid(True, alpha=0.3)
+        ax.legend(ncol=2, fontsize=8)
+        plt.tight_layout()
+        path = os.path.join(output_dir, 'emb_phase_dims.png')
+        fig.savefig(path, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        console.print(f'    [dim]\\[saved] {path}[/dim]')
 
 
 # ────────────────────────── Attention Map ──────────────────────────
