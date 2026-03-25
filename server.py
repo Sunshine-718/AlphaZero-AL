@@ -101,7 +101,7 @@ g_train.add_argument('--distill_temp', type=float, default=2.0,
 g_train.add_argument('--value_decay', type=float, default=1,
                       help='Game-length discount γ for value targets: target = γ^steps × z + (1-γ^steps) × uniform '
                            '(1.0=no scaling, 0.99=moderate, 0.97=aggressive)')
-g_train.add_argument('--psw_beta', type=float, default=0.5,
+g_train.add_argument('--psw_beta', type=float, default=0.3,
                       help='Policy Surprise Weighting β: w = 1 + β×KL(π||p), up-weights positions where '
                            'MCTS policy diverges from network prior (0=disabled)')
 g_train.add_argument('--entropy_lambda', type=float, default=0.01,
