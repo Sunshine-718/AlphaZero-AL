@@ -13,7 +13,7 @@
     python tools/inspect_buffer.py --no-nn       # 只看 buffer
     python tools/inspect_buffer.py --output figs # 指定图片输出目录
 """
-import sys, os, argparse, warnings, importlib
+import sys, os, math, argparse, warnings, importlib
 from datetime import datetime
 import numpy as np
 import torch
@@ -1077,6 +1077,38 @@ def analyze_attention(net, output_dir, gcfg, device='cpu'):
 
 # ────────────────────────── NN ──────────────────────────
 
+def load_model_weights_only(net, path, device):
+    """Load only model weights for analysis and skip optimizer state."""
+    if os.path.isdir(path):
+        state_dict = torch.load(
+            os.path.join(path, 'model.pt'),
+            map_location=device,
+            weights_only=True,
+        )
+    else:
+        checkpoint = torch.load(path, map_location=device, weights_only=True)
+        state_dict = checkpoint.get('model_state_dict', checkpoint)
+    net.load_state_dict(state_dict, strict=False)
+    object.__setattr__(net, '_target_net', None)
+    return net
+
+
+def format_aux_output(net, aux_out):
+    aux = aux_out.detach().float().cpu().reshape(-1).numpy()
+    if aux.size != 1:
+        top5 = np.argsort(aux)[::-1][:5]
+        return 'Steps top-5', ', '.join(f's={s}:{aux[s]*100:.1f}%' for s in top5)
+
+    aux_scalar = float(aux[0])
+    if hasattr(net, 'score_scale'):
+        disc_diff = aux_scalar * float(getattr(net, 'aux_target_offset', 1.0))
+        utility = math.atan(disc_diff / float(net.score_scale)) * (2.0 / math.pi)
+        return 'Aux', f'scalar={aux_scalar:+.4f}, disc_diff={disc_diff:+.2f}, utility={utility:+.4f}'
+
+    expected_steps = aux_scalar * float(getattr(net, 'aux_target_offset', 1.0))
+    return 'Moves left', f'{expected_steps:.2f}'
+
+
 def analyze_nn(model_path, gcfg, device='cpu', output_dir=None):
     """加载 NN 并返回每个 pattern 的 raw policy，同时打印摘要。"""
     console.print()
@@ -1095,7 +1127,7 @@ def analyze_nn(model_path, gcfg, device='cpu', output_dir=None):
     show_all = top_k >= action_size
 
     net = CNN(lr=0, device=device)
-    net.load(model_path)
+    load_model_weights_only(net, model_path, device)
     net.eval()
 
     nn_policies = {}
@@ -1110,10 +1142,9 @@ def analyze_nn(model_path, gcfg, device='cpu', output_dir=None):
         mask = np.array(env.valid_mask(), dtype=bool)
 
         with torch.no_grad():
-            log_p, log_v, log_s, *_ = net(t)
+            log_p, log_v, aux_out, *_ = net(t)
             prob = log_p.exp().cpu().numpy().flatten()
             vdist = log_v.exp().cpu().numpy().flatten()  # [draw, win(to-move), loss(to-move)]
-            sdist = log_s.exp().cpu().numpy().flatten()
 
         # Mask and renormalize policy
         prob[~mask] = 0.0
@@ -1124,7 +1155,7 @@ def analyze_nn(model_path, gcfg, device='cpu', output_dir=None):
         nn_policies[fname] = prob
         scalar_v = vdist[1] - vdist[2]
         entropy = -np.sum(prob * np.log(prob + 1e-8))
-        top5s = np.argsort(sdist)[::-1][:5]
+        aux_label, aux_value = format_aux_output(net, aux_out)
 
         nn_table = Table(show_header=False, box=None, padding=(0, 2))
         nn_table.add_column('Key', style='bold')
@@ -1138,8 +1169,7 @@ def analyze_nn(model_path, gcfg, device='cpu', output_dir=None):
         ))
         nn_table.add_row('Scalar value', f'{scalar_v: .4f}')
         nn_table.add_row('Entropy', f'{entropy:.4f}')
-        nn_table.add_row('Steps top-5',
-            ', '.join(f's={s}:{sdist[s]*100:.1f}%' for s in top5s))
+        nn_table.add_row(aux_label, aux_value)
 
         console.print(Panel(nn_table, title=f'[bold]{desc} (turn={player})[/bold]', border_style='magenta'))
 
