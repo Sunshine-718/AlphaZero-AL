@@ -311,7 +311,7 @@ class Actor:
             self.net.to('cpu')
             if args.compile and not any(k.startswith('_orig_mod.') for k in weights):
                 weights = {f'_orig_mod.{k}': v for k, v in weights.items()}
-            self.net.load_state_dict(weights, strict=False)
+            self.net.load_state_dict(weights, strict=True)
             self.net.to(args.device)
             self.mtime = float(r.headers['X-Timestamp'])
             self.az_player.mcts.refresh_cache(self.net)

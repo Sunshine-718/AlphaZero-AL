@@ -22,13 +22,15 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 
+from rich import box
+from rich.columns import Columns
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from rich.text import Text
 from rich.progress import track
 
-console = Console(record=True)
+console = Console(record=True, width=120)
 
 _ZH_FONTS = [
     'Microsoft YaHei',
@@ -210,6 +212,57 @@ def board_matches(state_int8, board, turn):
 
 # ────────────────────────── Rich helpers ──────────────────────────
 
+def pretty_path(path):
+    try:
+        abs_path = os.path.abspath(path)
+        rel_path = os.path.relpath(abs_path, ROOT)
+        return rel_path if not rel_path.startswith('..') else abs_path
+    except Exception:
+        return path
+
+
+def print_saved(path):
+    console.print(Text.assemble(
+        ('saved', 'bold green'),
+        ('  ', ''),
+        (pretty_path(path), 'dim'),
+    ))
+
+
+def make_info_panel(title, rows, border_style='blue', title_style='bold white'):
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(style='bold cyan', no_wrap=True)
+    grid.add_column()
+    for key, value in rows:
+        grid.add_row(key, value)
+    return Panel(
+        grid,
+        title=f'[{title_style}]{title}[/{title_style}]',
+        border_style=border_style,
+        box=box.ROUNDED,
+    )
+
+
+def make_metric_table(title, rows, *, key_name='Metric', value_name='Value'):
+    table = Table(
+        title=title,
+        show_header=True,
+        header_style='bold white',
+        title_style='bold cyan',
+        box=box.SIMPLE_HEAVY,
+    )
+    table.add_column(key_name, style='bold', no_wrap=True)
+    table.add_column(value_name, justify='right')
+    for key, value in rows:
+        table.add_row(key, value)
+    return table
+
+
+def print_banner(title, rows, border_style='bright_blue'):
+    console.print()
+    console.print(make_info_panel(title, rows, border_style=border_style, title_style='bold'))
+
+
 def compute_entropy(probs: torch.Tensor) -> torch.Tensor:
     """Compute Shannon entropy for each row: -sum(p * log(p))."""
     p = probs.clamp(min=1e-8)
@@ -242,7 +295,13 @@ def fmt_prob_rich(prob, action_label, top_k=None) -> Text:
 
 def make_winner_table(ew: torch.Tensor, title: str = 'Winner Distribution') -> Table:
     total = len(ew)
-    table = Table(title=title, show_header=True, header_style='bold')
+    table = Table(
+        title=title,
+        show_header=True,
+        header_style='bold white',
+        title_style='bold green',
+        box=box.SIMPLE_HEAVY,
+    )
     table.add_column('Winner', style='bold')
     table.add_column('Count', justify='right')
     table.add_column('%', justify='right')
@@ -256,7 +315,13 @@ def make_winner_table(ew: torch.Tensor, title: str = 'Winner Distribution') -> T
 
 def make_top_n_table(idx, ep, ew, es, top_n, action_label, top_k=None) -> Table:
     show = min(top_n, len(idx))
-    table = Table(title=f'前 {show} 条样本', show_header=True, header_style='bold')
+    table = Table(
+        title=f'前 {show} 条样本',
+        show_header=True,
+        header_style='bold white',
+        title_style='bold yellow',
+        box=box.SIMPLE_HEAVY,
+    )
     table.add_column('idx', justify='right')
     table.add_column('winner', justify='right')
     table.add_column('steps', justify='right')
@@ -376,14 +441,18 @@ def plot_pattern(desc, ep, ew, es, nn_prob, output_dir, fname, gcfg):
     path = os.path.join(output_dir, f'{fname}.png')
     fig.savefig(path, dpi=150, bbox_inches='tight')
     plt.close(fig)
-    console.print(f'    [dim]\\[saved] {path}[/dim]')
+    print_saved(path)
 
 
 # ────────────────────────── Buffer ──────────────────────────
 
 def analyze_buffer(path, top_n, output_dir, nn_policies, gcfg):
     if not os.path.exists(path):
-        console.print(f'[bold red][!] Buffer 不存在: {path}[/bold red]')
+        console.print(make_info_panel(
+            'Buffer',
+            [('状态', '[bold red]不存在[/bold red]'), ('路径', pretty_path(path))],
+            border_style='red',
+        ))
         return
 
     action_size = gcfg['action_size']
@@ -412,18 +481,16 @@ def analyze_buffer(path, top_n, output_dir, nn_policies, gcfg):
         all_tensors.append(steps)
     total_bytes = sum(t.nelement() * t.element_size() for t in all_tensors)
 
-    info_table = Table(show_header=False, box=None, padding=(0, 2))
-    info_table.add_column('Key', style='bold')
-    info_table.add_column('Value')
-    info_table.add_row('File', path)
-    info_table.add_row('File size', f'{file_size / 1024 / 1024:.2f} MB')
-    info_table.add_row('Memory footprint', f'{total_bytes / 1024 / 1024:.2f} MB')
-    info_table.add_row('Capacity', str(capacity))
-    info_table.add_row('ptr', str(ptr))
-    info_table.add_row('Valid samples', f'{n}  ({n / capacity * 100:.1f}%)')
-    info_table.add_row('Buffer full', '[green]Yes[/green]' if is_full else '[yellow]No[/yellow]')
-    info_table.add_row('ptr wrapped', '[green]Yes[/green]' if has_wrapped else '[dim]No[/dim]')
-    info_table.add_row('')  # spacer
+    info_rows = [
+        ('文件', pretty_path(path)),
+        ('文件大小', f'{file_size / 1024 / 1024:.2f} MB'),
+        ('内存占用', f'{total_bytes / 1024 / 1024:.2f} MB'),
+        ('容量', str(capacity)),
+        ('ptr', str(ptr)),
+        ('有效样本', f'{n}  ({n / capacity * 100:.1f}%)'),
+        ('Buffer full', '[green]Yes[/green]' if is_full else '[yellow]No[/yellow]'),
+        ('ptr wrapped', '[green]Yes[/green]' if has_wrapped else '[dim]No[/dim]'),
+    ]
     tensor_info = [
         ('state',        states),
         ('prob',         probs),
@@ -432,26 +499,24 @@ def analyze_buffer(path, top_n, output_dir, nn_policies, gcfg):
     if steps is not None:
         tensor_info.append(('steps_to_end', steps))
     for name, t in tensor_info:
-        info_table.add_row(f'  {name}', f'{list(t.shape)}  dtype={t.dtype}')
+        info_rows.append((name, f'{list(t.shape)}  dtype={t.dtype}'))
 
-    console.print()
-    console.print(Panel(info_table, title='[bold]Buffer Metadata[/bold]', border_style='blue'))
+    print_banner('Buffer Overview', info_rows, border_style='blue')
 
     # Global winner distribution
     valid_winners = winners[:n].view(-1)
-    console.print(make_winner_table(valid_winners, title='Global Winner Distribution'))
+    global_tables = [make_winner_table(valid_winners, title='Global Winner Distribution')]
 
     # Global steps-to-end stats
     if steps is not None:
         valid_steps = steps[:n].view(-1).float()
-        steps_table = Table(title='Global Steps-to-End', show_header=True, header_style='bold')
-        steps_table.add_column('Stat', style='bold')
-        steps_table.add_column('Value', justify='right')
-        steps_table.add_row('Mean', f'{valid_steps.mean():.1f}')
-        steps_table.add_row('Std', f'{valid_steps.std():.1f}')
-        steps_table.add_row('Min', f'{int(valid_steps.min())}')
-        steps_table.add_row('Max', f'{int(valid_steps.max())}')
-        console.print(steps_table)
+        steps_table = make_metric_table('Global Steps-to-End', [
+            ('Mean', f'{valid_steps.mean():.1f}'),
+            ('Std', f'{valid_steps.std():.1f}'),
+            ('Min', f'{int(valid_steps.min())}'),
+            ('Max', f'{int(valid_steps.max())}'),
+        ])
+        global_tables.append(steps_table)
 
     # Global policy entropy
     valid_probs = probs[:n]
@@ -459,15 +524,15 @@ def analyze_buffer(path, top_n, output_dir, nn_policies, gcfg):
     max_probs = valid_probs.max(dim=1).values
     concentration_pct = float((max_probs > 0.8).float().mean() * 100)
 
-    ent_table = Table(title='Global Policy Entropy', show_header=True, header_style='bold')
-    ent_table.add_column('Stat', style='bold')
-    ent_table.add_column('Value', justify='right')
-    ent_table.add_row('Mean', f'{ent.mean():.4f}')
-    ent_table.add_row('Std', f'{ent.std():.4f}')
-    ent_table.add_row('Min', f'{ent.min():.4f}')
-    ent_table.add_row('Max', f'{ent.max():.4f}')
-    ent_table.add_row('Concentration (max>80%)', f'{concentration_pct:.1f}%')
-    console.print(ent_table)
+    ent_table = make_metric_table('Global Policy Entropy', [
+        ('Mean', f'{ent.mean():.4f}'),
+        ('Std', f'{ent.std():.4f}'),
+        ('Min', f'{ent.min():.4f}'),
+        ('Max', f'{ent.max():.4f}'),
+        ('Concentration (max>80%)', f'{concentration_pct:.1f}%'),
+    ])
+    global_tables.append(ent_table)
+    console.print(Columns(global_tables, equal=True, expand=True))
 
     # ── Per-pattern analysis ──
     for desc, make_board, turn, fname in patterns:
@@ -528,7 +593,9 @@ def analyze_buffer(path, top_n, output_dir, nn_policies, gcfg):
                 max_total = max(max_total, total)
                 rows.append((lo, hi, p1, draw, p2, total))
 
-            dist_table = Table(title='Steps-to-End Distribution', show_header=True, header_style='bold')
+            dist_table = Table(title='Steps-to-End Distribution', show_header=True,
+                               header_style='bold white', title_style='bold cyan',
+                               box=box.SIMPLE_HEAVY)
             dist_table.add_column('Range', style='bold', justify='right')
             dist_table.add_column('P1 wins', justify='right', style='blue')
             dist_table.add_column('Draw', justify='right', style='green')
@@ -553,7 +620,8 @@ def analyze_buffer(path, top_n, output_dir, nn_policies, gcfg):
         policy_table = Table(
             title='Policy 均值 ± std' if show_all
             else f'Policy 均值 ± std (top {top_k})',
-            show_header=True, header_style='bold')
+            show_header=True, header_style='bold white',
+            title_style='bold cyan', box=box.SIMPLE_HEAVY)
         for i in show_indices:
             policy_table.add_column(action_label(i), justify='center')
         mean_cells = []
@@ -697,7 +765,7 @@ def analyze_embeddings(net, output_dir, gcfg):
     # 5-ref. 轨道参考图
     orbit_board = np.array(orbit_map).reshape(rows, cols)
     fig, ax = plt.subplots(figsize=(max(6, cols * 0.8), max(5, rows * 0.8)))
-    cmap = plt.cm.get_cmap('tab10' if n_orbits <= 10 else 'tab20', n_orbits)
+    cmap = matplotlib.colormaps.get_cmap('tab10' if n_orbits <= 10 else 'tab20').resampled(n_orbits)
     im = ax.imshow(orbit_board, cmap=cmap, vmin=-0.5, vmax=n_orbits - 0.5)
     for r in range(rows):
         for c in range(cols):
@@ -1077,22 +1145,6 @@ def analyze_attention(net, output_dir, gcfg, device='cpu'):
 
 # ────────────────────────── NN ──────────────────────────
 
-def load_model_weights_only(net, path, device):
-    """Load only model weights for analysis and skip optimizer state."""
-    if os.path.isdir(path):
-        state_dict = torch.load(
-            os.path.join(path, 'model.pt'),
-            map_location=device,
-            weights_only=True,
-        )
-    else:
-        checkpoint = torch.load(path, map_location=device, weights_only=True)
-        state_dict = checkpoint.get('model_state_dict', checkpoint)
-    net.load_state_dict(state_dict, strict=False)
-    object.__setattr__(net, '_target_net', None)
-    return net
-
-
 def format_aux_output(net, aux_out):
     aux = aux_out.detach().float().cpu().reshape(-1).numpy()
     if aux.size != 1:
@@ -1111,9 +1163,6 @@ def format_aux_output(net, aux_out):
 
 def analyze_nn(model_path, gcfg, device='cpu', output_dir=None):
     """加载 NN 并返回每个 pattern 的 raw policy，同时打印摘要。"""
-    console.print()
-    console.print(Panel(f'[bold]{model_path}[/bold]', title='[bold]NN Model[/bold]', border_style='magenta'))
-
     net_mod = importlib.import_module(gcfg['network_module'])
     utils_mod = importlib.import_module(gcfg['utils_module'])
     env_mod = importlib.import_module(gcfg['env_module'])
@@ -1127,8 +1176,20 @@ def analyze_nn(model_path, gcfg, device='cpu', output_dir=None):
     show_all = top_k >= action_size
 
     net = CNN(lr=0, device=device)
-    load_model_weights_only(net, model_path, device)
+    load_status = '[green]Loaded checkpoint[/green]'
+    try:
+        net.load_weights_only(model_path, strict=True)
+    except FileNotFoundError:
+        load_status = '[yellow]Weights missing; using fresh initialized network[/yellow]'
     net.eval()
+
+    print_banner('NN Overview', [
+        ('路径', pretty_path(model_path)),
+        ('设备', device),
+        ('状态', load_status),
+        ('动作空间', str(action_size)),
+        ('策略展示', 'all' if show_all else f'top {top_k}'),
+    ], border_style='magenta')
 
     nn_policies = {}
     for desc, make_board, turn, fname in gcfg['patterns']:
@@ -1157,7 +1218,7 @@ def analyze_nn(model_path, gcfg, device='cpu', output_dir=None):
         entropy = -np.sum(prob * np.log(prob + 1e-8))
         aux_label, aux_value = format_aux_output(net, aux_out)
 
-        nn_table = Table(show_header=False, box=None, padding=(0, 2))
+        nn_table = Table(show_header=False, box=None, padding=(0, 2), expand=True)
         nn_table.add_column('Key', style='bold')
         nn_table.add_column('Value')
         display_top_k = top_k if not show_all else None
@@ -1171,7 +1232,12 @@ def analyze_nn(model_path, gcfg, device='cpu', output_dir=None):
         nn_table.add_row('Entropy', f'{entropy:.4f}')
         nn_table.add_row(aux_label, aux_value)
 
-        console.print(Panel(nn_table, title=f'[bold]{desc} (turn={player})[/bold]', border_style='magenta'))
+        console.print(Panel(
+            nn_table,
+            title=f'[bold]{desc} (turn={player})[/bold]',
+            border_style='magenta',
+            box=box.ROUNDED,
+        ))
 
     if hasattr(net, 'piece_emb'):
         analyze_embeddings(net, output_dir, gcfg)
@@ -1229,6 +1295,14 @@ def main():
 
     os.chdir(ROOT)
     setup_matplotlib_font(args.font, args.font_path)
+    print_banner('Inspect Buffer', [
+        ('Game', args.game),
+        ('Device', args.device),
+        ('Buffer', pretty_path(args.buffer) if args.buffer else '-'),
+        ('Model', pretty_path(args.model) if args.model else '-'),
+        ('Output', pretty_path(args.output)),
+        ('Sections', f"NN={'off' if args.no_nn else 'on'}, Buffer={'off' if args.no_buffer else 'on'}"),
+    ])
 
     # 先跑 NN，拿到 raw policy 供 buffer 绘图叠加
     nn_policies = {}
@@ -1243,7 +1317,7 @@ def main():
     log_path = os.path.join(args.output, 'report.txt')
     with open(log_path, 'w', encoding='utf-8') as f:
         f.write(console.export_text())
-    console.print(f'[dim]\\[saved] {log_path}[/dim]')
+    print_saved(log_path)
 
 
 if __name__ == '__main__':

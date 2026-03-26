@@ -286,6 +286,18 @@ class Base(ABC, nn.Module):
                 time.sleep(1)
                 continue
 
+    def load_weights_only(self, path=None, strict=True):
+        """Load only model weights, skipping optimizer and scheduler state."""
+        if path is None:
+            return self
+
+        model_file = os.path.join(path, 'model.pt')
+        state_dict = torch.load(model_file, map_location=self.device, weights_only=True)
+
+        self.load_state_dict(state_dict, strict=strict)
+        object.__setattr__(self, '_target_net', None)
+        return self
+
     def load(self, path=None):
         """Load model weights and optionally training state.
 
@@ -297,41 +309,23 @@ class Base(ABC, nn.Module):
         if path is None:
             return self
         try:
-            if os.path.isdir(path):
-                model_file = os.path.join(path, 'model.pt')
-                self.load_state_dict(
-                    torch.load(model_file, map_location=self.device, weights_only=True),
-                    strict=False)
-                opt_file = os.path.join(path, 'optimizer.pt')
-                sched_file = os.path.join(path, 'scheduler.pt')
-                if os.path.exists(opt_file):
-                    try:
-                        self.opt.load_state_dict(
-                            torch.load(opt_file, map_location=self.device, weights_only=True))
-                    except (ValueError, KeyError) as e:
-                        print(f'Optimizer state incompatible, using fresh state.\n{e}')
-                if os.path.exists(sched_file):
-                    try:
-                        self.scheduler.load_state_dict(
-                            torch.load(sched_file, map_location=self.device, weights_only=True))
-                    except (ValueError, KeyError) as e:
-                        print(f'Scheduler state incompatible, using fresh state.\n{e}')
-            else:
-                # Legacy single-file format
-                checkpoint = torch.load(path, map_location=self.device, weights_only=True)
-                if 'model_state_dict' in checkpoint:
-                    self.load_state_dict(checkpoint['model_state_dict'], strict=False)
-                    try:
-                        self.opt.load_state_dict(checkpoint['opt_state_dict'])
-                        self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-                    except (ValueError, KeyError) as e:
-                        print(f'Optimizer/scheduler state incompatible, using fresh state.\n{e}')
-                else:
-                    self.load_state_dict(checkpoint, strict=False)
+            self.load_weights_only(path, strict=True)
+            opt_file = os.path.join(path, 'optimizer.pt')
+            sched_file = os.path.join(path, 'scheduler.pt')
+            if os.path.exists(opt_file):
+                try:
+                    self.opt.load_state_dict(
+                        torch.load(opt_file, map_location=self.device, weights_only=True))
+                except (ValueError, KeyError) as e:
+                    print(f'Optimizer state incompatible, using fresh state.\n{e}')
+            if os.path.exists(sched_file):
+                try:
+                    self.scheduler.load_state_dict(
+                        torch.load(sched_file, map_location=self.device, weights_only=True))
+                except (ValueError, KeyError) as e:
+                    print(f'Scheduler state incompatible, using fresh state.\n{e}')
         except Exception as e:
             print(f'Failed to load parameters.\n{e}')
-        # Invalidate target net so it re-inits from the newly loaded weights
-        object.__setattr__(self, '_target_net', None)
         return self
 
     def train_step(self, dataloader, augment, ddp_model=None, n_epochs=10,

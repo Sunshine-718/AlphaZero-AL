@@ -159,6 +159,11 @@ def _scan_experiments(env_name, params_dir="./params"):
     return entries
 
 
+def load_model_weights_only(net, path, device):
+    """Load only model weights for GUI/inference and skip optimizer state."""
+    return net.load_weights_only(path, strict=True)
+
+
 def _sv(slider):
     return slider.value() / slider._scale
 

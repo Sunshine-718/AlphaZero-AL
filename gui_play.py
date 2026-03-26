@@ -15,6 +15,7 @@ import torch
 import time
 import math
 import threading
+import traceback
 import numpy as np
 
 from gui_common import (
@@ -30,6 +31,7 @@ from gui_common import (
     _sep,
     _sv,
     aggregate_root_stats_sym_ensemble,
+    load_model_weights_only,
 )
 
 from PyQt5.QtCore import Qt, QTimer, QRectF, QPointF, pyqtSignal, QThread
@@ -2332,8 +2334,10 @@ class Connect4GUI(QWidget):
         self.net = net
         path = os.path.join(PARAMS_DIR, ENV_NAME, entry)
         try:
-            self.net.load(path)
+            load_model_weights_only(self.net, path, device)
         except Exception:
+            print(f"Failed to load model from {path}")
+            traceback.print_exc()
             self.status.set_result("MODEL ERROR", C.RED_HEX)
 
         self._attn_extractor.attach(self.net)
@@ -2535,8 +2539,10 @@ class Connect4GUI(QWidget):
         net2.eval()
         path = os.path.join(PARAMS_DIR, ENV_NAME, entry2)
         try:
-            net2.load(path)
+            load_model_weights_only(net2, path, device)
         except Exception:
+            print(f"Failed to load model2 from {path}")
+            traceback.print_exc()
             self.status.set_result("MODEL2 ERROR", C.RED_HEX)
         self.net2 = net2
 
