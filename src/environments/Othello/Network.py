@@ -22,21 +22,32 @@ _ORBIT_MAP = [
 class ResidualBlock(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=3, padding=1, dropout=0.0):
         super().__init__()
-        self.conv = nn.Conv2d(
+        self.norm1 = nn.BatchNorm2d(in_channels)
+        self.conv1 = nn.Conv2d(
             in_channels,
             out_channels,
             kernel_size=kernel_size,
             padding=padding,
             bias=True,
         )
-        self.norm = nn.BatchNorm2d(in_channels)
-        self.dropout = nn.Dropout2d(dropout, inplace=True)
+        self.norm2 = nn.BatchNorm2d(in_channels)
+        self.conv2 = nn.Conv2d(
+            out_channels,
+            out_channels,
+            kernel_size=kernel_size,
+            padding=padding,
+            bias=True,
+        )
+        self.dropout = nn.Dropout2d(dropout)
         self.resid = in_channels == out_channels
 
     def forward(self, x):
         residual = x if self.resid else 0
         x = self.norm(x)
-        x = self.conv(x)
+        x = self.conv1(x)
+        x = nn.functional.silu(x)
+        x = self.norm2(x)
+        self.conv2(x)
         x = nn.functional.silu(x)
         return self.dropout(x) + residual
 
@@ -79,9 +90,7 @@ class GatedAttention(nn.Module):
         v = v.transpose(1, 2)
 
         out = nn.functional.scaled_dot_product_attention(
-            q,
-            k,
-            v,
+            q, k, v,
             dropout_p=self.dropout_p if self.training else 0.0,
         )
 
@@ -103,8 +112,8 @@ class DualHead(nn.Module):
         self.aux_out = nn.Linear(h_dim, 1)
 
     def forward(self, cls_token):
-        x = cls_token + self.cls_drop(nn.functional.silu(self.cls_fc(self.cls_norm(cls_token))))
-        h = self.out_norm(nn.functional.silu(self.fc(self.norm(x))))
+        x = self.cls_drop(nn.functional.silu(self.cls_fc(self.cls_norm(cls_token))))
+        h = self.out_norm(nn.functional.silu(self.fc(self.norm(x))) + cls_token)
         value = nn.functional.log_softmax(self.value_out(h), dim=-1)
         aux = torch.tanh(self.aux_out(h).squeeze(-1))
         return value, aux
@@ -160,7 +169,7 @@ class CNN(Base):
         out_dim=65,
         dropout=0.1,
         device='cpu',
-        num_res_blocks=4,
+        num_res_blocks=2,
         policy_lr_scale=0.3,
     ):
         super().__init__()
