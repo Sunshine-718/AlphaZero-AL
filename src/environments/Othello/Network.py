@@ -174,6 +174,7 @@ class CNN(Base):
         self.in_dim = 3
         self.device = device
         self.n_actions = out_dim
+        self.attn_dim = 4 * h_dim
 
         self.piece_emb = nn.Embedding(3, embed_dim)
         self.pos_emb = nn.Embedding(10, embed_dim)
@@ -183,11 +184,14 @@ class CNN(Base):
             nn.Conv2d(embed_dim, h_dim, kernel_size=3, padding=1),
             nn.SiLU(True),
             *[ResidualBlock(h_dim, h_dim, dropout=dropout) for _ in range(num_res_blocks)],
-            AttentionBlock(h_dim, 4, dropout),
+            nn.Conv2d(h_dim, self.attn_dim, kernel_size=1),
+            nn.BatchNorm2d(self.attn_dim),
+            nn.SiLU(True),
+            AttentionBlock(self.attn_dim, 8, dropout),
         )
 
-        self.policy_head = PolicyHead(h_dim, dropout)
-        self.dual_head = DualHead(h_dim, 3, dropout)
+        self.policy_head = PolicyHead(self.attn_dim, dropout)
+        self.dual_head = DualHead(self.attn_dim, 3, dropout)
 
         self.apply(self.init_weights)
         self._reset_attention_init()
