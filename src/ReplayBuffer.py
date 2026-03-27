@@ -15,7 +15,7 @@ class ReplayBuffer:
         self.steps_to_end = torch.full((capacity, 1), 0, dtype=torch.int16, device=device)
         self.aux_target = torch.full((capacity, 1), 0, dtype=torch.int16, device=device)
         self.root_wdl = torch.zeros((capacity, 3), dtype=torch.float32, device=device)
-        self.future_state = torch.empty((capacity, state_dim, row, col), dtype=torch.int8, device=device)
+        self.future_root_wdl = torch.zeros((capacity, 3), dtype=torch.float32, device=device)
         self.valid_mask = torch.ones((capacity, action_dim), dtype=torch.bool, device=device)
         self.replay_ratio = replay_ratio
         self.device = device
@@ -31,7 +31,7 @@ class ReplayBuffer:
             'aux_target': self.aux_target,
             'root_wdl': self.root_wdl,
             'valid_mask': self.valid_mask,
-            'future_state': self.future_state,
+            'future_root_wdl': self.future_root_wdl,
             '_ptr': self._ptr,
             'current_capacity': self.current_capacity
         }
@@ -54,8 +54,8 @@ class ReplayBuffer:
                 self.root_wdl[:capacity].copy_(state_dict['root_wdl'][:capacity])
             if 'valid_mask' in state_dict:
                 self.valid_mask[:capacity].copy_(state_dict['valid_mask'][:capacity])
-            if 'future_state' in state_dict:
-                self.future_state[:capacity].copy_(state_dict['future_state'][:capacity])
+            if 'future_root_wdl' in state_dict:
+                self.future_root_wdl[:capacity].copy_(state_dict['future_root_wdl'][:capacity])
             self._ptr = state_dict['_ptr']
         except Exception as e:
             print(e)
@@ -75,7 +75,7 @@ class ReplayBuffer:
         self.aux_target = torch.empty_like(self.aux_target)
         self.root_wdl = torch.zeros_like(self.root_wdl)
         self.valid_mask = torch.ones_like(self.valid_mask)
-        self.future_state = torch.empty_like(self.future_state)
+        self.future_root_wdl = torch.zeros_like(self.future_root_wdl)
         self._ptr = 0
 
     def to(self, device='cpu'):
@@ -86,11 +86,11 @@ class ReplayBuffer:
         self.aux_target = self.aux_target.to(device)
         self.root_wdl = self.root_wdl.to(device)
         self.valid_mask = self.valid_mask.to(device)
-        self.future_state = self.future_state.to(device)
+        self.future_root_wdl = self.future_root_wdl.to(device)
         self.device = device
 
     def store(self, state, prob, winner, steps_to_end=0, aux_target=0, root_wdl=None,
-              valid_mask=None, future_state=None):
+              valid_mask=None, future_root_wdl=None):
         idx = self._ptr % self.current_capacity
         self._ptr += 1
         if isinstance(state, np.ndarray):
@@ -114,18 +114,18 @@ class ReplayBuffer:
             self.valid_mask[idx] = valid_mask
         else:
             self.valid_mask[idx] = True
-        if future_state is not None:
-            if isinstance(future_state, np.ndarray):
-                future_state = torch.from_numpy(future_state).float().to(self.device)
-            self.future_state[idx] = future_state
+        if future_root_wdl is not None:
+            if isinstance(future_root_wdl, np.ndarray):
+                future_root_wdl = torch.from_numpy(future_root_wdl).float().to(self.device)
+            self.future_root_wdl[idx] = future_root_wdl
         else:
-            self.future_state[idx] = 0
+            self.future_root_wdl[idx] = 0
         return idx
 
     def get(self, indices):
         return (self.state[indices].float(), self.prob[indices], self.winner[indices],
                 self.steps_to_end[indices], self.aux_target[indices], self.root_wdl[indices],
-                self.valid_mask[indices], self.future_state[indices].float())
+                self.valid_mask[indices], self.future_root_wdl[indices])
 
     def sample(self, batch_size, full_batches=False):
         total_samples = len(self)

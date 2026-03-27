@@ -48,16 +48,16 @@ def inspect(net, board=None):
 
 
 def augment(batch):
-    future_state = None
+    future_root_wdl = None
     valid_mask = None
     if len(batch) == 8:
-        state, prob, winner, steps_to_end, aux_target, root_wdl, valid_mask, future_state = batch
+        state, prob, winner, steps_to_end, aux_target, root_wdl, valid_mask, future_root_wdl = batch
     elif len(batch) == 7:
         state, prob, winner, steps_to_end, aux_target, root_wdl, extra = batch
         if extra.dtype == torch.bool:
             valid_mask = extra
         else:
-            future_state = extra
+            future_root_wdl = extra
     else:
         state, prob, winner, steps_to_end, aux_target, root_wdl = batch
 
@@ -74,8 +74,8 @@ def augment(batch):
     result = [state, prob, winner, steps_to_end, aux_target, root_wdl]
     if valid_mask is not None:
         result.append(torch.cat([valid_mask, torch.flip(valid_mask, dims=[1])], dim=0))
-    if future_state is not None:
-        result.append(torch.cat([future_state, torch.flip(future_state, dims=[3])], dim=0))
+    if future_root_wdl is not None:
+        result.append(torch.cat([future_root_wdl, future_root_wdl], dim=0))
     return tuple(result)
 
 

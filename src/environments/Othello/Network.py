@@ -43,7 +43,7 @@ class ResidualBlock(nn.Module):
 
     def forward(self, x):
         residual = x if self.resid else 0
-        x = self.norm(x)
+        x = self.norm1(x)
         x = self.conv1(x)
         x = nn.functional.silu(x)
         x = self.norm2(x)
@@ -65,15 +65,12 @@ class GatedAttention(nn.Module):
         self.q_norm = nn.RMSNorm(self.head_dim, eps=1e-5)
         self.k_norm = nn.RMSNorm(self.head_dim, eps=1e-5)
         self.dropout_p = dropout
-        self._init_uniform_attention()
+        self._init_attention()
 
-    def _init_uniform_attention(self):
-        h_dim = self.num_heads * self.head_dim
+    def _init_attention(self):
         with torch.no_grad():
-            self.qkv_proj.weight[:h_dim].zero_()
-            nn.init.orthogonal_(self.qkv_proj.weight[h_dim:2 * h_dim])
-            nn.init.orthogonal_(self.qkv_proj.weight[2 * h_dim:])
-            self.gate_proj.weight.zero_()
+            nn.init.orthogonal_(self.qkv_proj.weight)
+            nn.init.orthogonal_(self.gate_proj.weight)
             nn.init.orthogonal_(self.o_proj.weight)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -180,7 +177,6 @@ class CNN(Base):
 
         self.piece_emb = nn.Embedding(3, embed_dim)
         self.pos_emb = nn.Embedding(10, embed_dim)
-        self.phase_emb = nn.Embedding(2, embed_dim)
         self.register_buffer('orbit_map', torch.tensor(_ORBIT_MAP, dtype=torch.long))
 
         self.hidden = nn.Sequential(
@@ -194,7 +190,7 @@ class CNN(Base):
         self.dual_head = DualHead(h_dim, 3, dropout)
 
         self.apply(self.init_weights)
-        self._reset_attention_uniform_init()
+        self._reset_attention_init()
         nn.init.constant_(self.policy_head.out.weight, 0)
         nn.init.constant_(self.dual_head.value_out.weight, 0)
         nn.init.constant_(self.dual_head.aux_out.weight, 0)
@@ -205,7 +201,6 @@ class CNN(Base):
                 {'params': self.dual_head.parameters()},
                 {'params': self.piece_emb.parameters(), 'weight_decay': 0},
                 {'params': self.pos_emb.parameters(), 'weight_decay': 0},
-                {'params': self.phase_emb.parameters(), 'weight_decay': 0},
                 {'params': self.policy_head.parameters(), 'lr': lr * policy_lr_scale},
             ],
             lr=lr,
@@ -232,10 +227,10 @@ class CNN(Base):
     def name(self):
         return 'CNN'
 
-    def _reset_attention_uniform_init(self):
+    def _reset_attention_init(self):
         for module in self.modules():
             if isinstance(module, GatedAttention):
-                module._init_uniform_attention()
+                module._init_attention()
 
     def _embed_state(self, state):
         """Convert `(B, 3, 8, 8)` states into `(B, embed_dim, 8, 8)` embeddings."""
@@ -245,17 +240,7 @@ class CNN(Base):
 
         piece_id = own.long() + (opp.long() << 1)
         x = self.piece_emb(piece_id) + self.pos_emb(self.orbit_map).unsqueeze(0)
-
-        empty_count = 64.0 - own.float().sum(dim=1) - opp.float().sum(dim=1)
-        phase_t = (1.0 - empty_count / 60.0).clamp(0.0, 1.0)
-        phase = torch.lerp(
-            self.phase_emb.weight[0].unsqueeze(0),
-            self.phase_emb.weight[1].unsqueeze(0),
-            phase_t.unsqueeze(1),
-        )
-
-        x = x.transpose(1, 2).reshape(batch_size, self.embed_dim, 8, 8)
-        return x + phase.unsqueeze(-1).unsqueeze(-1)
+        return x.transpose(1, 2).reshape(batch_size, self.embed_dim, 8, 8)
 
     def forward(self, x, action_mask=None):
         x = self._embed_state(x)

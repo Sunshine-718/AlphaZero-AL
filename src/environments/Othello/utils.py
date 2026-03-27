@@ -73,19 +73,24 @@ def augment(batch):
     90°/270° 旋转和水平/垂直翻转会交换初始黑白子位置，不是合法对称。
     """
     if len(batch) == 8:
-        state, prob, winner, steps_to_end, aux_target, root_wdl, valid_mask, future_state = batch
+        state, prob, winner, steps_to_end, aux_target, root_wdl, valid_mask, future_root_wdl = batch
     elif len(batch) == 7:
-        state, prob, winner, steps_to_end, aux_target, root_wdl, valid_mask = batch
-        future_state = None
+        state, prob, winner, steps_to_end, aux_target, root_wdl, extra = batch
+        if extra.dtype == torch.bool:
+            valid_mask = extra
+            future_root_wdl = None
+        else:
+            valid_mask = None
+            future_root_wdl = extra
     else:
         state, prob, winner, steps_to_end, aux_target, root_wdl = batch
         valid_mask = None
-        future_state = None
+        future_root_wdl = None
 
     states_all = [state]
     probs_all = [prob]
     masks_all = [valid_mask] if valid_mask is not None else None
-    future_all = [future_state] if future_state is not None else None
+    future_all = [future_root_wdl] if future_root_wdl is not None else None
 
     for sym_id in (2, 6, 7):  # 180°旋转, 主对角线翻转, 副对角线翻转
         states_all.append(_apply_sym_state(state, sym_id))
@@ -93,7 +98,7 @@ def augment(batch):
         if masks_all is not None:
             masks_all.append(_apply_sym_policy(valid_mask.float(), sym_id).bool())
         if future_all is not None:
-            future_all.append(_apply_sym_state(future_state, sym_id))
+            future_all.append(future_root_wdl)
 
     state = torch.cat(states_all, dim=0)
     prob = torch.cat(probs_all, dim=0)

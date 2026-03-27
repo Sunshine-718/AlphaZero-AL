@@ -57,7 +57,7 @@ parser.add_argument('--mlh_cap', type=float, default=None, help='MLH cap')
 parser.add_argument('--score_utility_factor', type=float, default=None, help='Score utility weight')
 parser.add_argument('--score_scale', type=float, default=None, help='Score atan scale')
 parser.add_argument('--value_decay', type=float, default=None, help='Value decay γ')
-parser.add_argument('--td_steps', type=int, default=None, help='N-step TD: steps k for S_{t+k}')
+parser.add_argument('--td_steps', type=int, default=None, help='Future-root-WDL consistency: steps k for S_{t+k}')
 parser.add_argument('--no_symmetry', action='store_true', help='Disable symmetry augmentation')
 parser.add_argument('--compile', action='store_true',
                     help='Enable torch.compile for inference acceleration (requires PyTorch 2.0+)')

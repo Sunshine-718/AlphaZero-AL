@@ -16,7 +16,7 @@ import sys
 
 
 
-# --- 流量统计全局变量 ---
+# --- Traffic Counters ---
 TOTAL_RECEIVED_BYTES = 0
 TOTAL_SENT_BYTES = 0
 # -----------------------
@@ -24,12 +24,12 @@ TOTAL_SENT_BYTES = 0
 
 parser = argparse.ArgumentParser(description='AlphaZero Training Server')
 
-# ── Server ────────────────────────────────────────────────────────────────────
+# --- Server -----------------------------------------------------------------
 g_server = parser.add_argument_group('Server')
 g_server.add_argument('--host', '-H', type=str, default='0.0.0.0', help='Host IP')
 g_server.add_argument('--port', '-P', '-p', type=int, default=7718, help='Port number')
 
-# ── Environment & Model ───────────────────────────────────────────────────────
+# --- Environment & Model ----------------------------------------------------
 g_env = parser.add_argument_group('Environment & Model')
 g_env.add_argument('-e', '--env', '--environment', type=str, default='Connect4', help='Environment name')
 g_env.add_argument('-m', '--model', type=str, default='CNN', help='Network type (CNN/ViT)')
@@ -37,7 +37,7 @@ g_env.add_argument('--exp', type=str, default=None, help='Experiment ID to resum
 g_env.add_argument('-d', '--device', type=str,
                    default='cuda' if torch.cuda.is_available() else 'cpu', help='Device')
 
-# ── MCTS Search ───────────────────────────────────────────────────────────────
+# --- MCTS Search ------------------------------------------------------------
 g_mcts = parser.add_argument_group('MCTS Search')
 g_mcts.add_argument('-n', type=int, default=200, help='Number of MCTS simulations per move')
 g_mcts.add_argument('-c', '--c_init', type=float, default=1.4, help='PUCT exploration constant')
@@ -50,7 +50,7 @@ g_mcts.add_argument('--cache_size', type=int, default=10000, help='LRU transposi
 g_mcts.add_argument('--no_symmetry', action='store_true',
                      help='Disable random symmetry augmentation during MCTS')
 
-# ── Exploration Noise ─────────────────────────────────────────────────────────
+# --- Exploration Noise ------------------------------------------------------
 g_noise = parser.add_argument_group('Exploration Noise')
 g_noise.add_argument('-a', '--alpha', type=float, default=0.3, help='Dirichlet noise alpha')
 g_noise.add_argument('--eps', type=float, default=0.25, help='Noise mixing epsilon')
@@ -58,20 +58,20 @@ g_noise.add_argument('--noise_steps', type=int, default=0,
                       help='Steps to decay noise_eps to noise_eps_min (0=no decay)')
 g_noise.add_argument('--noise_eps_min', type=float, default=0.1, help='Minimum noise epsilon')
 
-# ── Moves Left Head (MLH) ────────────────────────────────────────────────────
+# --- Moves Left Head (MLH) --------------------------------------------------
 g_aux = parser.add_argument_group('Auxiliary Utility')
 g_aux.add_argument('--mlh_slope', type=float, default=0.1,
-                    help='MLH slope for MCTS (0=disabled, Connect4 用)')
+                    help='MLH slope for MCTS (0=disabled, mainly for Connect4)')
 g_aux.add_argument('--mlh_cap', type=float, default=0.2,
                     help='MLH max effect cap')
 g_aux.add_argument('--score_utility_factor', type=float, default=0.15,
-                    help='KataGo-style score utility weight (0=disabled, Othello 用)')
+                    help='KataGo-style score utility weight (0=disabled, mainly for Othello)')
 g_aux.add_argument('--score_scale', type=float, default=8.0,
                     help='Score atan mapping scale denominator')
 g_aux.add_argument('--mlh_warmup_loss', type=float, default=0,
                     help='Aux-head loss threshold to activate aux utility (0=active from start)')
 
-# ── Self-play ─────────────────────────────────────────────────────────────────
+# --- Self-play --------------------------------------------------------------
 g_sp = parser.add_argument_group('Self-play')
 g_sp.add_argument('-t', '--temp', type=float, default=1, help='Self-play temperature')
 g_sp.add_argument('--temp_decay_moves', type=int, default=20,
@@ -81,7 +81,7 @@ g_sp.add_argument('--temp_endgame', type=float, default=0.3,
 g_sp.add_argument('--actor', type=str, default='current',
                    help='Which weight actors load (best/current)')
 
-# ── Training ──────────────────────────────────────────────────────────────────
+# --- Training ---------------------------------------------------------------
 g_train = parser.add_argument_group('Training')
 g_train.add_argument('--lr', type=float, default=0.001, help='Learning rate')
 g_train.add_argument('-b', '--batch_size', type=int, default=512, help='Training batch size')
@@ -95,28 +95,26 @@ g_train.add_argument('--policy_lr_scale', type=float, default=1,
                       help='Policy head LR multiplier')
 g_train.add_argument('--dropout', type=float, default=0.1, help='Dropout rate')
 g_train.add_argument('--distill_alpha', type=float, default=0.75,
-                      help='Distillation weight α: loss = (1-α)×CE(z) + α×KL(root_wdl||student) (0=pure z, 0.75=Lc0-style)')
+                      help='Distillation weight alpha: loss = (1-alpha)*CE(z) + alpha*KL(root_wdl||student) (0=pure z, 0.75=Lc0-style)')
 g_train.add_argument('--distill_temp', type=float, default=2.0,
                       help='Distillation temperature T: softens teacher/student distributions (1.0=no scaling, >1=softer)')
 g_train.add_argument('--value_decay', type=float, default=1,
-                      help='Game-length discount γ for value targets: target = γ^steps × z + (1-γ^steps) × uniform '
+                      help='Game-length discount gamma for value targets: target = gamma^steps * z + (1-gamma^steps) * uniform '
                            '(1.0=no scaling, 0.99=moderate, 0.97=aggressive)')
 g_train.add_argument('--psw_beta', type=float, default=0.3,
-                      help='Policy Surprise Weighting β: w = 1 + β×KL(π||p), up-weights positions where '
+                      help='Policy Surprise Weighting beta: w = 1 + beta*KL(pi||p), up-weights positions where '
                            'MCTS policy diverges from network prior (0=disabled)')
 g_train.add_argument('--entropy_lambda', type=float, default=0.01,
-                      help='Entropy regularization λ: subtracts λ×H(p) from policy loss to discourage '
+                      help='Entropy regularization lambda: subtracts lambda*H(p) from policy loss to discourage '
                            'policy collapse (0=disabled)')
 g_train.add_argument('--td_steps', type=int, default=10,
-                      help='N-step TD: number of steps k for future state S_{t+k} (0=disabled)')
+                      help='Future-root-WDL consistency: number of steps k for S_{t+k} (0=disabled)')
 g_train.add_argument('--td_alpha', type=float, default=0.2,
-                      help='N-step TD consistency weight: v_loss = (1-α)×base + α×KL(v(S_{t+k})||v(S_t)) '
+                      help='Future-root-WDL consistency weight: v_loss = (1-alpha)*base + alpha*KL(root_wdl(S_{t+k})||v(S_t)) '
                            '(0=disabled)')
-g_train.add_argument('--target_tau', type=float, default=0.97,
-                      help='EMA decay for target network used in TD consistency (higher=slower update)')
 
 
-# ── Evaluation ────────────────────────────────────────────────────────────────
+# --- Evaluation -------------------------------------------------------------
 g_eval = parser.add_argument_group('Evaluation')
 g_eval.add_argument('--interval', type=int, default=10, help='Eval interval (training steps)')
 g_eval.add_argument('--num_eval', type=int, default=50, help='Number of evaluation games')
@@ -164,7 +162,6 @@ config = {"lr": args.lr,
           "entropy_lambda": args.entropy_lambda,
           "td_steps": args.td_steps,
           "td_alpha": args.td_alpha,
-          "target_tau": args.target_tau,
           "compile": args.compile}
 
 
@@ -228,7 +225,6 @@ def print_config():
             "entropy_lambda": args.entropy_lambda,
             "td_steps": args.td_steps,
             "td_alpha": args.td_alpha,
-            "target_tau": args.target_tau,
             "compile": args.compile,
         }),
         ("Evaluation", {
@@ -281,7 +277,7 @@ class ServerPipeline(TrainPipeline):
         self.episode_len = None
 
     def data_collector(self):
-        """冷启动阶段等待 buffer 积累到 min_buffer_size，之后等待新数据到达再训练。"""
+        """Wait for the replay buffer warmup, then block until new data arrives."""
         if self._warmed_up:
             self._new_data_event.wait()
             self._new_data_event.clear()
@@ -296,15 +292,15 @@ class ServerPipeline(TrainPipeline):
         self._warmed_up = True
 
     def inbox_worker(self, buffer):
-        """后台线程：持续从 inbox 取整批数据存入 buffer，存完整批后通知训练线程。"""
+        """Move uploaded game batches from the inbox into the replay buffer."""
         while True:
-            batch = self._inbox.get()  # 阻塞等待，batch = list of games
+            batch = self._inbox.get()  # blocking wait; batch = list of games
             for play_data in batch:
                 for data in play_data:
                     buffer.store(*data)
                 with self._episode_len_lock:
                     self._episode_len_list.append(len(play_data))
-            self._new_data_event.set()  # 整批处理完才通知训练线程
+            self._new_data_event.set()  # notify training only after the full batch is stored
 
 
 app = Flask(__name__)
@@ -371,7 +367,7 @@ def weights():
 
 @app.route('/config', methods=['GET'])
 def get_config():
-    """返回 actor 需要的 MCTS / self-play 参数，client 启动时拉取。"""
+    """Return the MCTS and self-play config consumed by actors."""
     return jsonify({
         'env': args.env,
         'model': args.model,
@@ -411,13 +407,13 @@ def get_config():
     })
 
 
-# ── 运行时可调参数白名单 ──────────────────────────────────────────────────────
+# --- Runtime-Tunable Parameters --------------------------------------------
 _BOOL_PARAMS = {'use_symmetry'}
 
 _TUNABLE_PARAMS = {
     # Training
     'batch_size', 'entropy_lambda', 'psw_beta', 'distill_alpha',
-    'distill_temp', 'value_decay', 'n_epochs', 'td_alpha', 'target_tau',
+    'distill_temp', 'value_decay', 'n_epochs', 'td_alpha',
     # Self-play (clients pull via GET /config)
     'temp', 'temp_decay_moves', 'temp_endgame',
     'dirichlet_alpha', 'eps', 'noise_steps', 'noise_eps_min',
@@ -492,7 +488,7 @@ def _apply_pipeline_runtime_update(key):
 
 @app.route('/update', methods=['POST'])
 def update_config():
-    """运行时修改训练/搜索参数。POST JSON: {"param": value, ...}"""
+    """Update tunable training and search parameters at runtime."""
     updates = request.get_json(silent=True)
     if not updates:
         return jsonify({'status': 'error', 'message': 'empty or invalid JSON'}), 400
@@ -577,7 +573,7 @@ def set_seed(seed: int):
 
 
 if __name__ == '__main__':
-    # DDP 环境检测
+    # DDP environment detection
     rank = int(os.environ.get('RANK', 0))
     local_rank = int(os.environ.get('LOCAL_RANK', 0))
     world_size = int(os.environ.get('WORLD_SIZE', 1))
@@ -589,7 +585,7 @@ if __name__ == '__main__':
         args.device = f'cuda:{local_rank}'
         config['device'] = args.device
 
-    # 统一种子初始化模型（保证各 rank 权重一致）
+    # Initialize with a fixed seed so all ranks start from identical weights
     set_seed(0)
 
     pipeline = ServerPipeline(args.env, args.model, config,
@@ -598,7 +594,7 @@ if __name__ == '__main__':
                               local_rank=local_rank,
                               exp_id=args.exp)
 
-    # 模型初始化后按 rank 重设种子（训练多样性）
+    # Reseed after model init so each rank has independent training randomness
     set_seed(rank)
 
     if rank == 0:
@@ -615,11 +611,11 @@ if __name__ == '__main__':
                               device=pipeline.device)
         pipeline.init_buffer(buffer)
 
-        # 启动后台数据搬运线程：inbox → buffer（持续运行）
+        # Start the background inbox->buffer transfer worker
         worker = threading.Thread(target=pipeline.inbox_worker, args=(buffer,), daemon=True)
         worker.start()
 
-        # Flask 日志配置
+        # Flask logging configuration
         handler = logging.FileHandler(log_file, encoding='utf-8')
         handler.setLevel(logging.INFO)
         log = logging.getLogger('werkzeug')
@@ -633,7 +629,7 @@ if __name__ == '__main__':
 
         app.run(host=args.host, port=args.port, debug=False, use_reloader=False)
     else:
-        # 非零 rank：直接进入训练循环，在 barrier 处同步
+        # Non-zero ranks enter the training loop directly and sync at barriers
         pipeline()
 
     if is_ddp:
