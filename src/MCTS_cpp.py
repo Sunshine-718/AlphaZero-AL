@@ -108,7 +108,8 @@ class BatchedMCTS:
             # === 非 VL 路径 ===
             t0 = time.perf_counter() if use_time else 0.0
             for step in range(max_n):
-                leaf_boards, term_d, term_p1w, term_p2w, is_term, leaf_turns = self.mcts.search_batch(current_boards, turns)
+                leaf_boards, term_d, term_p1w, term_p2w, is_term, leaf_turns, valid_masks = \
+                    self.mcts.search_batch(current_boards, turns)
 
                 term_mask = is_term.astype(bool)
                 d_vals = term_d.copy()
@@ -126,7 +127,10 @@ class BatchedMCTS:
                         # 置换表未启用：全部送 NN，写入预分配 buffer
                         conv = self._convert_board(leaf_boards[non_term_mask], leaf_turns[non_term_mask])
                         self._conv_buf[:n_non_term] = conv
-                        non_term_probs, non_term_wdl, non_term_ml = pv_func.predict(self._conv_buf[:n_non_term])
+                        non_term_masks = valid_masks[non_term_mask].astype(bool, copy=False)
+                        non_term_probs, non_term_wdl, non_term_ml = pv_func.predict(
+                            self._conv_buf[:n_non_term], action_mask=non_term_masks
+                        )
                         probs[non_term_mask] = non_term_probs
                         # predict() returns relative WDL and is converted to absolute before backprop
                         d_abs, p1w_abs, p2w_abs = _relative_wdl_to_absolute(
@@ -161,7 +165,10 @@ class BatchedMCTS:
                             miss_turns  = leaf_turns[miss_indices]
                             conv = self._convert_board(miss_boards, miss_turns)
                             self._conv_buf[:n_miss] = conv
-                            miss_probs, miss_wdl, miss_ml = pv_func.predict(self._conv_buf[:n_miss])
+                            miss_masks = valid_masks[miss_indices].astype(bool, copy=False)
+                            miss_probs, miss_wdl, miss_ml = pv_func.predict(
+                                self._conv_buf[:n_miss], action_mask=miss_masks
+                            )
                             miss_ml = miss_ml.flatten()
                             for j, i in enumerate(miss_indices):
                                 probs[i]  = miss_probs[j]
@@ -206,7 +213,7 @@ class BatchedMCTS:
             # Warm-up：先做 1 次非 VL 迭代确保所有根节点已展开
             # 避免 VL 首批 K 次模拟全部落在未展开的根节点上浪费 K-1 次
             if remaining > 0:
-                leaf_boards, term_d, term_p1w, term_p2w, is_term, leaf_turns = \
+                leaf_boards, term_d, term_p1w, term_p2w, is_term, leaf_turns, valid_masks = \
                     self.mcts.search_batch(current_boards, turns)
                 probs = np.zeros((self.batch_size, self.action_size), dtype=np.float32)
                 d_vals = term_d.copy()
@@ -216,7 +223,9 @@ class BatchedMCTS:
                 non_term_mask = ~is_term.astype(bool)
                 if non_term_mask.any():
                     conv = self._convert_board(leaf_boards[non_term_mask], leaf_turns[non_term_mask])
-                    nn_probs, nn_wdl, nn_ml = pv_func.predict(conv)
+                    nn_probs, nn_wdl, nn_ml = pv_func.predict(
+                        conv, action_mask=valid_masks[non_term_mask].astype(bool, copy=False)
+                    )
                     probs[non_term_mask] = nn_probs
                     d_abs, p1w_abs, p2w_abs = _relative_wdl_to_absolute(
                         nn_wdl, leaf_turns[non_term_mask])
@@ -252,7 +261,7 @@ class BatchedMCTS:
                 cur_total = self.batch_size * cur_K
 
                 # VL Selection：每棵树 cur_K 次模拟，返回 N*cur_K 个叶节点
-                leaf_boards, term_d, term_p1w, term_p2w, is_term, leaf_turns, sym_ids = \
+                leaf_boards, term_d, term_p1w, term_p2w, is_term, leaf_turns, sym_ids, valid_masks = \
                     self.mcts.search_batch_vl(cur_K, current_boards, turns)
 
                 # try/finally 确保 VL 被清除：若 NN 推理抛异常，
@@ -271,7 +280,9 @@ class BatchedMCTS:
                     if non_term_mask.any():
                         if self.cache is None:
                             conv = self._convert_board(leaf_boards[non_term_mask], leaf_turns[non_term_mask])
-                            nn_probs, nn_wdl, nn_ml = pv_func.predict(conv)
+                            nn_probs, nn_wdl, nn_ml = pv_func.predict(
+                                conv, action_mask=valid_masks[non_term_mask].astype(bool, copy=False)
+                            )
                             probs[non_term_mask] = nn_probs
                             d_abs, p1w_abs, p2w_abs = _relative_wdl_to_absolute(
                                 nn_wdl, leaf_turns[non_term_mask]
@@ -303,7 +314,10 @@ class BatchedMCTS:
                                 miss_boards = leaf_boards[miss_indices]
                                 miss_turns  = leaf_turns[miss_indices]
                                 conv = self._convert_board(miss_boards, miss_turns)
-                                miss_probs, miss_wdl, miss_ml = pv_func.predict(conv)
+                                miss_masks = valid_masks[miss_indices].astype(bool, copy=False)
+                                miss_probs, miss_wdl, miss_ml = pv_func.predict(
+                                    conv, action_mask=miss_masks
+                                )
                                 miss_ml = miss_ml.flatten()
                                 for j, i in enumerate(miss_indices):
                                     probs[i]  = miss_probs[j]

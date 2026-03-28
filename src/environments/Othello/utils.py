@@ -121,8 +121,12 @@ def inspect(net, board=None):
         board[3, 3] = -1; board[3, 4] = 1
         board[4, 3] = 1;  board[4, 4] = -1
     with torch.no_grad():
+        from src.environments.Othello import Env
+
         state0 = board_to_state(board, 1)
-        probs0, wdl0, _ = net.predict(state0)
+        env0 = Env(board.astype(np.float32))
+        mask0 = np.asarray(env0.valid_mask(), dtype=bool)[None, :]
+        probs0, wdl0, _ = net.predict(state0, action_mask=mask0)
         probs0 = probs0.flatten()
         value0 = float(wdl0[0, 1] - wdl0[0, 2])  # W - L (to-move)
 
@@ -130,7 +134,9 @@ def inspect(net, board=None):
         board[2, 3] = 1
         board[3, 3] = 1  # 翻转
         state1 = board_to_state(board, -1)
-        probs1, wdl1, _ = net.predict(state1)
+        env1 = Env(board.astype(np.float32))
+        mask1 = np.asarray(env1.valid_mask(), dtype=bool)[None, :]
+        probs1, wdl1, _ = net.predict(state1, action_mask=mask1)
         probs1 = probs1.flatten()
         value1 = float(wdl1[0, 1] - wdl1[0, 2])
 

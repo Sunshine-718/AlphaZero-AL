@@ -109,6 +109,8 @@ void register_batched_mcts(py::module_ &m, const char *name)
             py::array_t<float> out_term_p2w(batch_size);
             py::array_t<uint8_t> out_term(batch_size);
             py::array_t<int> out_turns(batch_size);
+            py::array_t<uint8_t> out_valid_mask(
+                std::vector<py::ssize_t>{batch_size, ACTION_SIZE});
 
             int8_t* ptr_in = static_cast<int8_t*>(buf_in.ptr);
             int* ptr_turns = static_cast<int*>(buf_turns.ptr);
@@ -119,15 +121,17 @@ void register_batched_mcts(py::module_ &m, const char *name)
             float* ptr_out_tp2w = static_cast<float*>(out_term_p2w.request().ptr);
             uint8_t* ptr_out_term = static_cast<uint8_t*>(out_term.request().ptr);
             int* ptr_out_turns = static_cast<int*>(out_turns.request().ptr);
+            uint8_t* ptr_out_valid_mask = static_cast<uint8_t*>(out_valid_mask.request().ptr);
 
             {
                 py::gil_scoped_release release;
                 self.search_batch(ptr_in, ptr_turns, ptr_out_boards,
                                   ptr_out_td, ptr_out_tp1w, ptr_out_tp2w,
-                                  ptr_out_term, ptr_out_turns);
+                                  ptr_out_term, ptr_out_turns, ptr_out_valid_mask);
             }
 
-            return py::make_tuple(out_boards, out_term_d, out_term_p1w, out_term_p2w, out_term, out_turns); })
+            return py::make_tuple(out_boards, out_term_d, out_term_p1w, out_term_p2w,
+                                  out_term, out_turns, out_valid_mask); })
 
         /**
          * Backpropagation 阶段：用 NN 评估结果展开叶节点并反向传播。
@@ -218,6 +222,8 @@ void register_batched_mcts(py::module_ &m, const char *name)
             py::array_t<uint8_t> out_term(total);
             py::array_t<int>     out_turns(total);
             py::array_t<int>     out_sym_ids(total);
+            py::array_t<uint8_t> out_valid_mask(
+                std::vector<py::ssize_t>{total, ACTION_SIZE});
 
             int8_t*  ptr_in       = static_cast<int8_t*>(buf_in.ptr);
             int*     ptr_turns_in = static_cast<int*>(buf_turns.ptr);
@@ -228,18 +234,20 @@ void register_batched_mcts(py::module_ &m, const char *name)
             uint8_t* ptr_ot  = static_cast<uint8_t*>(out_term.request().ptr);
             int*     ptr_otn = static_cast<int*>(out_turns.request().ptr);
             int*     ptr_sym = static_cast<int*>(out_sym_ids.request().ptr);
+            uint8_t* ptr_vm  = static_cast<uint8_t*>(out_valid_mask.request().ptr);
 
             {
                 py::gil_scoped_release release;
                 self.search_batch_vl(K, ptr_in, ptr_turns_in, ptr_ob,
                                      ptr_td, ptr_tp1, ptr_tp2,
-                                     ptr_ot, ptr_otn, ptr_sym);
+                                     ptr_ot, ptr_otn, ptr_sym, ptr_vm);
             }
 
             return py::make_tuple(out_boards, out_term_d, out_term_p1w,
-                                  out_term_p2w, out_term, out_turns, out_sym_ids);
+                                  out_term_p2w, out_term, out_turns,
+                                  out_sym_ids, out_valid_mask);
         }, py::arg("K"), py::arg("input_boards"), py::arg("turns"),
-           "VL Selection: K sims per tree, returns N*K leaves + sym_ids")
+           "VL Selection: K sims per tree, returns N*K leaves + sym_ids + valid_mask")
 
         /**
          * VL Backpropagation 阶段：移除 VL 并反向传播 N*K 个结果。

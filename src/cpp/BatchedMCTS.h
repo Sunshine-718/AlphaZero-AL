@@ -124,7 +124,8 @@ namespace AlphaZero
             float *output_term_p1w,
             float *output_term_p2w,
             uint8_t *output_is_term,
-            int *output_turns)
+            int *output_turns,
+            uint8_t *output_valid_mask)
         {
 #pragma omp parallel for schedule(static)
             for (int i = 0; i < n_envs; ++i)
@@ -157,6 +158,15 @@ namespace AlphaZero
                 }
 
                 std::memcpy(output_boards + offset, result.board.board_data(), BOARD_SIZE);
+
+                uint8_t *mask_ptr = output_valid_mask + i * ACTION_SIZE;
+                std::fill(mask_ptr, mask_ptr + ACTION_SIZE, 0);
+                if (!result.is_terminal)
+                {
+                    auto valids = result.board.get_valid_moves();
+                    for (int action : valids)
+                        mask_ptr[action] = 1;
+                }
             }
         }
 
@@ -224,7 +234,8 @@ namespace AlphaZero
             float *output_term_p2w,
             uint8_t *output_is_term,
             int *output_turns,
-            int *sym_ids)
+            int *sym_ids,
+            uint8_t *output_valid_mask)
         {
 #pragma omp parallel for schedule(static)
             for (int i = 0; i < n_envs; ++i)
@@ -261,6 +272,15 @@ namespace AlphaZero
 
                     std::memcpy(output_boards + flat_idx * BOARD_SIZE,
                                 result.board.board_data(), BOARD_SIZE);
+
+                    uint8_t *mask_ptr = output_valid_mask + flat_idx * ACTION_SIZE;
+                    std::fill(mask_ptr, mask_ptr + ACTION_SIZE, 0);
+                    if (!result.is_terminal)
+                    {
+                        auto valids = result.board.get_valid_moves();
+                        for (int action : valids)
+                            mask_ptr[action] = 1;
+                    }
                 }
             }
         }

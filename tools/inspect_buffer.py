@@ -1208,7 +1208,8 @@ def analyze_nn(model_path, gcfg, device='cpu', output_dir=None):
         mask = np.array(env.valid_mask(), dtype=bool)
 
         with torch.no_grad():
-            log_p, log_v, aux_out, *_ = net(t)
+            mask_t = torch.from_numpy(mask).unsqueeze(0).to(device=device, dtype=torch.bool)
+            log_p, log_v, aux_out, *_ = net(t, action_mask=mask_t)
             prob = log_p.exp().cpu().numpy().flatten()
             vdist = log_v.exp().cpu().numpy().flatten()  # [draw, win(to-move), loss(to-move)]
 

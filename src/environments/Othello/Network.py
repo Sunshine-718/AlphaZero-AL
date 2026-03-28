@@ -41,7 +41,7 @@ class PolicyHead(nn.Module):
     def __init__(self, in_channels, out_dim, dropout=0.0):
         super().__init__()
         hidden_channels = 5
-        flat_dim = hidden_channels * 10 * 10
+        flat_dim = hidden_channels * 8 * 8
         self.conv = nn.Conv2d(in_channels, hidden_channels, kernel_size=1, bias=True)
         self.norm = nn.RMSNorm(flat_dim, eps=1e-5)
         self.fc = nn.Linear(flat_dim, out_dim)
@@ -62,7 +62,7 @@ class DualHead(nn.Module):
     def __init__(self, in_channels, dropout=0.0):
         super().__init__()
         hidden_channels = 5
-        flat_dim = hidden_channels * 10 * 10
+        flat_dim = hidden_channels * 8 * 8
         self.conv = nn.Conv2d(in_channels, hidden_channels, kernel_size=1, bias=True)
         self.norm = nn.RMSNorm(flat_dim, eps=1e-5)
         self.fc = nn.Linear(flat_dim, flat_dim)
@@ -105,10 +105,11 @@ class CNN(Base):
 
         self.piece_emb = nn.Embedding(3, embed_dim)
         self.pos_emb = nn.Embedding(10, embed_dim)
+        self.legal_emb = nn.Embedding(2, embed_dim)
         self.register_buffer('orbit_map', torch.tensor(_ORBIT_MAP, dtype=torch.long))
 
         self.hidden = nn.Sequential(
-            nn.Conv2d(embed_dim, h_dim, kernel_size=3, padding=2, bias=False),
+            nn.Conv2d(embed_dim, h_dim, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(h_dim),
             nn.SiLU(inplace=True),
             *[ResidualBlock(h_dim, dropout=dropout) for _ in range(num_res_blocks)],
@@ -119,11 +120,8 @@ class CNN(Base):
 
         self.apply(self.init_weights)
         nn.init.constant_(self.policy_head.fc.weight, 0)
-        nn.init.constant_(self.policy_head.fc.bias, 0)
         nn.init.constant_(self.dual_head.value_out.weight, 0)
-        nn.init.constant_(self.dual_head.value_out.bias, 0)
         nn.init.constant_(self.dual_head.aux_out.weight, 0)
-        nn.init.constant_(self.dual_head.aux_out.bias, 0)
 
         self.opt = torch.optim.AdamW(
             [
@@ -131,6 +129,7 @@ class CNN(Base):
                 {'params': self.dual_head.parameters()},
                 {'params': self.piece_emb.parameters(), 'weight_decay': 0},
                 {'params': self.pos_emb.parameters(), 'weight_decay': 0},
+                {'params': self.legal_emb.parameters(), 'weight_decay': 0},
                 {'params': self.policy_head.parameters(), 'lr': lr * policy_lr_scale},
             ],
             lr=lr,
@@ -173,17 +172,20 @@ class CNN(Base):
             state = torch.from_numpy(state)
         return state.to(self.device, dtype=torch.float32)
 
-    def _embed_state(self, state):
+    def _embed_state(self, state, action_mask=None):
         batch_size = state.size(0)
         own = state[:, 0].view(batch_size, 64) > 0.5
         opp = state[:, 1].view(batch_size, 64) > 0.5
         piece_id = own.long() + (opp.long() << 1)
         x = self.piece_emb(piece_id) + self.pos_emb(self.orbit_map).unsqueeze(0)
+        if action_mask is not None:
+            board_legal = action_mask[:, :64].to(dtype=torch.long)
+            x = x + self.legal_emb(board_legal)
         return x.transpose(1, 2).reshape(batch_size, self.embed_dim, 8, 8)
 
     def forward(self, x, action_mask=None):
         action_mask = self._normalize_action_mask(action_mask, x.device)
-        x = self._embed_state(x)
+        x = self._embed_state(x, action_mask=action_mask)
         hidden = self.hidden(x)
         log_prob = self.policy_head(hidden, action_mask)
         value, aux = self.dual_head(hidden)
