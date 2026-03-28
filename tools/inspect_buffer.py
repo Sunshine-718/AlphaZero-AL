@@ -1181,6 +1181,11 @@ def analyze_nn(model_path, gcfg, device='cpu', output_dir=None):
         net.load_weights_only(model_path, strict=True)
     except FileNotFoundError:
         load_status = '[yellow]Weights missing; using fresh initialized network[/yellow]'
+    except Exception as exc:
+        load_status = (
+            '[yellow]Checkpoint incompatible with current network; '
+            f'using fresh initialized network ({type(exc).__name__})[/yellow]'
+        )
     net.eval()
 
     print_banner('NN Overview', [

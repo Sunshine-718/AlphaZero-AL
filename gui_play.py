@@ -305,7 +305,10 @@ class AttentionExtractor:
     def attach(self, net):
         """Register hooks on net.hidden[-1].attn.{q_norm, k_norm, gate_proj/qkvg_proj}."""
         self.detach()
-        attn = net.hidden[-1].attn
+        attn = getattr(net.hidden[-1], 'attn', None)
+        if attn is None or not hasattr(attn, 'q_norm') or not hasattr(attn, 'k_norm'):
+            self._num_heads = 0
+            return False
         self._num_heads = attn.num_heads
         self._handles.append(attn.q_norm.register_forward_hook(self._hook_q))
         self._handles.append(attn.k_norm.register_forward_hook(self._hook_k))
@@ -313,6 +316,7 @@ class AttentionExtractor:
             self._handles.append(attn.gate_proj.register_forward_hook(self._hook_gate))
         elif hasattr(attn, 'qkvg_proj'):
             self._handles.append(attn.qkvg_proj.register_forward_hook(self._hook_gate))
+        return True
 
     def detach(self):
         for h in self._handles:
@@ -2342,6 +2346,8 @@ class Connect4GUI(QWidget):
 
         self._attn_extractor.attach(self.net)
         self._attn_net = self.net
+        self.board.attn_weights = None
+        self.board.gate_scores = None
         self._sync_attn_head_selector()
 
         p = self.az_player

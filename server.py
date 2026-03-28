@@ -101,15 +101,15 @@ g_train.add_argument('--distill_temp', type=float, default=2.0,
 g_train.add_argument('--value_decay', type=float, default=1,
                       help='Game-length discount gamma for value targets: target = gamma^steps * z + (1-gamma^steps) * uniform '
                            '(1.0=no scaling, 0.99=moderate, 0.97=aggressive)')
-g_train.add_argument('--psw_beta', type=float, default=0.3,
+g_train.add_argument('--psw_beta', type=float, default=0.5,
                       help='Policy Surprise Weighting beta: w = 1 + beta*KL(pi||p), up-weights positions where '
                            'MCTS policy diverges from network prior (0=disabled)')
-g_train.add_argument('--entropy_lambda', type=float, default=0.01,
+g_train.add_argument('--entropy_lambda', type=float, default=0.05,
                       help='Entropy regularization lambda: subtracts lambda*H(p) from policy loss to discourage '
                            'policy collapse (0=disabled)')
 g_train.add_argument('--td_steps', type=int, default=10,
                       help='Future-root-WDL consistency: number of steps k for S_{t+k} (0=disabled)')
-g_train.add_argument('--td_alpha', type=float, default=0.2,
+g_train.add_argument('--td_alpha', type=float, default=0.5,
                       help='Future-root-WDL consistency weight: v_loss = (1-alpha)*base + alpha*KL(root_wdl(S_{t+k})||v(S_t)) '
                            '(0=disabled)')
 
