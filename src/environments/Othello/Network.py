@@ -41,7 +41,7 @@ class PolicyHead(nn.Module):
     def __init__(self, in_channels, out_dim, dropout=0.0):
         super().__init__()
         hidden_channels = 5
-        flat_dim = hidden_channels * 8 * 8
+        flat_dim = hidden_channels * 10 * 10
         self.conv = nn.Conv2d(in_channels, hidden_channels, kernel_size=1, bias=True)
         self.norm = nn.RMSNorm(flat_dim, eps=1e-5)
         self.fc = nn.Linear(flat_dim, out_dim)
@@ -62,7 +62,7 @@ class DualHead(nn.Module):
     def __init__(self, in_channels, dropout=0.0):
         super().__init__()
         hidden_channels = 5
-        flat_dim = hidden_channels * 8 * 8
+        flat_dim = hidden_channels * 10 * 10
         self.conv = nn.Conv2d(in_channels, hidden_channels, kernel_size=1, bias=True)
         self.norm = nn.RMSNorm(flat_dim, eps=1e-5)
         self.fc = nn.Linear(flat_dim, flat_dim)
@@ -109,7 +109,7 @@ class CNN(Base):
         self.register_buffer('orbit_map', torch.tensor(_ORBIT_MAP, dtype=torch.long))
 
         self.hidden = nn.Sequential(
-            nn.Conv2d(embed_dim, h_dim, kernel_size=3, padding=1, bias=False),
+            nn.Conv2d(embed_dim, h_dim, kernel_size=3, padding=2, bias=False),
             nn.BatchNorm2d(h_dim),
             nn.SiLU(inplace=True),
             *[ResidualBlock(h_dim, dropout=dropout) for _ in range(num_res_blocks)],
