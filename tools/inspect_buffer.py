@@ -663,6 +663,9 @@ def analyze_embeddings(net, output_dir, gcfg):
     """分析并可视化 Piece / Position Embedding。"""
     piece_w = net.piece_emb.weight.detach().cpu()    # (n_pieces, d)
     pos_w = net.pos_emb.weight.detach().cpu()        # (n_orbits, d)
+    has_legal = hasattr(net, 'legal_emb')
+    if has_legal:
+        legal_w = net.legal_emb.weight.detach().cpu()  # (2, d)
     has_phase = hasattr(net, 'phase_emb')
     if has_phase:
         phase_w = net.phase_emb.weight.detach().cpu()  # (2, d)
@@ -677,6 +680,7 @@ def analyze_embeddings(net, output_dir, gcfg):
 
     PIECE_NAMES = ['Empty', 'Own', 'Opp'] if n_pieces == 3 else ['Own', 'Opp']
     PLAYER_NAMES = ['P1 (Black)', 'P2 (White)']
+    LEGAL_NAMES = ['Illegal', 'Legal']
 
     # ── 1. Piece Embedding 表格 ──
     piece_norms = piece_w.norm(dim=1)
@@ -739,6 +743,25 @@ def analyze_embeddings(net, output_dir, gcfg):
         player_table.add_row('cos(P1, P2)', f'{p_cos:+.4f}')
         player_table.add_row('L2 dist(P1, P2)', f'{p_dist:.4f}')
         console.print(player_table)
+
+    # ── 3b. Legal Embedding 表格（仅在存在时显示） ──
+    if has_legal:
+        legal_norms = legal_w.norm(dim=1)
+        legal_cos = _cosine_sim(legal_w[0], legal_w[1])
+        legal_dist = float((legal_w[0] - legal_w[1]).norm())
+        legal_delta = legal_w[1] - legal_w[0]
+
+        legal_table = Table(title='Legal Embedding', show_header=True, header_style='bold')
+        legal_table.add_column('', style='bold')
+        legal_table.add_column('L2 Norm', justify='right')
+        legal_table.add_column('Top-|value| dims')
+        for i, name in enumerate(LEGAL_NAMES):
+            legal_table.add_row(name, f'{legal_norms[i]:.4f}', _fmt_top_dims(legal_w[i]))
+        legal_table.add_section()
+        legal_table.add_row('cos(Illegal, Legal)', f'{legal_cos:+.4f}', '')
+        legal_table.add_row('L2 dist(Illegal, Legal)', f'{legal_dist:.4f}', '')
+        legal_table.add_row('Top dims Δ(Legal-Illegal)', '', _fmt_top_dims(legal_delta))
+        console.print(legal_table)
 
     # ── 4. Position Embedding 表格（关键轨道） ──
     pos_norms = pos_w.norm(dim=1)
@@ -917,6 +940,44 @@ def analyze_embeddings(net, output_dir, gcfg):
     fig.savefig(path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     console.print(f'    [dim]\\[saved] {path}[/dim]')
+
+    # 5f+. Legal Embedding PCA / delta（仅在存在时显示）
+    if has_legal:
+        legal_pca = PCA(n_components=2)
+        legal_2d = legal_pca.fit_transform(legal_w.numpy())
+        fig, ax = plt.subplots(figsize=(6, 5))
+        legal_colors = ['#999999', '#55A868']
+        legal_markers = ['o', 's']
+        for i, name in enumerate(LEGAL_NAMES):
+            ax.scatter(legal_2d[i, 0], legal_2d[i, 1], s=180, c=legal_colors[i],
+                       marker=legal_markers[i], linewidths=1.5, edgecolors='black', zorder=5)
+            ax.annotate(name, (legal_2d[i, 0], legal_2d[i, 1]),
+                        textcoords='offset points', xytext=(8, 8), fontsize=10, fontweight='bold')
+        ax.set_xlabel(f'PC1 ({legal_pca.explained_variance_ratio_[0]*100:.1f}%)')
+        ax.set_ylabel(f'PC2 ({legal_pca.explained_variance_ratio_[1]*100:.1f}%)')
+        ax.set_title('Legal Embedding PCA')
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        path = os.path.join(output_dir, 'emb_legal_pca.png')
+        fig.savefig(path, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        console.print(f'    [dim]\\[saved] {path}[/dim]')
+
+        legal_delta = legal_w[1] - legal_w[0]
+        top_dims = torch.argsort(legal_delta.abs(), descending=True)[:8]
+        fig, ax = plt.subplots(figsize=(8, 4.5))
+        vals = legal_delta[top_dims].numpy()
+        colors = ['#55A868' if v >= 0 else '#C44E52' for v in vals]
+        ax.bar([f'd{int(i)}' for i in top_dims], vals, color=colors, alpha=0.9)
+        ax.axhline(0.0, color='black', linewidth=1)
+        ax.set_ylabel('Legal - Illegal')
+        ax.set_title('Legal Embedding Top Delta Dimensions')
+        ax.grid(True, axis='y', alpha=0.25)
+        plt.tight_layout()
+        path = os.path.join(output_dir, 'emb_legal_delta_dims.png')
+        fig.savefig(path, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        console.print(f'    [dim]\\[saved] {path}[/dim]')
 
     # 5g. Phase Embedding interpolation trajectory
     if has_phase:
