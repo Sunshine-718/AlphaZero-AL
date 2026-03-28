@@ -941,22 +941,35 @@ def analyze_embeddings(net, output_dir, gcfg):
     plt.close(fig)
     console.print(f'    [dim]\\[saved] {path}[/dim]')
 
-    # 5f+. Legal Embedding PCA / delta（仅在存在时显示）
+    # 5f+. Legal Embedding 1D PCA / delta（仅在存在时显示）
     if has_legal:
-        legal_pca = PCA(n_components=2)
-        legal_2d = legal_pca.fit_transform(legal_w.numpy())
-        fig, ax = plt.subplots(figsize=(6, 5))
+        legal_pca = PCA(n_components=1)
+        legal_pc1 = legal_pca.fit_transform(legal_w.numpy()).reshape(-1)
+        fig, ax = plt.subplots(figsize=(7, 3.8))
         legal_colors = ['#999999', '#55A868']
         legal_markers = ['o', 's']
+        y_pos = [0.0, 0.0]
+
+        ax.plot(legal_pc1, y_pos, color='#4C72B0', linewidth=2, alpha=0.85, zorder=1)
         for i, name in enumerate(LEGAL_NAMES):
-            ax.scatter(legal_2d[i, 0], legal_2d[i, 1], s=180, c=legal_colors[i],
+            ax.scatter(legal_pc1[i], y_pos[i], s=180, c=legal_colors[i],
                        marker=legal_markers[i], linewidths=1.5, edgecolors='black', zorder=5)
-            ax.annotate(name, (legal_2d[i, 0], legal_2d[i, 1]),
+            ax.annotate(name, (legal_pc1[i], y_pos[i]),
                         textcoords='offset points', xytext=(8, 8), fontsize=10, fontweight='bold')
+
+        delta = legal_pc1[1] - legal_pc1[0]
+        mid = float(np.mean(legal_pc1))
+        ax.annotate(f'ΔPC1={delta:+.3f}', (mid, 0.0),
+                    textcoords='offset points', xytext=(0, -18),
+                    ha='center', fontsize=9, color='#1f4e79')
+
+        pad = max(0.1, abs(delta) * 0.25)
+        ax.set_xlim(float(legal_pc1.min() - pad), float(legal_pc1.max() + pad))
+        ax.set_ylim(-0.5, 0.5)
+        ax.set_yticks([])
         ax.set_xlabel(f'PC1 ({legal_pca.explained_variance_ratio_[0]*100:.1f}%)')
-        ax.set_ylabel(f'PC2 ({legal_pca.explained_variance_ratio_[1]*100:.1f}%)')
-        ax.set_title('Legal Embedding PCA')
-        ax.grid(True, alpha=0.3)
+        ax.set_title('Legal Embedding 1D PCA')
+        ax.grid(True, axis='x', alpha=0.3)
         plt.tight_layout()
         path = os.path.join(output_dir, 'emb_legal_pca.png')
         fig.savefig(path, dpi=150, bbox_inches='tight')
