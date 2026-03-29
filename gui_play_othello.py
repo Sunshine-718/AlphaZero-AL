@@ -2664,15 +2664,19 @@ class OthelloGUI(QWidget):
             base = self.env.current_state()  # (1, 3, 8, 8)
             # Build symmetry-augmented batch (K states) for attention ensemble
             sym_states = []
+            sym_masks = []
             for s in _SYM_IDS:
                 st = np.stack([apply_sym_board(base[0, c], s, 'Othello')
                                for c in range(3)], axis=0)  # (3, 8, 8)
                 sym_states.append(st)
+                sym_env = self.env.apply_symmetry(s, inplace=False)
+                sym_masks.append(np.array(sym_env.valid_mask(), dtype=bool))
             batch = np.stack(sym_states)  # (K, 3, 8, 8)
             t = torch.from_numpy(batch).float().to(net.device)
+            mask_t = torch.from_numpy(np.stack(sym_masks)).to(net.device, dtype=torch.bool)
             self._attn_extractor.begin_capture()
             try:
-                _, vl, sl, *_ = net(t)
+                _, vl, sl, *_ = net(t, action_mask=mask_t)
             finally:
                 self._attn_extractor.end_capture()
 
@@ -2745,12 +2749,16 @@ class OthelloGUI(QWidget):
             # 对称增强：对所有对称变换取平均
             base = self.env.current_state()  # (1, 3, R, C)
             sym_states = []
+            sym_masks = []
             for s in _SYM_IDS:
                 st = np.stack([apply_sym_board(base[0, c], s, 'Othello')
                                for c in range(3)], axis=0)  # (3, R, C)
                 sym_states.append(st)
+                sym_env = self.env.apply_symmetry(s, inplace=False)
+                sym_masks.append(np.array(sym_env.valid_mask(), dtype=bool))
             states = np.stack(sym_states)  # (K, 3, R, C)
-            all_probs, all_wdl, _ = pv_fn.predict(states)  # (K, A), (K, 3)
+            masks = np.stack(sym_masks)    # (K, A)
+            all_probs, all_wdl, _ = pv_fn.predict(states, action_mask=masks)  # (K, A), (K, 3)
             # 逆变换每个对称的 policy 再取平均
             for i, s in enumerate(_SYM_IDS):
                 all_probs[i] = inverse_sym_visits(all_probs[i], s, 'Othello')

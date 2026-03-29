@@ -907,21 +907,31 @@ def analyze_embeddings(net, output_dir, gcfg):
     plt.close(fig)
     console.print(f'    [dim]\\[saved] {path}[/dim]')
 
-    # 5f. Piece (+ Player) Embedding PCA 散点图
-    piece_colors = ['#55A868', '#4C72B0', '#DD8452'][:n_pieces]
+    # 5f. Piece (+ Legal / Player) Embedding PCA 散点图
+    piece_colors = ['#999999', '#4C72B0', '#DD8452'][:n_pieces]
     piece_markers = (['o', 's', 's'] if n_pieces == 3 else ['s', 's'])[:n_pieces]
+    all_emb_parts = [piece_w]
+    all_labels = list(PIECE_NAMES)
+    all_colors = list(piece_colors)
+    all_markers = list(piece_markers)
+    title_parts = ['Piece']
+
+    if has_legal:
+        all_emb_parts.append(legal_w)
+        all_labels.extend(LEGAL_NAMES)
+        all_colors.extend(['#7F7F7F', '#2CA02C'])
+        all_markers.extend(['P', 'X'])
+        title_parts.append('Legal')
+
     if has_player:
-        all_emb = torch.cat([piece_w, player_w], dim=0)
-        all_labels = PIECE_NAMES + PLAYER_NAMES
-        all_colors = piece_colors + ['#8172B2', '#C44E52']
-        all_markers = piece_markers + ['^', '^']
-        title = 'Piece & Player Embedding PCA'
-    else:
-        all_emb = piece_w
-        all_labels = PIECE_NAMES
-        all_colors = piece_colors
-        all_markers = piece_markers
-        title = 'Piece Embedding PCA'
+        all_emb_parts.append(player_w)
+        all_labels.extend(PLAYER_NAMES)
+        all_colors.extend(['#8172B2', '#C44E52'])
+        all_markers.extend(['^', '^'])
+        title_parts.append('Player')
+
+    all_emb = torch.cat(all_emb_parts, dim=0)
+    title = ' & '.join(title_parts) + ' Embedding PCA'
 
     pca2 = PCA(n_components=2)
     emb_2d = pca2.fit_transform(all_emb.numpy())
@@ -936,7 +946,7 @@ def analyze_embeddings(net, output_dir, gcfg):
     ax.set_title(title)
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
-    path = os.path.join(output_dir, 'emb_piece_player.png')
+    path = os.path.join(output_dir, 'emb_piece_legal_player.png')
     fig.savefig(path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     console.print(f'    [dim]\\[saved] {path}[/dim]')
@@ -1051,7 +1061,7 @@ def analyze_embeddings(net, output_dir, gcfg):
 
 # ────────────────────────── Attention Map ──────────────────────────
 
-def _extract_attention_data(net, state_tensor):
+def _extract_attention_data(net, state_tensor, action_mask=None):
     """Extract attention weights and gate scores from all Attention modules.
 
     Hooks q_norm/k_norm outputs to compute softmax(Q @ K^T / sqrt(d_k)).
@@ -1094,7 +1104,10 @@ def _extract_attention_data(net, state_tensor):
         return [], []
 
     with torch.no_grad():
-        net(state_tensor)
+        if action_mask is None:
+            net(state_tensor)
+        else:
+            net(state_tensor, action_mask=action_mask)
 
     for h in hooks:
         h.remove()
@@ -1137,8 +1150,14 @@ def analyze_attention(net, output_dir, gcfg, device='cpu'):
         board = make_board()
         state = board_to_state(board, turn)
         t = torch.from_numpy(state).to(device)
+        action_mask_t = None
+        if hasattr(net, 'legal_emb'):
+            env_mod = importlib.import_module(gcfg['env_module'])
+            env = env_mod.Env(board.astype(np.float32))
+            mask = np.array(env.valid_mask(), dtype=bool)[None, :]
+            action_mask_t = torch.from_numpy(mask).to(device=device, dtype=torch.bool)
 
-        attn_list, gate_list = _extract_attention_data(net, t)
+        attn_list, gate_list = _extract_attention_data(net, t, action_mask=action_mask_t)
         if not attn_list:
             return
 

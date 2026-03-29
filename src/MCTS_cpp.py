@@ -183,6 +183,7 @@ class BatchedMCTS:
                                 key = leaf_boards[i].tobytes() + leaf_turns[i].item().to_bytes(1, 'little', signed=True)
                                 self.cache.put(key, (miss_probs[j].copy(), miss_wdl[j].copy(), miss_ml[j].item()))
                                 self.cache._od[key]['state'] = conv[j:j+1]
+                                self.cache._od[key]['valid_mask'] = miss_masks[j:j+1].copy()
 
                 self.mcts.backprop_batch(
                     np.ascontiguousarray(probs, dtype=np.float32),
@@ -332,6 +333,7 @@ class BatchedMCTS:
                                     key = leaf_boards[i].tobytes() + leaf_turns[i].item().to_bytes(1, 'little', signed=True)
                                     self.cache.put(key, (miss_probs[j].copy(), miss_wdl[j].copy(), miss_ml[j].item()))
                                     self.cache._od[key]['state'] = conv[j:j+1]
+                                    self.cache._od[key]['valid_mask'] = miss_masks[j:j+1].copy()
 
                     self.mcts.backprop_batch_vl(
                         cur_K,
@@ -362,7 +364,10 @@ class BatchedMCTS:
         od = self.cache._od
         keys = list(od.keys())
         states = np.concatenate([od[k]['state'] for k in keys], axis=0)
-        new_probs, new_wdl, new_ml = pv_func.predict(states)
+        valid_masks = None
+        if all('valid_mask' in od[k] for k in keys):
+            valid_masks = np.concatenate([od[k]['valid_mask'] for k in keys], axis=0)
+        new_probs, new_wdl, new_ml = pv_func.predict(states, action_mask=valid_masks)
         new_ml = new_ml.flatten()
         for j, k in enumerate(keys):
             od[k]['value'] = (new_probs[j].copy(), new_wdl[j].copy(), new_ml[j].item())

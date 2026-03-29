@@ -199,7 +199,10 @@ class Base(ABC, nn.Module):
 
     def _final_train_metrics(self, last_batch, last_log_p_pred):
         with torch.no_grad():
-            _, new_v, _ = self(last_batch['state'])
+            _, new_v, _ = self(
+                last_batch['state'],
+                action_mask=last_batch.get('valid_mask'),
+            )
             f1 = f1_score(
                 last_batch['value_class'].cpu().numpy(),
                 torch.argmax(new_v, dim=-1).cpu().numpy(),
