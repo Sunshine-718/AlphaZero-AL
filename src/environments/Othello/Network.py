@@ -1,5 +1,4 @@
 import math
-import os
 import numpy as np
 import torch
 import torch.nn as nn
@@ -184,48 +183,6 @@ class CNN(Base):
         board_legal = action_mask[:, :64].to(dtype=torch.long)
         x = x + empty.unsqueeze(-1) * self.legal_emb(board_legal)
         return x.transpose(1, 2).reshape(batch_size, self.embed_dim, 8, 8)
-
-    @staticmethod
-    def _migrate_legacy_state_dict(state_dict):
-        migrated = False
-        adapted = dict(state_dict)
-
-        piece_key = 'piece_emb.weight'
-        legal_key = 'legal_emb.weight'
-        if piece_key in adapted and adapted[piece_key].shape[0] == 3:
-            empty_emb = adapted[piece_key][0:1]
-            adapted[piece_key] = adapted[piece_key][1:].clone()
-            if legal_key in adapted and adapted[legal_key].shape[0] == 2:
-                adapted[legal_key] = adapted[legal_key].clone() + empty_emb
-            migrated = True
-
-        rename_pairs = {
-            'policy_head.conv.weight': 'policy_head.proj.weight',
-            'policy_head.conv.bias': 'policy_head.proj.bias',
-        }
-        for old_key, new_key in rename_pairs.items():
-            if old_key in adapted and new_key not in adapted:
-                adapted[new_key] = adapted.pop(old_key)
-                migrated = True
-
-        for key in list(adapted.keys()):
-            if key.startswith('policy_head.norm.') or key.startswith('policy_head.fc.'):
-                adapted.pop(key)
-                migrated = True
-
-        return adapted, migrated
-
-    def load_weights_only(self, path=None, strict=True):
-        if path is None:
-            return self
-
-        model_file = os.path.join(path, 'model.pt')
-        state_dict = torch.load(model_file, map_location=self.device, weights_only=True)
-        state_dict, migrated = self._migrate_legacy_state_dict(state_dict)
-        self.load_state_dict(state_dict, strict=(strict and not migrated))
-        if migrated:
-            print('Loaded Othello checkpoint with legacy embedding/policy-head migration.')
-        return self
 
     def forward(self, x, action_mask):
         action_mask = self._normalize_action_mask(action_mask, x.device)
