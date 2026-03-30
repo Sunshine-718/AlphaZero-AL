@@ -183,6 +183,7 @@ class Actor:
         if args.compile:
             print('torch.compile enabled — compiling model (first iteration will be slow)...')
             self.net = torch.compile(self.net, mode='reduce-overhead')
+        self.net.eval()
 
         self.az_player = AlphaZeroPlayer(
             self.net,
@@ -313,6 +314,7 @@ class Actor:
                 weights = {f'_orig_mod.{k}': v for k, v in weights.items()}
             self.net.load_state_dict(weights, strict=True)
             self.net.to(args.device)
+            self.net.eval()
             self.mtime = float(r.headers['X-Timestamp'])
             self.az_player.mcts.refresh_cache(self.net)
             self._sync_config()
