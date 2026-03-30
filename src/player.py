@@ -213,10 +213,14 @@ class AlphaZeroPlayer(Player):
         self.pv_fn.to(device)
 
     def train(self):
+        if self.pv_fn is not None and hasattr(self.pv_fn, 'train'):
+            self.pv_fn.train()
         if self.mcts:
             self.mcts.set_noise_epsilon(self._noise_eps)
 
     def eval(self):
+        if self.pv_fn is not None and hasattr(self.pv_fn, 'eval'):
+            self.pv_fn.eval()
         if self.mcts:
             # sym_ensemble 不需要噪声：4 棵树看到不同棋盘，搜索路径自然不同
             if self.sym_ensemble:
