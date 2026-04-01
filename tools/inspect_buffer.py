@@ -1358,7 +1358,7 @@ def main():
     parser.add_argument('--buffer', default=None)
     parser.add_argument('--model', default=None)
     parser.add_argument('--best', action='store_true', help='Use best model')
-    parser.add_argument('--device', default='cpu')
+    parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
     parser.add_argument('--top', type=int, default=10)
     parser.add_argument('--output', default=None, help='Output directory for plots (default: tools/figures/<timestamp>)')
     parser.add_argument('--font', default=None, help='Matplotlib font family name for Chinese')
