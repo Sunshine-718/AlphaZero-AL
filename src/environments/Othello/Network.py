@@ -41,16 +41,16 @@ class PolicyHead(nn.Module):
     def __init__(self, in_channels, out_dim, dropout=0.0):
         super().__init__()
         assert out_dim == 65
-        self.proj = nn.Sequential(nn.Conv2d(in_channels, in_channels, kernel_size=3, bias=False),
+        self.stem = nn.Sequential(nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1, bias=False),
                                   nn.BatchNorm2d(in_channels),
                                   nn.SiLU(True),
-                                  nn.Dropout2d(dropout))
+                                  nn.Dropout(dropout))
         self.board_out = nn.Conv2d(in_channels, 1, kernel_size=1, bias=True)
         self.pass_norm = nn.RMSNorm(in_channels, eps=1e-5)
         self.pass_fc = nn.Linear(in_channels, 1)
 
     def forward(self, x, action_mask):
-        x = self.proj(x)
+        x = self.stem(x)
         board_logits = self.board_out(x).flatten(start_dim=1)
         pass_feat = self.pass_norm(x.mean(dim=(2, 3)))
         pass_logit = self.pass_fc(pass_feat)
@@ -58,32 +58,60 @@ class PolicyHead(nn.Module):
         logits = logits.masked_fill(~action_mask, -1e9)
         return nn.functional.log_softmax(logits, dim=-1)
 
+    def reset_output_parameters(self):
+        nn.init.constant_(self.board_out.weight, 0)
+        if self.board_out.bias is not None:
+            nn.init.constant_(self.board_out.bias, 0)
+        nn.init.constant_(self.pass_fc.weight, 0)
+        if self.pass_fc.bias is not None:
+            nn.init.constant_(self.pass_fc.bias, 0)
 
-class DualHead(nn.Module):
+
+class TriHead(nn.Module):
     def __init__(self, in_channels, dropout=0.0):
         super().__init__()
-        self.stem = nn.Sequential(nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=2, bias=False),
+        self.stem = nn.Sequential(nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1, bias=False),
                                   nn.BatchNorm2d(in_channels),
                                   nn.SiLU(True),
-                                  nn.Dropout2d(dropout),
-                                  nn.Conv2d(in_channels, in_channels, kernel_size=4, bias=False),
-                                  nn.BatchNorm2d(in_channels),
-                                  nn.SiLU(True),
-                                  nn.Dropout2d(dropout),
-                                  nn.Flatten())
-        self.value_out = nn.Linear(in_channels, 3)
-        self.aux_out = nn.Linear(in_channels, 1)
+                                  nn.Dropout(dropout))
+        self.value_out = nn.Sequential(nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=2, bias=False),
+                                       nn.BatchNorm2d(in_channels),
+                                       nn.SiLU(True),
+                                       nn.Dropout2d(dropout),
+                                       nn.MaxPool2d(3, 3),
+                                       nn.Flatten(),
+                                       nn.Linear(in_channels, 3))
+        self.ownership_out = nn.Conv2d(in_channels, 3, kernel_size=1, bias=True)
+        self.aux_out = nn.Sequential(nn.Flatten(),
+                                     nn.SiLU(True),
+                                     nn.RMSNorm(3 * 8 * 8, eps=1e-5),
+                                     nn.Linear(3 * 8 * 8, 1))
 
     def forward(self, x):
         h = self.stem(x)
         value = nn.functional.log_softmax(self.value_out(h), dim=-1)
-        aux = torch.tanh(self.aux_out(h).squeeze(-1))
-        return value, aux
+        ownership_logit = self.ownership_out(h)
+        ownership = nn.functional.log_softmax(ownership_logit, dim=1)
+        aux = torch.tanh(self.aux_out(ownership_logit).squeeze(-1))
+        return value, aux, ownership
+
+    def reset_output_parameters(self):
+        nn.init.constant_(self.value_out[-1].weight, 0)
+        if self.value_out[-1].bias is not None:
+            nn.init.constant_(self.value_out[-1].bias, 0)
+        nn.init.constant_(self.aux_out[-1].weight, 0)
+        if self.aux_out[-1].bias is not None:
+            nn.init.constant_(self.aux_out[-1].bias, 0)
+        nn.init.constant_(self.ownership_out.weight, 0)
+        if self.ownership_out.bias is not None:
+            nn.init.constant_(self.ownership_out.bias, 0)
 
 
 class CNN(Base):
     aux_target_offset = 64
     score_scale = 8.0
+    ownership_loss_weight = 1.0
+    ownership_class_order = ('empty', 'own', 'opp')
 
     def __init__(
         self,
@@ -93,7 +121,7 @@ class CNN(Base):
         out_dim=65,
         dropout=0.2,
         device='cpu',
-        num_res_blocks=4,
+        num_res_blocks=3,
         policy_lr_scale=0.3,
     ):
         super().__init__()
@@ -107,26 +135,28 @@ class CNN(Base):
         self.legal_emb = nn.Embedding(2, embed_dim)
         self.register_buffer('orbit_map', torch.tensor(_ORBIT_MAP, dtype=torch.long))
 
-        self.hidden = nn.Sequential(
+        self.stem = nn.Sequential(
             nn.Conv2d(embed_dim, h_dim, kernel_size=3, padding=2, bias=False),
             nn.BatchNorm2d(h_dim),
             nn.SiLU(inplace=True),
             *[ResidualBlock(h_dim, dropout=dropout) for _ in range(num_res_blocks)],
+            nn.Conv2d(h_dim, h_dim, kernel_size=3, bias=False),
+            nn.BatchNorm2d(h_dim),
+            nn.SiLU(True),
+            nn.Dropout2d(dropout)
         )
 
         self.policy_head = PolicyHead(h_dim, out_dim, dropout)
-        self.dual_head = DualHead(h_dim, dropout)
+        self.tri_head = TriHead(h_dim, dropout)
 
         self.apply(self.init_weights)
-        nn.init.constant_(self.policy_head.board_out.weight, 0)
-        nn.init.constant_(self.policy_head.pass_fc.weight, 0)
-        nn.init.constant_(self.dual_head.value_out.weight, 0)
-        nn.init.constant_(self.dual_head.aux_out.weight, 0)
+        self.policy_head.reset_output_parameters()
+        self.tri_head.reset_output_parameters()
 
         self.opt = torch.optim.AdamW(
             [
-                {'params': self.hidden.parameters()},
-                {'params': self.dual_head.parameters()},
+                {'params': self.stem.parameters()},
+                {'params': self.tri_head.parameters()},
                 {'params': self.piece_emb.parameters(), 'weight_decay': 0},
                 {'params': self.pos_emb.parameters(), 'weight_decay': 0},
                 {'params': self.legal_emb.parameters(), 'weight_decay': 0},
@@ -187,10 +217,10 @@ class CNN(Base):
     def forward(self, x, action_mask):
         action_mask = self._normalize_action_mask(action_mask, x.device)
         x = self._embed_state(x, action_mask=action_mask)
-        hidden = self.hidden(x)
+        hidden = self.stem(x)
         log_prob = self.policy_head(hidden, action_mask)
-        value, aux = self.dual_head(hidden)
-        return log_prob, value, aux
+        value, aux, ownership = self.tri_head(hidden)
+        return log_prob, value, aux, ownership
 
     @torch.no_grad()
     def policy(self, state, action_mask):
@@ -207,6 +237,14 @@ class CNN(Base):
             return self(state, action_mask=action_mask)[1].exp().cpu().numpy()
 
     @torch.no_grad()
+    def ownership(self, state, action_mask):
+        state = self._to_state_tensor(state)
+        action_mask = self._normalize_action_mask(action_mask, state.device)
+        with torch.autocast(self.device, dtype=torch.bfloat16, enabled=self.device != 'cpu'):
+            ownership_log_prob = self(state, action_mask=action_mask)[3]
+        return ownership_log_prob.exp().permute(0, 2, 3, 1).cpu().numpy()
+
+    @torch.no_grad()
     def predict(self, state, action_mask):
         tensor = torch.from_numpy(state) if isinstance(state, np.ndarray) else state
         if self.device != 'cpu':
@@ -215,7 +253,7 @@ class CNN(Base):
             tensor = tensor.to(self.device, dtype=torch.float32)
         action_mask = self._normalize_action_mask(action_mask, tensor.device)
         with torch.autocast(self.device, dtype=torch.bfloat16, enabled=self.device != 'cpu'):
-            log_prob, value_log_prob, aux_scalar = self(tensor, action_mask=action_mask)
+            log_prob, value_log_prob, aux_scalar, _ = self(tensor, action_mask=action_mask)
         wdl = value_log_prob.exp()
 
         disc_diff = aux_scalar * float(self.aux_target_offset)

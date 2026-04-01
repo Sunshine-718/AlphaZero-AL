@@ -38,18 +38,8 @@ class Base(ABC, nn.Module):
 
     def _prepare_training_batch(self, batch, augment):
         augmented = augment(batch)
-        future_root_wdl = None
-        valid_mask = None
-        if len(augmented) == 8:
-            state, prob, winner, steps_to_end, aux_target, root_wdl, valid_mask, future_root_wdl = augmented
-        elif len(augmented) == 7:
-            state, prob, winner, steps_to_end, aux_target, root_wdl, extra = augmented
-            if extra.dtype == torch.bool:
-                valid_mask = extra
-            else:
-                future_root_wdl = extra
-        else:
-            state, prob, winner, steps_to_end, aux_target, root_wdl = augmented
+        (state, prob, winner, steps_to_end, aux_target, root_wdl,
+         valid_mask, future_root_wdl, ownership_target) = augmented
         value_class, turn_sign = self._value_class_from_batch(state, winner)
         result = {
             'state': state,
@@ -60,11 +50,10 @@ class Base(ABC, nn.Module):
             'value_class': value_class,
             'turn_sign': turn_sign,
             'policy_mask': (prob.sum(dim=1) > 0).float(),
+            'valid_mask': valid_mask,
+            'future_root_wdl': future_root_wdl,
+            'ownership_target': ownership_target.long(),
         }
-        if valid_mask is not None:
-            result['valid_mask'] = valid_mask
-        if future_root_wdl is not None:
-            result['future_root_wdl'] = future_root_wdl
         return result
 
     @staticmethod
@@ -142,6 +131,15 @@ class Base(ABC, nn.Module):
         return F.smooth_l1_loss(steps_pred, aux_target)
 
     @staticmethod
+    def _ownership_loss(ownership_pred, ownership_target):
+        if ownership_pred is None or ownership_target is None:
+            return None
+        # Deliberately independent from policy_mask so terminal states still supervise ownership.
+        if not torch.any(ownership_target >= 0):
+            return None
+        return F.nll_loss(ownership_pred, ownership_target, ignore_index=-1)
+
+    @staticmethod
     def _td_consistency_loss(value_pred, batch_data, td_steps, value_decay=1.0):
         """N-step root-WDL consistency: KL(stopgrad(root_wdl(S_{t+k})) || v(S_t))."""
         future_root_wdl = batch_data.get('future_root_wdl')
@@ -165,10 +163,15 @@ class Base(ABC, nn.Module):
     def _optimize_batch(self, model, batch_data, use_soft, value_decay, distill_alpha, distill_temp,
                         psw_beta=0.0, entropy_lambda=0.0, td_alpha=0.0, td_steps=5):
         self.opt.zero_grad(set_to_none=True)
-        log_p_pred, value_pred, steps_pred = model(
+        outputs = model(
             batch_data['state'],
             action_mask=batch_data.get('valid_mask'),
         )
+        if len(outputs) == 4:
+            log_p_pred, value_pred, steps_pred, ownership_pred = outputs
+        else:
+            log_p_pred, value_pred, steps_pred = outputs
+            ownership_pred = None
         p_loss = self._policy_loss(
             log_p_pred,
             batch_data['prob'],
@@ -191,18 +194,29 @@ class Base(ABC, nn.Module):
                 v_loss = (1 - td_alpha) * v_loss + td_alpha * td_loss
 
         aux_loss = self._aux_loss(steps_pred, batch_data['aux_target'])
-        loss = p_loss + v_loss + aux_loss
+        ownership_loss = self._ownership_loss(ownership_pred, batch_data.get('ownership_target'))
+        if ownership_loss is None:
+            ownership_loss = torch.zeros((), device=batch_data['state'].device)
+        loss = p_loss + v_loss + aux_loss + getattr(self, 'ownership_loss_weight', 1.0) * ownership_loss
         loss.backward()
         grad_norm = nn.utils.clip_grad_norm_(self.parameters(), 5)
         self.opt.step()
-        return p_loss.detach(), v_loss.detach(), aux_loss.detach(), log_p_pred, grad_norm
+        return (
+            p_loss.detach(),
+            v_loss.detach(),
+            aux_loss.detach(),
+            ownership_loss.detach(),
+            log_p_pred,
+            grad_norm,
+        )
 
     def _final_train_metrics(self, last_batch, last_log_p_pred):
         with torch.no_grad():
-            _, new_v, _ = self(
+            outputs = self(
                 last_batch['state'],
                 action_mask=last_batch.get('valid_mask'),
             )
+            _, new_v, *_ = outputs
             f1 = f1_score(
                 last_batch['value_class'].cpu().numpy(),
                 torch.argmax(new_v, dim=-1).cpu().numpy(),
@@ -235,7 +249,13 @@ class Base(ABC, nn.Module):
 
         model_file = os.path.join(path, 'model.pt')
         state_dict = torch.load(model_file, map_location=self.device, weights_only=True)
-        self.load_state_dict(state_dict, strict=strict)
+        try:
+            self.load_state_dict(state_dict, strict=strict)
+        except RuntimeError as e:
+            if not strict:
+                raise
+            missing, unexpected = self.load_state_dict(state_dict, strict=False)
+            print(f'Loaded with non-strict state_dict.\nMissing: {missing}\nUnexpected: {unexpected}\n{e}')
         return self
 
     def load(self, path=None):
@@ -270,6 +290,7 @@ class Base(ABC, nn.Module):
         p_sum = torch.zeros(1, device=device)
         v_sum = torch.zeros(1, device=device)
         aux_sum = torch.zeros(1, device=device)
+        ownership_sum = torch.zeros(1, device=device)
         n_batches = 0
         use_soft = value_decay < 1.0 or distill_alpha > 0
         last_batch = None
@@ -280,7 +301,7 @@ class Base(ABC, nn.Module):
             self.train()
             for batch in dataloader:
                 last_batch = self._prepare_training_batch(batch, augment)
-                p_loss, v_loss, aux_loss, last_log_p_pred, last_grad_norm = self._optimize_batch(
+                p_loss, v_loss, aux_loss, ownership_loss, last_log_p_pred, last_grad_norm = self._optimize_batch(
                     model,
                     last_batch,
                     use_soft,
@@ -295,6 +316,7 @@ class Base(ABC, nn.Module):
                 p_sum += p_loss
                 v_sum += v_loss
                 aux_sum += aux_loss
+                ownership_sum += ownership_loss
                 n_batches += 1
 
         self.eval()
@@ -305,6 +327,7 @@ class Base(ABC, nn.Module):
             (p_sum / n_batches).item(),
             (v_sum / n_batches).item(),
             (aux_sum / n_batches).item(),
+            (ownership_sum / n_batches).item(),
             float(entropy),
             float(last_grad_norm),
             f1,

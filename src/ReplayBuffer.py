@@ -17,6 +17,7 @@ class ReplayBuffer:
         self.root_wdl = torch.zeros((capacity, 3), dtype=torch.float32, device=device)
         self.future_root_wdl = torch.zeros((capacity, 3), dtype=torch.float32, device=device)
         self.valid_mask = torch.ones((capacity, action_dim), dtype=torch.bool, device=device)
+        self.ownership_target = torch.full((capacity, row, col), -1, dtype=torch.int8, device=device)
         self.replay_ratio = replay_ratio
         self.device = device
         self.current_capacity = capacity
@@ -32,6 +33,7 @@ class ReplayBuffer:
             'root_wdl': self.root_wdl,
             'valid_mask': self.valid_mask,
             'future_root_wdl': self.future_root_wdl,
+            'ownership_target': self.ownership_target,
             '_ptr': self._ptr,
             'current_capacity': self.current_capacity
         }
@@ -56,6 +58,10 @@ class ReplayBuffer:
                 self.valid_mask[:capacity].copy_(state_dict['valid_mask'][:capacity])
             if 'future_root_wdl' in state_dict:
                 self.future_root_wdl[:capacity].copy_(state_dict['future_root_wdl'][:capacity])
+            if 'ownership_target' in state_dict:
+                self.ownership_target[:capacity].copy_(state_dict['ownership_target'][:capacity])
+            else:
+                self.ownership_target[:capacity].fill_(-1)
             self._ptr = state_dict['_ptr']
         except Exception as e:
             print(e)
@@ -76,6 +82,7 @@ class ReplayBuffer:
         self.root_wdl = torch.zeros_like(self.root_wdl)
         self.valid_mask = torch.ones_like(self.valid_mask)
         self.future_root_wdl = torch.zeros_like(self.future_root_wdl)
+        self.ownership_target = torch.full_like(self.ownership_target, -1)
         self._ptr = 0
 
     def to(self, device='cpu'):
@@ -87,10 +94,11 @@ class ReplayBuffer:
         self.root_wdl = self.root_wdl.to(device)
         self.valid_mask = self.valid_mask.to(device)
         self.future_root_wdl = self.future_root_wdl.to(device)
+        self.ownership_target = self.ownership_target.to(device)
         self.device = device
 
     def store(self, state, prob, winner, steps_to_end=0, aux_target=0, root_wdl=None,
-              valid_mask=None, future_root_wdl=None):
+              valid_mask=None, future_root_wdl=None, ownership_target=None):
         idx = self._ptr % self.current_capacity
         self._ptr += 1
         if isinstance(state, np.ndarray):
@@ -120,12 +128,19 @@ class ReplayBuffer:
             self.future_root_wdl[idx] = future_root_wdl
         else:
             self.future_root_wdl[idx] = 0
+        if ownership_target is not None:
+            if isinstance(ownership_target, np.ndarray):
+                ownership_target = torch.from_numpy(ownership_target).to(self.device)
+            self.ownership_target[idx] = ownership_target
+        else:
+            self.ownership_target[idx] = -1
         return idx
 
     def get(self, indices):
         return (self.state[indices].float(), self.prob[indices], self.winner[indices],
                 self.steps_to_end[indices], self.aux_target[indices], self.root_wdl[indices],
-                self.valid_mask[indices], self.future_root_wdl[indices])
+                self.valid_mask[indices], self.future_root_wdl[indices],
+                self.ownership_target[indices])
 
     def sample(self, batch_size, full_batches=False):
         total_samples = len(self)

@@ -48,21 +48,13 @@ def inspect(net, board=None):
 
 
 def augment(batch):
-    future_root_wdl = None
-    valid_mask = None
-    if len(batch) == 8:
-        state, prob, winner, steps_to_end, aux_target, root_wdl, valid_mask, future_root_wdl = batch
-    elif len(batch) == 7:
-        state, prob, winner, steps_to_end, aux_target, root_wdl, extra = batch
-        if extra.dtype == torch.bool:
-            valid_mask = extra
-        else:
-            future_root_wdl = extra
-    else:
-        state, prob, winner, steps_to_end, aux_target, root_wdl = batch
+    (state, prob, winner, steps_to_end, aux_target, root_wdl,
+     valid_mask, future_root_wdl, ownership_target) = batch
 
     state_flipped = torch.flip(state, dims=[3])
     prob_flipped = torch.flip(prob, dims=[1])
+    valid_mask_flipped = torch.flip(valid_mask, dims=[1])
+    ownership_target_flipped = torch.flip(ownership_target, dims=[2])
 
     state = torch.cat([state, state_flipped], dim=0)
     prob = torch.cat([prob, prob_flipped], dim=0)
@@ -70,13 +62,11 @@ def augment(batch):
     steps_to_end = torch.cat([steps_to_end, steps_to_end], dim=0)
     aux_target = torch.cat([aux_target, aux_target], dim=0)
     root_wdl = torch.cat([root_wdl, root_wdl], dim=0)
-
-    result = [state, prob, winner, steps_to_end, aux_target, root_wdl]
-    if valid_mask is not None:
-        result.append(torch.cat([valid_mask, torch.flip(valid_mask, dims=[1])], dim=0))
-    if future_root_wdl is not None:
-        result.append(torch.cat([future_root_wdl, future_root_wdl], dim=0))
-    return tuple(result)
+    valid_mask = torch.cat([valid_mask, valid_mask_flipped], dim=0)
+    future_root_wdl = torch.cat([future_root_wdl, future_root_wdl], dim=0)
+    ownership_target = torch.cat([ownership_target, ownership_target_flipped], dim=0)
+    return (state, prob, winner, steps_to_end, aux_target, root_wdl,
+            valid_mask, future_root_wdl, ownership_target)
 
 
 def print_row(action, probX, probO, max_X, max_O):

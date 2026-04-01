@@ -29,6 +29,16 @@ class Game:
             return diff * int(terminal_env.turn)
         return 0
 
+    @staticmethod
+    def _make_ownership_target(terminal_board, player):
+        own = (terminal_board == player).astype(np.int8)
+        opp = (terminal_board == -player).astype(np.int8)
+        rel = own - opp  # channel0 - channel1 in relative perspective
+        target = np.zeros_like(rel, dtype=np.int8)  # 0=empty, 1=own, 2=opp
+        target[rel > 0] = 1
+        target[rel < 0] = 2
+        return target
+
     def play(self, player1, player2, show=1):
         self.env.reset()
         players = [None, player1, player2]
@@ -70,9 +80,15 @@ class Game:
         for env in envs:
             env.reset()
             player.mcts.reset_env(envs.index(env))
-        trajectories = [{'states': [], 'actions': [], 'probs': [], 'players': [], 'root_wdls': [],
-                         'valid_masks': [], 'steps': 0}
-                        for _ in range(n_games)]
+        trajectories = [{
+            'states': [],
+            'actions': [],
+            'probs': [],
+            'players': [],
+            'root_wdls': [],
+            'valid_masks': [],
+            'steps': 0,
+        } for _ in range(n_games)]
         active_indices = list(range(n_games))
         completed_data = [None] * n_games
         while active_indices:
@@ -80,7 +96,6 @@ class Game:
             turns = np.array([envs[i].turn for i in range(n_games)], dtype=np.int32)
             temps = [self._get_temp(trajectories[i]['steps'], temperature, temp_decay_moves, temp_endgame)
                      for i in range(n_games)]
-            # noise epsilon 衰减：开局高探索，随棋局线性衰减到 noise_eps_min
             if getattr(player, 'noise_steps', 0) > 0:
                 step = trajectories[active_indices[0]]['steps']
                 decay = max(0.0, 1.0 - step / player.noise_steps)
@@ -107,8 +122,6 @@ class Game:
                 env.step(action)
                 if env.done():
                     winner = env.winPlayer()
-
-                    # 构建回放数据
                     states = traj['states']
                     end_state_feature = env.current_state()[0].astype(np.int8)
 
@@ -116,8 +129,16 @@ class Game:
                     winner_z = np.full(T, winner, dtype=np.int32)
                     steps_to_end = np.arange(T, 0, -1, dtype=np.int32)
                     aux_targets = self._make_aux_targets(traj['players'], env, steps_to_end)
+                    terminal_board = np.asarray(env.board, dtype=np.int8)
+                    ownership_targets = [
+                        self._make_ownership_target(terminal_board, player)
+                        for player in traj['players']
+                    ]
+                    terminal_ownership_target = self._make_ownership_target(
+                        terminal_board,
+                        int(env.turn),
+                    )
 
-                    # 构建 future_root_wdl: S_{t+k} 的根节点 WDL（绝对视角）
                     k = td_steps
                     zero_wdl = np.zeros(3, dtype=np.float32)
                     if k > 0:
@@ -128,31 +149,39 @@ class Game:
                                 future_root_wdls.append(traj['root_wdls'][ft])
                             else:
                                 future_root_wdls.append(zero_wdl)
-                        play_data = list(zip(states, traj['probs'], winner_z,
-                                             steps_to_end, aux_targets, traj['root_wdls'],
-                                             traj['valid_masks'], future_root_wdls))
+                        play_data = list(zip(
+                            states, traj['probs'], winner_z,
+                            steps_to_end, aux_targets, traj['root_wdls'],
+                            traj['valid_masks'], future_root_wdls,
+                            ownership_targets,
+                        ))
                     else:
-                        play_data = list(zip(states, traj['probs'], winner_z,
-                                             steps_to_end, aux_targets, traj['root_wdls'],
-                                             traj['valid_masks']))
+                        play_data = list(zip(
+                            states, traj['probs'], winner_z,
+                            steps_to_end, aux_targets, traj['root_wdls'],
+                            traj['valid_masks'], ownership_targets,
+                        ))
 
-                    # 追加终局状态: steps_to_end=0, prob 全零, root_wdl 全零
                     zero_prob = np.zeros_like(traj['probs'][0])
                     zero_mask = np.ones_like(traj['valid_masks'][0])
-                    terminal_tuple = [end_state_feature, zero_prob, winner, 0,
-                                      self._terminal_aux_target(env), zero_wdl,
-                                      zero_mask]
+                    terminal_tuple = [
+                        end_state_feature,
+                        zero_prob,
+                        winner,
+                        0,
+                        self._terminal_aux_target(env),
+                        zero_wdl,
+                        zero_mask,
+                    ]
                     if k > 0:
                         terminal_tuple.append(zero_wdl)
+                    terminal_tuple.append(terminal_ownership_target)
                     play_data.append(tuple(terminal_tuple))
                     completed_data[i] = (winner, tuple(play_data))
-                    
-                    # 游戏结束，重置该环境的 MCTS 树
                     player.mcts.reset_env(i)
                 else:
                     next_active_indices.append(i)
-            
+
             active_indices = next_active_indices
 
         return completed_data
-

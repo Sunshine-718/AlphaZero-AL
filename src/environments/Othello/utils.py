@@ -19,46 +19,42 @@ def check_full(board):
     return len(np.where(board == 0)[0]) == 0
 
 
-# D4 群 8 种对称的坐标变换 (r,c) → (r',c')
 _SYM_TRANSFORMS = [
-    lambda r, c: (r, c),         # 0: 恒等
-    lambda r, c: (c, 7 - r),     # 1: 顺时针 90°
-    lambda r, c: (7 - r, 7 - c), # 2: 旋转 180°
-    lambda r, c: (7 - c, r),     # 3: 顺时针 270°
-    lambda r, c: (r, 7 - c),     # 4: 水平翻转
-    lambda r, c: (7 - r, c),     # 5: 垂直翻转
-    lambda r, c: (c, r),         # 6: 主对角线翻转
-    lambda r, c: (7 - c, 7 - r), # 7: 副对角线翻转
+    lambda r, c: (r, c),
+    lambda r, c: (c, 7 - r),
+    lambda r, c: (7 - r, 7 - c),
+    lambda r, c: (7 - c, r),
+    lambda r, c: (r, 7 - c),
+    lambda r, c: (7 - r, c),
+    lambda r, c: (c, r),
+    lambda r, c: (7 - c, 7 - r),
 ]
 
 
-def _apply_sym_state(state, sym_id):
-    """对 (N, 3, 8, 8) 状态张量应用对称变换 sym_id"""
-    if sym_id == 0:
-        return state
-    # 构建坐标映射
+def _build_perm(sym_id):
     perm = torch.zeros(64, dtype=torch.long)
     transform = _SYM_TRANSFORMS[sym_id]
     for i in range(64):
         nr, nc = transform(i // 8, i % 8)
         perm[i] = nr * 8 + nc
-    # 对每个通道 flatten → permute → reshape
-    N, C, H, W = state.shape
-    flat = state.view(N, C, 64)
+    return perm
+
+
+def _apply_sym_state(state, sym_id):
+    if sym_id == 0:
+        return state
+    perm = _build_perm(sym_id)
+    n, c, h, w = state.shape
+    flat = state.view(n, c, 64)
     result = torch.zeros_like(flat)
     result[:, :, perm] = flat
-    return result.view(N, C, H, W)
+    return result.view(n, c, h, w)
 
 
 def _apply_sym_policy(policy, sym_id):
-    """对 (N, 65) 策略张量应用对称变换 sym_id"""
     if sym_id == 0:
         return policy
-    perm = torch.zeros(64, dtype=torch.long)
-    transform = _SYM_TRANSFORMS[sym_id]
-    for i in range(64):
-        nr, nc = transform(i // 8, i % 8)
-        perm[i] = nr * 8 + nc
+    perm = _build_perm(sym_id)
     board_part = policy[:, :64]
     pass_part = policy[:, 64:]
     result = torch.zeros_like(board_part)
@@ -66,39 +62,33 @@ def _apply_sym_policy(policy, sym_id):
     return torch.cat([result, pass_part], dim=1)
 
 
-def augment(batch):
-    """对训练数据应用保持初始局面不变的 4 种对称变换进行数据增强。
+def _apply_sym_board_target(board_target, sym_id):
+    if sym_id == 0:
+        return board_target
+    perm = _build_perm(sym_id)
+    flat = board_target.view(board_target.shape[0], 64)
+    result = torch.zeros_like(flat)
+    result[:, perm] = flat
+    return result.view_as(board_target)
 
-    Othello 初始局面只在 Klein 四元群 {恒等, 180°旋转, 主对角线翻转, 副对角线翻转} 下不变。
-    90°/270° 旋转和水平/垂直翻转会交换初始黑白子位置，不是合法对称。
-    """
-    if len(batch) == 8:
-        state, prob, winner, steps_to_end, aux_target, root_wdl, valid_mask, future_root_wdl = batch
-    elif len(batch) == 7:
-        state, prob, winner, steps_to_end, aux_target, root_wdl, extra = batch
-        if extra.dtype == torch.bool:
-            valid_mask = extra
-            future_root_wdl = None
-        else:
-            valid_mask = None
-            future_root_wdl = extra
-    else:
-        state, prob, winner, steps_to_end, aux_target, root_wdl = batch
-        valid_mask = None
-        future_root_wdl = None
+
+def augment(batch):
+    """Apply the four legal Othello symmetries that preserve the initial setup."""
+    (state, prob, winner, steps_to_end, aux_target, root_wdl,
+     valid_mask, future_root_wdl, ownership_target) = batch
 
     states_all = [state]
     probs_all = [prob]
-    masks_all = [valid_mask] if valid_mask is not None else None
-    future_all = [future_root_wdl] if future_root_wdl is not None else None
+    masks_all = [valid_mask]
+    future_all = [future_root_wdl]
+    ownership_all = [ownership_target]
 
-    for sym_id in (2, 6, 7):  # 180°旋转, 主对角线翻转, 副对角线翻转
+    for sym_id in (2, 6, 7):
         states_all.append(_apply_sym_state(state, sym_id))
         probs_all.append(_apply_sym_policy(prob, sym_id))
-        if masks_all is not None:
-            masks_all.append(_apply_sym_policy(valid_mask.float(), sym_id).bool())
-        if future_all is not None:
-            future_all.append(future_root_wdl)
+        masks_all.append(_apply_sym_policy(valid_mask.float(), sym_id).bool())
+        future_all.append(future_root_wdl)
+        ownership_all.append(_apply_sym_board_target(ownership_target, sym_id))
 
     state = torch.cat(states_all, dim=0)
     prob = torch.cat(probs_all, dim=0)
@@ -107,19 +97,20 @@ def augment(batch):
     aux_target = aux_target.repeat(4, 1)
     root_wdl = root_wdl.repeat(4, 1)
 
-    result = [state, prob, winner, steps_to_end, aux_target, root_wdl]
-    if masks_all is not None:
-        result.append(torch.cat(masks_all, dim=0))
-    if future_all is not None:
-        result.append(torch.cat(future_all, dim=0))
-    return tuple(result)
+    valid_mask = torch.cat(masks_all, dim=0)
+    future_root_wdl = torch.cat(future_all, dim=0)
+    ownership_target = torch.cat(ownership_all, dim=0)
+    return (state, prob, winner, steps_to_end, aux_target, root_wdl,
+            valid_mask, future_root_wdl, ownership_target)
 
 
 def inspect(net, board=None):
     if board is None:
         board = np.zeros((8, 8), dtype=np.float32)
-        board[3, 3] = -1; board[3, 4] = 1
-        board[4, 3] = 1;  board[4, 4] = -1
+        board[3, 3] = -1
+        board[3, 4] = 1
+        board[4, 3] = 1
+        board[4, 4] = -1
     with torch.no_grad():
         from src.environments.Othello import Env
 
@@ -128,11 +119,10 @@ def inspect(net, board=None):
         mask0 = np.asarray(env0.valid_mask(), dtype=bool)[None, :]
         probs0, wdl0, _ = net.predict(state0, action_mask=mask0)
         probs0 = probs0.flatten()
-        value0 = float(wdl0[0, 1] - wdl0[0, 2])  # W - L (to-move)
+        value0 = float(wdl0[0, 1] - wdl0[0, 2])
 
-        # 标准开局第一手 (2,3)
         board[2, 3] = 1
-        board[3, 3] = 1  # 翻转
+        board[3, 3] = 1
         state1 = board_to_state(board, -1)
         env1 = Env(board.astype(np.float32))
         mask1 = np.asarray(env1.valid_mask(), dtype=bool)[None, :]
@@ -140,7 +130,6 @@ def inspect(net, board=None):
         probs1 = probs1.flatten()
         value1 = float(wdl1[0, 1] - wdl1[0, 2])
 
-    # 显示 top-10 动作
     top_x = np.argsort(probs0)[::-1][:10]
     top_o = np.argsort(probs1)[::-1][:10]
     print("Black (P1) top actions:")
