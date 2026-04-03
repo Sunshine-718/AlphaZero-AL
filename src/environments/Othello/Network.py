@@ -70,18 +70,20 @@ class PolicyHead(nn.Module):
 class TriHead(nn.Module):
     def __init__(self, in_channels, dropout=0.0):
         super().__init__()
-        self.stem = nn.Sequential(nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1, bias=False),
-                                  nn.BatchNorm2d(in_channels),
-                                  nn.SiLU(True),
-                                  nn.Dropout(dropout))
-        self.value_out = nn.Sequential(nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=2, bias=False),
+        self.stem = nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1, bias=False)
+        self.value_out = nn.Sequential(nn.BatchNorm2d(in_channels),
+                                       nn.SiLU(True),
+                                       nn.Dropout(dropout),
+                                       nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=2, bias=False),
                                        nn.BatchNorm2d(in_channels),
                                        nn.SiLU(True),
                                        nn.Dropout2d(dropout),
-                                       nn.MaxPool2d(3, 3),
+                                       nn.Conv2d(in_channels, in_channels, kernel_size=3, bias=False),
+                                       nn.BatchNorm2d(in_channels),
+                                       nn.SiLU(True),
+                                       nn.Dropout2d(dropout),
                                        nn.Flatten(),
                                        nn.Linear(in_channels, 3))
-        self.ownership_out = nn.Conv2d(in_channels, 3, kernel_size=1, bias=True)
         self.aux_out = nn.Sequential(nn.Flatten(),
                                      nn.SiLU(True),
                                      nn.RMSNorm(3 * 8 * 8, eps=1e-5),
@@ -89,8 +91,8 @@ class TriHead(nn.Module):
 
     def forward(self, x):
         h = self.stem(x)
+        ownership_logit = h[:, :3]
         value = nn.functional.log_softmax(self.value_out(h), dim=-1)
-        ownership_logit = self.ownership_out(h)
         ownership = nn.functional.log_softmax(ownership_logit, dim=1)
         aux = torch.tanh(self.aux_out(ownership_logit).squeeze(-1))
         return value, aux, ownership
@@ -102,9 +104,6 @@ class TriHead(nn.Module):
         nn.init.constant_(self.aux_out[-1].weight, 0)
         if self.aux_out[-1].bias is not None:
             nn.init.constant_(self.aux_out[-1].bias, 0)
-        nn.init.constant_(self.ownership_out.weight, 0)
-        if self.ownership_out.bias is not None:
-            nn.init.constant_(self.ownership_out.bias, 0)
 
 
 class CNN(Base):
