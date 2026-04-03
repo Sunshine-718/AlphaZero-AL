@@ -1,11 +1,34 @@
 #pragma once
 #include <array>
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <vector>
 
 namespace AlphaZero
 {
+    inline uint16_t quantize_unit_float(float x)
+    {
+        x = std::clamp(x, 0.0f, 1.0f);
+        return static_cast<uint16_t>(std::lround(x * 65535.0f));
+    }
+
+    inline float dequantize_unit_float(uint16_t q)
+    {
+        return static_cast<float>(q) * (1.0f / 65535.0f);
+    }
+
+    inline int16_t quantize_signed_float(float x)
+    {
+        x = std::clamp(x, -1.0f, 1.0f);
+        return static_cast<int16_t>(std::lround(x * 32767.0f));
+    }
+
+    inline float dequantize_signed_float(int16_t q)
+    {
+        return static_cast<float>(q) * (1.0f / 32767.0f);
+    }
     /**
      * WDL 三元组封装：(draw, player1_win, player2_win)，绝对视角。
      * 消除手动操作散落的 d/p1w/p2w 三变量。
@@ -157,13 +180,48 @@ namespace AlphaZero
             edges_.resize(static_cast<size_t>(initial_edge_cap));
         }
 
+        void enable_ownership(int cells)
+        {
+            ownership_enabled_ = (cells > 0);
+            ownership_cells_ = ownership_enabled_ ? cells : 0;
+            if (ownership_enabled_)
+            {
+                ownership_occ_.resize(static_cast<size_t>(nodes_.size()) * ownership_cells_);
+                ownership_p1p2_.resize(static_cast<size_t>(nodes_.size()) * ownership_cells_);
+                std::fill(ownership_occ_.begin(), ownership_occ_.end(), 0);
+                std::fill(ownership_p1p2_.begin(), ownership_p1p2_.end(), 0);
+            }
+            else
+            {
+                ownership_occ_.clear();
+                ownership_p1p2_.clear();
+            }
+        }
+
         /// 分配一个新节点，返回索引。不足时自动扩容。
         int32_t allocate_node()
         {
             if (node_count_ >= static_cast<int32_t>(nodes_.size()))
+            {
+                size_t old_size = nodes_.size();
                 nodes_.resize(nodes_.size() * 2);
+                if (ownership_enabled_)
+                {
+                    ownership_occ_.resize(nodes_.size() * ownership_cells_);
+                    ownership_p1p2_.resize(nodes_.size() * ownership_cells_);
+                    std::fill(ownership_occ_.begin() + old_size * ownership_cells_, ownership_occ_.end(), 0);
+                    std::fill(ownership_p1p2_.begin() + old_size * ownership_cells_, ownership_p1p2_.end(), 0);
+                }
+            }
             int32_t idx = node_count_++;
             nodes_[idx] = MCTSNode{};
+            if (ownership_enabled_)
+            {
+                std::memset(ownership_occ_.data() + static_cast<size_t>(idx) * ownership_cells_, 0,
+                            sizeof(uint16_t) * static_cast<size_t>(ownership_cells_));
+                std::memset(ownership_p1p2_.data() + static_cast<size_t>(idx) * ownership_cells_, 0,
+                            sizeof(int16_t) * static_cast<size_t>(ownership_cells_));
+            }
             return idx;
         }
 
@@ -190,11 +248,45 @@ namespace AlphaZero
         void reset() { node_count_ = 0; edge_count_ = 0; }
         int node_count() const { return node_count_; }
         int edge_count() const { return edge_count_; }
+        bool has_ownership() const { return ownership_enabled_; }
+        int ownership_cells() const { return ownership_cells_; }
+
+        uint16_t* ownership_occ_ptr(int32_t idx)
+        {
+            return ownership_enabled_
+                ? ownership_occ_.data() + static_cast<size_t>(idx) * ownership_cells_
+                : nullptr;
+        }
+
+        const uint16_t* ownership_occ_ptr(int32_t idx) const
+        {
+            return ownership_enabled_
+                ? ownership_occ_.data() + static_cast<size_t>(idx) * ownership_cells_
+                : nullptr;
+        }
+
+        int16_t* ownership_p1p2_ptr(int32_t idx)
+        {
+            return ownership_enabled_
+                ? ownership_p1p2_.data() + static_cast<size_t>(idx) * ownership_cells_
+                : nullptr;
+        }
+
+        const int16_t* ownership_p1p2_ptr(int32_t idx) const
+        {
+            return ownership_enabled_
+                ? ownership_p1p2_.data() + static_cast<size_t>(idx) * ownership_cells_
+                : nullptr;
+        }
 
     private:
         std::vector<MCTSNode> nodes_;
         std::vector<Edge> edges_;
+        std::vector<uint16_t> ownership_occ_;
+        std::vector<int16_t> ownership_p1p2_;
         int32_t node_count_ = 0;
         int32_t edge_count_ = 0;
+        bool ownership_enabled_ = false;
+        int ownership_cells_ = 0;
     };
 }

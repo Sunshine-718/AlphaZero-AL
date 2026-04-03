@@ -179,7 +179,9 @@ namespace AlphaZero
             const float *p1w_vals,
             const float *p2w_vals,
             const float *moves_left,
-            const uint8_t *is_term)
+            const uint8_t *is_term,
+            const float *ownership_occ = nullptr,
+            const float *ownership_p1p2 = nullptr)
         {
 #pragma omp parallel for schedule(static)
             for (int i = 0; i < n_envs; ++i)
@@ -194,7 +196,10 @@ namespace AlphaZero
                 if (pending_sym_ids_[i] != 0)
                     Game::inverse_symmetry_policy(pending_sym_ids_[i], policy);
                 WDLValue wdl{d_vals[i], p1w_vals[i], p2w_vals[i]};
-                mcts_envs[i]->backprop(policy, wdl, moves_left[i], is_term[i] != 0);
+                const float *occ_ptr = ownership_occ ? (ownership_occ + i * BOARD_SIZE) : nullptr;
+                const float *p1p2_ptr = ownership_p1p2 ? (ownership_p1p2 + i * BOARD_SIZE) : nullptr;
+                mcts_envs[i]->backprop(policy, wdl, moves_left[i], is_term[i] != 0,
+                                       occ_ptr, p1p2_ptr);
             }
         }
 
@@ -301,7 +306,9 @@ namespace AlphaZero
             const float *p2w_vals,
             const float *moves_left,
             const uint8_t *is_term,
-            const int *sym_ids)
+            const int *sym_ids,
+            const float *ownership_occ = nullptr,
+            const float *ownership_p1p2 = nullptr)
         {
 #pragma omp parallel for schedule(static)
             for (int i = 0; i < n_envs; ++i)
@@ -324,9 +331,12 @@ namespace AlphaZero
                         Game::inverse_symmetry_policy(sym_ids[flat_idx], policy);
 
                     WDLValue wdl{d_vals[flat_idx], p1w_vals[flat_idx], p2w_vals[flat_idx]};
+                    const float *occ_ptr = ownership_occ ? (ownership_occ + flat_idx * BOARD_SIZE) : nullptr;
+                    const float *p1p2_ptr = ownership_p1p2 ? (ownership_p1p2 + flat_idx * BOARD_SIZE) : nullptr;
                     mcts_envs[i]->backprop_vl(k, policy, wdl,
                                                moves_left[flat_idx],
-                                               is_term[flat_idx] != 0);
+                                               is_term[flat_idx] != 0,
+                                               occ_ptr, p1p2_ptr);
                 }
             }
         }
@@ -428,6 +438,10 @@ namespace AlphaZero
 
         /// 每个环境的 root stats flat 长度
         static constexpr int STATS_PER_ENV = 6 + ACTION_SIZE * 8;
+        static constexpr bool HAS_OWNERSHIP = requires(const Game &g, float *occ, float *p1p2)
+        {
+            g.fill_absolute_ownership(occ, p1p2);
+        };
 
         /**
          * 获取所有环境的根节点统计量，写入 flat 缓冲区。
@@ -437,6 +451,16 @@ namespace AlphaZero
             for (int i = 0; i < n_envs; ++i)
             {
                 mcts_envs[i]->get_root_stats(out + i * STATS_PER_ENV);
+            }
+        }
+
+        void get_all_root_ownership(float *out)
+        {
+            if constexpr (HAS_OWNERSHIP)
+            {
+                constexpr int OWN_FLOATS = BOARD_SIZE * 3;
+                for (int i = 0; i < n_envs; ++i)
+                    mcts_envs[i]->get_root_ownership(out + i * OWN_FLOATS);
             }
         }
     };

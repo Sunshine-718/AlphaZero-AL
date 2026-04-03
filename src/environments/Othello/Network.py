@@ -245,7 +245,7 @@ class CNN(Base):
         return ownership_log_prob.exp().permute(0, 2, 3, 1).cpu().numpy()
 
     @torch.no_grad()
-    def predict(self, state, action_mask):
+    def predict(self, state, action_mask, return_ownership=False):
         tensor = torch.from_numpy(state) if isinstance(state, np.ndarray) else state
         if self.device != 'cpu':
             tensor = tensor.pin_memory().to(self.device, dtype=torch.float32, non_blocking=True)
@@ -253,7 +253,7 @@ class CNN(Base):
             tensor = tensor.to(self.device, dtype=torch.float32)
         action_mask = self._normalize_action_mask(action_mask, tensor.device)
         with torch.autocast(self.device, dtype=torch.bfloat16, enabled=self.device != 'cpu'):
-            log_prob, value_log_prob, aux_scalar, _ = self(tensor, action_mask=action_mask)
+            log_prob, value_log_prob, aux_scalar, ownership_log_prob = self(tensor, action_mask=action_mask)
         wdl = value_log_prob.exp()
 
         disc_diff = aux_scalar * float(self.aux_target_offset)
@@ -264,10 +264,18 @@ class CNN(Base):
             policy = log_prob.float().exp().to('cpu', non_blocking=True)
             value = wdl.float().to('cpu', non_blocking=True)
             utility = expected_utility.float().view(-1, 1).to('cpu', non_blocking=True)
+            ownership = None
+            if return_ownership:
+                ownership = ownership_log_prob.float().exp().permute(0, 2, 3, 1).to('cpu', non_blocking=True)
             torch.cuda.synchronize()
+            if return_ownership:
+                return policy.numpy(), value.numpy(), utility.numpy(), ownership.numpy()
             return policy.numpy(), value.numpy(), utility.numpy()
-        return (
+        result = (
             log_prob.exp().cpu().numpy(),
             wdl.cpu().numpy(),
             expected_utility.cpu().view(-1, 1).numpy(),
         )
+        if return_ownership:
+            return result + (ownership_log_prob.exp().permute(0, 2, 3, 1).cpu().numpy(),)
+        return result

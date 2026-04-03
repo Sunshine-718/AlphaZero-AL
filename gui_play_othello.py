@@ -357,20 +357,10 @@ class AttentionExtractor:
         self._gate_raw = gate  # (B, S, H)
 
     def attach(self, net):
-        """Register hooks on net.hidden[-1].attn.{q_norm, k_norm, gate_proj/qkvg_proj}."""
+        """Othello's current CNN has no attention block exposed for GUI capture."""
         self.detach()
-        attn = getattr(net.hidden[-1], 'attn', None)
-        if attn is None or not hasattr(attn, 'q_norm') or not hasattr(attn, 'k_norm'):
-            self._num_heads = 0
-            return False
-        self._num_heads = attn.num_heads
-        self._handles.append(attn.q_norm.register_forward_hook(self._hook_q))
-        self._handles.append(attn.k_norm.register_forward_hook(self._hook_k))
-        if hasattr(attn, 'gate_proj'):
-            self._handles.append(attn.gate_proj.register_forward_hook(self._hook_gate))
-        elif hasattr(attn, 'qkvg_proj'):
-            self._handles.append(attn.qkvg_proj.register_forward_hook(self._hook_gate))
-        return True
+        self._num_heads = 0
+        return False
 
     def detach(self):
         for h in self._handles:
@@ -624,13 +614,22 @@ class BoardWidget(QWidget):
         qp.setBrush(spec)
         qp.drawEllipse(QPointF(cx - rad * 0.2, cy - rad * 0.35), rad * 0.4, rad * 0.3)
 
-    def _ownership_fill_color(self, cls_idx):
-        if cls_idx == 0:
-            return QColor(150, 160, 180)
+    def _ownership_fill_color(self, cls_idx, conf):
+        neutral = np.array([118.0, 126.0, 140.0], dtype=np.float32)
         own_is_black = (self.env.turn == 1)
         if cls_idx == 1:
-            return QColor(C.BLACK if own_is_black else C.WHITE)
-        return QColor(C.WHITE if own_is_black else C.BLACK)
+            target = QColor(C.BLACK if own_is_black else C.WHITE)
+        elif cls_idx == 2:
+            target = QColor(C.WHITE if own_is_black else C.BLACK)
+        else:
+            target = QColor(168, 176, 190)
+
+        amt = float(np.clip(conf, 0.0, 1.0))
+        tgt = np.array([target.red(), target.green(), target.blue()], dtype=np.float32)
+        rgb = neutral + (tgt - neutral) * amt
+        fill = QColor(int(rgb[0]), int(rgb[1]), int(rgb[2]))
+        fill.setAlpha(225)
+        return fill
 
     def _draw_ownership(self, qp):
         if not self.ownership_visible or self.ownership_probs is None:
@@ -653,10 +652,9 @@ class BoardWidget(QWidget):
 
                 cx = self.MARGIN + c * self.CELL + self.CELL - inset
                 cy = self.MARGIN + r * self.CELL + inset
-                fill = self._ownership_fill_color(cls_idx)
+                fill = self._ownership_fill_color(cls_idx, conf)
                 border = QColor(C.CYAN)
-                fill.setAlpha(95 + int(conf * 150))
-                border.setAlpha(110 + int(conf * 135))
+                border.setAlpha(90 + int(conf * 120))
 
                 qp.setBrush(fill)
                 qp.setPen(QPen(border, 1.2 + conf * 0.8))
@@ -2252,12 +2250,7 @@ class OthelloGUI(QWidget):
         self.board.update()
 
     def _sync_attn_head_selector(self):
-        num_heads = 0
-        try:
-            num_heads = int(self.net.hidden[-1].attn.num_heads)
-        except Exception:
-            pass
-        self.console.set_attention_head_count(num_heads)
+        self.console.set_attention_head_count(0)
         self._on_attn_head_changed(self.console.attn_head_cb.currentIndex())
 
     def _on_attn_head_changed(self, idx):
@@ -2290,6 +2283,30 @@ class OthelloGUI(QWidget):
         if acc is None:
             return None
         return acc / float(num_views)
+
+    def _mcts_root_ownership_overlay(self, player=None):
+        player = player or self._active_player()
+        ownership_abs = player.mcts.get_root_ownership() if player is not None else None
+        if ownership_abs is None:
+            return None
+
+        num_views = min(len(_SYM_IDS), ownership_abs.shape[0])
+        acc = None
+        for i in range(num_views):
+            inv = np.empty((8, 8, 3), dtype=np.float32)
+            for cls_idx in range(3):
+                inv[:, :, cls_idx] = apply_sym_board(ownership_abs[i, :, :, cls_idx], _SYM_IDS[i], 'Othello')
+            acc = inv if acc is None else (acc + inv)
+        if acc is None:
+            return None
+
+        abs_probs = acc / float(num_views)
+        empty = abs_probs[:, :, 0]
+        p1 = abs_probs[:, :, 1]
+        p2 = abs_probs[:, :, 2]
+        own = p1 if self.env.turn == 1 else p2
+        opp = p2 if self.env.turn == 1 else p1
+        return np.stack([empty, own, opp], axis=-1)
 
     def closeEvent(self, event):
         self._attn_extractor.detach()
@@ -2777,12 +2794,7 @@ class OthelloGUI(QWidget):
                 outputs = net(t, action_mask=mask_t)
             finally:
                 self._attn_extractor.end_capture()
-            _, vl, sl, *extras = outputs
-            ownership_log_prob = None
-            for extra in extras:
-                if torch.is_tensor(extra) and extra.ndim == 4 and extra.shape[1] == 3:
-                    ownership_log_prob = extra
-                    break
+            _, vl, sl, *_ = outputs
 
             # Use identity (index 0) for NN stats display
             vp = vl[0].exp().cpu().tolist()
@@ -2811,7 +2823,7 @@ class OthelloGUI(QWidget):
             # and average them
             self.board.attn_weights = self._attn_extractor.get_weights()
             self.board.gate_scores = self._attn_extractor.get_gate_scores()
-            self.board.ownership_probs = self._extract_ownership_overlay(ownership_log_prob)
+            self.board.ownership_probs = self._mcts_root_ownership_overlay()
             self.board.update()
 
     def _update_status_mcts(self, stats_0):
@@ -2990,6 +3002,7 @@ class OthelloGUI(QWidget):
     # ── Continuous search callbacks ────────────────────────────────────────
     def _on_progress(self, stats_0, visits):
         self._update_status_mcts(stats_0)
+        self.board.ownership_probs = self._mcts_root_ownership_overlay()
         # In AvA, always show as AI panel; in HvH, always show as hint panel
         show_ai = (self.mode == MODE_AVA
                     or (self.mode == MODE_HVA and self.env.turn != self.player_color))

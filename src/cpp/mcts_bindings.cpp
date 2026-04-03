@@ -142,7 +142,9 @@ void register_batched_mcts(py::module_ &m, const char *name)
                                   py::array_t<float, py::array::c_style | py::array::forcecast> p1w_vals,
                                   py::array_t<float, py::array::c_style | py::array::forcecast> p2w_vals,
                                   py::array_t<float, py::array::c_style | py::array::forcecast> moves_left,
-                                  py::array_t<uint8_t, py::array::c_style | py::array::forcecast> is_term)
+                                  py::array_t<uint8_t, py::array::c_style | py::array::forcecast> is_term,
+                                  py::object ownership_occ_obj,
+                                  py::object ownership_p1p2_obj)
              {
             auto buf_pol = policy_logits.request();
             auto buf_d = d_vals.request();
@@ -170,11 +172,34 @@ void register_batched_mcts(py::module_ &m, const char *name)
             float* ptr_p2w = static_cast<float*>(buf_p2w.ptr);
             float* ptr_ml = static_cast<float*>(buf_ml.ptr);
             uint8_t* ptr_term = static_cast<uint8_t*>(buf_term.ptr);
+            float* ptr_occ = nullptr;
+            float* ptr_p1p2_occ = nullptr;
+
+            if (!ownership_occ_obj.is_none())
+            {
+                auto ownership_occ = ownership_occ_obj.cast<py::array_t<float, py::array::c_style | py::array::forcecast>>();
+                auto buf_occ = ownership_occ.request();
+                if (buf_occ.ndim != 2 || buf_occ.shape[0] != n || buf_occ.shape[1] != BOARD_SIZE)
+                    throw std::runtime_error("backprop_batch: ownership_occ must have shape (n_envs, board_size)");
+                ptr_occ = static_cast<float*>(buf_occ.ptr);
+            }
+            if (!ownership_p1p2_obj.is_none())
+            {
+                auto ownership_p1p2 = ownership_p1p2_obj.cast<py::array_t<float, py::array::c_style | py::array::forcecast>>();
+                auto buf_own = ownership_p1p2.request();
+                if (buf_own.ndim != 2 || buf_own.shape[0] != n || buf_own.shape[1] != BOARD_SIZE)
+                    throw std::runtime_error("backprop_batch: ownership_p1p2 must have shape (n_envs, board_size)");
+                ptr_p1p2_occ = static_cast<float*>(buf_own.ptr);
+            }
 
             {
                 py::gil_scoped_release release;
-                self.backprop_batch(ptr_pol, ptr_d, ptr_p1w, ptr_p2w, ptr_ml, ptr_term);
-            } })
+                self.backprop_batch(ptr_pol, ptr_d, ptr_p1w, ptr_p2w, ptr_ml, ptr_term,
+                                    ptr_occ, ptr_p1p2_occ);
+            } },
+             py::arg("policy_logits"), py::arg("d_vals"), py::arg("p1w_vals"),
+             py::arg("p2w_vals"), py::arg("moves_left"), py::arg("is_term"),
+             py::arg("ownership_occ") = py::none(), py::arg("ownership_p1p2") = py::none())
 
         // ── Virtual Loss 批量搜索 ────────────────────────────────────
 
@@ -260,7 +285,9 @@ void register_batched_mcts(py::module_ &m, const char *name)
                                      py::array_t<float, py::array::c_style | py::array::forcecast> p2w_vals,
                                      py::array_t<float, py::array::c_style | py::array::forcecast> moves_left,
                                      py::array_t<uint8_t, py::array::c_style | py::array::forcecast> is_term,
-                                     py::array_t<int, py::array::c_style | py::array::forcecast> sym_ids)
+                                     py::array_t<int, py::array::c_style | py::array::forcecast> sym_ids,
+                                     py::object ownership_occ_obj,
+                                     py::object ownership_p1p2_obj)
              {
             auto buf_pol = policy_logits.request();
             auto buf_d = d_vals.request();
@@ -292,15 +319,37 @@ void register_batched_mcts(py::module_ &m, const char *name)
             float*   ptr_ml   = static_cast<float*>(buf_ml.ptr);
             uint8_t* ptr_term = static_cast<uint8_t*>(buf_term.ptr);
             int*     ptr_sym  = static_cast<int*>(buf_sym.ptr);
+            float*   ptr_occ  = nullptr;
+            float*   ptr_p1p2_occ = nullptr;
+
+            if (!ownership_occ_obj.is_none())
+            {
+                auto ownership_occ = ownership_occ_obj.cast<py::array_t<float, py::array::c_style | py::array::forcecast>>();
+                auto buf_occ = ownership_occ.request();
+                if (buf_occ.ndim != 2 || buf_occ.shape[0] != total || buf_occ.shape[1] != BOARD_SIZE)
+                    throw std::runtime_error("backprop_batch_vl: ownership_occ must have shape (N*K, board_size)");
+                ptr_occ = static_cast<float*>(buf_occ.ptr);
+            }
+            if (!ownership_p1p2_obj.is_none())
+            {
+                auto ownership_p1p2 = ownership_p1p2_obj.cast<py::array_t<float, py::array::c_style | py::array::forcecast>>();
+                auto buf_own = ownership_p1p2.request();
+                if (buf_own.ndim != 2 || buf_own.shape[0] != total || buf_own.shape[1] != BOARD_SIZE)
+                    throw std::runtime_error("backprop_batch_vl: ownership_p1p2 must have shape (N*K, board_size)");
+                ptr_p1p2_occ = static_cast<float*>(buf_own.ptr);
+            }
 
             {
                 py::gil_scoped_release release;
                 self.backprop_batch_vl(K, ptr_pol, ptr_d, ptr_p1w, ptr_p2w,
-                                       ptr_ml, ptr_term, ptr_sym);
+                                       ptr_ml, ptr_term, ptr_sym,
+                                       ptr_occ, ptr_p1p2_occ);
             }
         }, py::arg("K"), py::arg("policy_logits"), py::arg("d_vals"),
            py::arg("p1w_vals"), py::arg("p2w_vals"), py::arg("moves_left"),
            py::arg("is_term"), py::arg("sym_ids"),
+           py::arg("ownership_occ") = py::none(),
+           py::arg("ownership_p1p2") = py::none(),
            "VL Backprop: remove VL then backprop N*K results")
 
         // ── 通用搜索入口（IEvaluator）─────────────────────────────────
@@ -353,6 +402,22 @@ void register_batched_mcts(py::module_ &m, const char *name)
             return out; },
              "Returns root node stats: shape (n_envs, 6 + action_size*8)")
 
+        .def("get_all_root_ownership", [](BM &self)
+             {
+            if constexpr (!BM::HAS_OWNERSHIP)
+            {
+                return py::none();
+            }
+            else
+            {
+                int n = self.get_num_envs();
+                py::array_t<float> out({n, Game::Traits::ROWS, Game::Traits::COLS, 3});
+                float* ptr = static_cast<float*>(out.request().ptr);
+                self.get_all_root_ownership(ptr);
+                return py::object(out);
+            } },
+             "Returns root ownership means: shape (n_envs, rows, cols, 3), absolute [empty, p1, p2]")
+
         // ── 游戏维度常量（class-level 只读属性）──────────────────────────
         .def_property_readonly_static("action_size",
             [](py::object) { return ACTION_SIZE; })
@@ -364,7 +429,9 @@ void register_batched_mcts(py::module_ &m, const char *name)
                 for (size_t i = 0; i < Game::Traits::BOARD_SHAPE.size(); ++i)
                     shape[i] = Game::Traits::BOARD_SHAPE[i];
                 return shape;
-            });
+            })
+        .def_property_readonly_static("has_ownership",
+            [](py::object) { return BM::HAS_OWNERSHIP; });
 }
 
 PYBIND11_MODULE(mcts_cpp, m)

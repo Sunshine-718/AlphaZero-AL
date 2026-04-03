@@ -30,6 +30,19 @@ def _relative_wdl_to_absolute(wdl_rel, turns):
     return d, p1w, p2w
 
 
+def _ownership_relative_to_absolute(ownership_rel, turns):
+    """Convert relative ownership [empty, own, opp] to absolute [empty, p1, p2]."""
+    empty = ownership_rel[..., 0]
+    own = ownership_rel[..., 1]
+    opp = ownership_rel[..., 2]
+    turns = turns.reshape(-1, 1, 1)
+    p1 = np.where(turns == 1, own, opp)
+    p2 = np.where(turns == 1, opp, own)
+    occ = p1 + p2
+    p1p2 = p1 - p2
+    return occ.reshape(ownership_rel.shape[0], -1), p1p2.reshape(ownership_rel.shape[0], -1)
+
+
 class BatchedMCTS:
     def __init__(self, batch_size, c_init, c_base, alpha, n_playout,
                  game_name='Connect4', board_converter=None, cache_size=0, noise_epsilon=0.25, fpu_reduction=0.4,
@@ -63,6 +76,16 @@ class BatchedMCTS:
         self._conv_buf = np.zeros((batch_size, 3, *self.board_shape), dtype=np.float32)
         self._game_name = game_name
         self._rollout_eval = None
+        self._has_ownership = bool(getattr(backend_cls, 'has_ownership', False))
+
+    def _predict_batch(self, pv_func, states, action_mask):
+        if self._has_ownership:
+            probs, wdl, moves_left, ownership = pv_func.predict(
+                states, action_mask=action_mask, return_ownership=True
+            )
+            return probs, wdl, moves_left, ownership
+        probs, wdl, moves_left = pv_func.predict(states, action_mask=action_mask)
+        return probs, wdl, moves_left, None
 
     def _should_early_exit(self, step, remaining_steps):
         """判断搜索是否已收敛：最优动作的访问数领先第二名超过剩余步数。
@@ -116,6 +139,8 @@ class BatchedMCTS:
                 p1w_vals = term_p1w.copy()
                 p2w_vals = term_p2w.copy()
                 moves_left = np.zeros(self.batch_size, dtype=np.float32)
+                ownership_occ = np.zeros((self.batch_size, np.prod(self.board_shape)), dtype=np.float32) if self._has_ownership else None
+                ownership_p1p2 = np.zeros((self.batch_size, np.prod(self.board_shape)), dtype=np.float32) if self._has_ownership else None
 
                 # 只对非终局 leaf 调用 NN（或查置换表）
                 non_term_mask = ~term_mask
@@ -128,8 +153,8 @@ class BatchedMCTS:
                         conv = self._convert_board(leaf_boards[non_term_mask], leaf_turns[non_term_mask])
                         self._conv_buf[:n_non_term] = conv
                         non_term_masks = valid_masks[non_term_mask].astype(bool, copy=False)
-                        non_term_probs, non_term_wdl, non_term_ml = pv_func.predict(
-                            self._conv_buf[:n_non_term], action_mask=non_term_masks
+                        non_term_probs, non_term_wdl, non_term_ml, non_term_own = self._predict_batch(
+                            pv_func, self._conv_buf[:n_non_term], non_term_masks
                         )
                         probs[non_term_mask] = non_term_probs
                         # predict() returns relative WDL and is converted to absolute before backprop
@@ -140,13 +165,23 @@ class BatchedMCTS:
                         p1w_vals[non_term_mask] = p1w_abs
                         p2w_vals[non_term_mask] = p2w_abs
                         moves_left[non_term_mask] = non_term_ml.flatten()
+                        if self._has_ownership:
+                            occ_abs, p1p2_abs = _ownership_relative_to_absolute(non_term_own, leaf_turns[non_term_mask])
+                            ownership_occ[non_term_mask] = occ_abs
+                            ownership_p1p2[non_term_mask] = p1p2_abs
                     else:
                         # 置换表启用：先查缓存，cache miss 的再批量送 NN
                         miss_indices = []
                         for i in non_term_indices:
                             key = leaf_boards[i].tobytes() + leaf_turns[i].item().to_bytes(1, 'little', signed=True)
                             if key in self.cache:
-                                p, wdl, ml = self.cache.get(key)
+                                cached = self.cache.get(key)
+                                if self._has_ownership:
+                                    p, wdl, ml, occ_abs, p1p2_abs = cached
+                                    ownership_occ[i] = occ_abs
+                                    ownership_p1p2[i] = p1p2_abs
+                                else:
+                                    p, wdl, ml = cached
                                 probs[i] = p
                                 d_vals[i] = wdl[0]
                                 if leaf_turns[i] == 1:
@@ -166,10 +201,12 @@ class BatchedMCTS:
                             conv = self._convert_board(miss_boards, miss_turns)
                             self._conv_buf[:n_miss] = conv
                             miss_masks = valid_masks[miss_indices].astype(bool, copy=False)
-                            miss_probs, miss_wdl, miss_ml = pv_func.predict(
-                                self._conv_buf[:n_miss], action_mask=miss_masks
+                            miss_probs, miss_wdl, miss_ml, miss_own = self._predict_batch(
+                                pv_func, self._conv_buf[:n_miss], miss_masks
                             )
                             miss_ml = miss_ml.flatten()
+                            if self._has_ownership:
+                                miss_occ_abs, miss_p1p2_abs = _ownership_relative_to_absolute(miss_own, miss_turns)
                             for j, i in enumerate(miss_indices):
                                 probs[i]  = miss_probs[j]
                                 d_vals[i] = miss_wdl[j, 0]
@@ -180,8 +217,21 @@ class BatchedMCTS:
                                     p1w_vals[i] = miss_wdl[j, 2]
                                     p2w_vals[i] = miss_wdl[j, 1]
                                 moves_left[i] = miss_ml[j]
+                                if self._has_ownership:
+                                    ownership_occ[i] = miss_occ_abs[j]
+                                    ownership_p1p2[i] = miss_p1p2_abs[j]
                                 key = leaf_boards[i].tobytes() + leaf_turns[i].item().to_bytes(1, 'little', signed=True)
-                                self.cache.put(key, (miss_probs[j].copy(), miss_wdl[j].copy(), miss_ml[j].item()))
+                                if self._has_ownership:
+                                    cache_value = (
+                                        miss_probs[j].copy(),
+                                        miss_wdl[j].copy(),
+                                        miss_ml[j].item(),
+                                        miss_occ_abs[j].copy(),
+                                        miss_p1p2_abs[j].copy(),
+                                    )
+                                else:
+                                    cache_value = (miss_probs[j].copy(), miss_wdl[j].copy(), miss_ml[j].item())
+                                self.cache.put(key, cache_value)
                                 self.cache._od[key]['state'] = conv[j:j+1]
                                 self.cache._od[key]['valid_mask'] = miss_masks[j:j+1].copy()
 
@@ -191,7 +241,9 @@ class BatchedMCTS:
                     np.ascontiguousarray(p1w_vals, dtype=np.float32),
                     np.ascontiguousarray(p2w_vals, dtype=np.float32),
                     np.ascontiguousarray(moves_left, dtype=np.float32),
-                    is_term
+                    is_term,
+                    np.ascontiguousarray(ownership_occ, dtype=np.float32) if self._has_ownership else None,
+                    np.ascontiguousarray(ownership_p1p2, dtype=np.float32) if self._has_ownership else None,
                 )
 
                 # Early exit check
@@ -221,11 +273,13 @@ class BatchedMCTS:
                 p1w_vals = term_p1w.copy()
                 p2w_vals = term_p2w.copy()
                 moves_left = np.zeros(self.batch_size, dtype=np.float32)
+                ownership_occ = np.zeros((self.batch_size, np.prod(self.board_shape)), dtype=np.float32) if self._has_ownership else None
+                ownership_p1p2 = np.zeros((self.batch_size, np.prod(self.board_shape)), dtype=np.float32) if self._has_ownership else None
                 non_term_mask = ~is_term.astype(bool)
                 if non_term_mask.any():
                     conv = self._convert_board(leaf_boards[non_term_mask], leaf_turns[non_term_mask])
-                    nn_probs, nn_wdl, nn_ml = pv_func.predict(
-                        conv, action_mask=valid_masks[non_term_mask].astype(bool, copy=False)
+                    nn_probs, nn_wdl, nn_ml, nn_own = self._predict_batch(
+                        pv_func, conv, valid_masks[non_term_mask].astype(bool, copy=False)
                     )
                     probs[non_term_mask] = nn_probs
                     d_abs, p1w_abs, p2w_abs = _relative_wdl_to_absolute(
@@ -234,13 +288,19 @@ class BatchedMCTS:
                     p1w_vals[non_term_mask] = p1w_abs
                     p2w_vals[non_term_mask] = p2w_abs
                     moves_left[non_term_mask] = nn_ml.flatten()
+                    if self._has_ownership:
+                        occ_abs, p1p2_abs = _ownership_relative_to_absolute(nn_own, leaf_turns[non_term_mask])
+                        ownership_occ[non_term_mask] = occ_abs
+                        ownership_p1p2[non_term_mask] = p1p2_abs
                 self.mcts.backprop_batch(
                     np.ascontiguousarray(probs, dtype=np.float32),
                     np.ascontiguousarray(d_vals, dtype=np.float32),
                     np.ascontiguousarray(p1w_vals, dtype=np.float32),
                     np.ascontiguousarray(p2w_vals, dtype=np.float32),
                     np.ascontiguousarray(moves_left, dtype=np.float32),
-                    is_term)
+                    is_term,
+                    np.ascontiguousarray(ownership_occ, dtype=np.float32) if self._has_ownership else None,
+                    np.ascontiguousarray(ownership_p1p2, dtype=np.float32) if self._has_ownership else None)
                 remaining -= 1
                 total_sims += 1
 
@@ -274,6 +334,8 @@ class BatchedMCTS:
                     p1w_vals = term_p1w.copy()
                     p2w_vals = term_p2w.copy()
                     moves_left = np.zeros(cur_total, dtype=np.float32)
+                    ownership_occ = np.zeros((cur_total, np.prod(self.board_shape)), dtype=np.float32) if self._has_ownership else None
+                    ownership_p1p2 = np.zeros((cur_total, np.prod(self.board_shape)), dtype=np.float32) if self._has_ownership else None
 
                     non_term_mask = ~term_mask
                     probs = np.zeros((cur_total, self.action_size), dtype=np.float32)
@@ -281,8 +343,8 @@ class BatchedMCTS:
                     if non_term_mask.any():
                         if self.cache is None:
                             conv = self._convert_board(leaf_boards[non_term_mask], leaf_turns[non_term_mask])
-                            nn_probs, nn_wdl, nn_ml = pv_func.predict(
-                                conv, action_mask=valid_masks[non_term_mask].astype(bool, copy=False)
+                            nn_probs, nn_wdl, nn_ml, nn_own = self._predict_batch(
+                                pv_func, conv, valid_masks[non_term_mask].astype(bool, copy=False)
                             )
                             probs[non_term_mask] = nn_probs
                             d_abs, p1w_abs, p2w_abs = _relative_wdl_to_absolute(
@@ -292,13 +354,23 @@ class BatchedMCTS:
                             p1w_vals[non_term_mask] = p1w_abs
                             p2w_vals[non_term_mask] = p2w_abs
                             moves_left[non_term_mask] = nn_ml.flatten()
+                            if self._has_ownership:
+                                occ_abs, p1p2_abs = _ownership_relative_to_absolute(nn_own, leaf_turns[non_term_mask])
+                                ownership_occ[non_term_mask] = occ_abs
+                                ownership_p1p2[non_term_mask] = p1p2_abs
                         else:
                             non_term_indices = np.where(non_term_mask)[0]
                             miss_indices = []
                             for i in non_term_indices:
                                 key = leaf_boards[i].tobytes() + leaf_turns[i].item().to_bytes(1, 'little', signed=True)
                                 if key in self.cache:
-                                    p, wdl, ml = self.cache.get(key)
+                                    cached = self.cache.get(key)
+                                    if self._has_ownership:
+                                        p, wdl, ml, occ_abs, p1p2_abs = cached
+                                        ownership_occ[i] = occ_abs
+                                        ownership_p1p2[i] = p1p2_abs
+                                    else:
+                                        p, wdl, ml = cached
                                     probs[i] = p
                                     d_vals[i] = wdl[0]
                                     if leaf_turns[i] == 1:
@@ -316,10 +388,12 @@ class BatchedMCTS:
                                 miss_turns  = leaf_turns[miss_indices]
                                 conv = self._convert_board(miss_boards, miss_turns)
                                 miss_masks = valid_masks[miss_indices].astype(bool, copy=False)
-                                miss_probs, miss_wdl, miss_ml = pv_func.predict(
-                                    conv, action_mask=miss_masks
+                                miss_probs, miss_wdl, miss_ml, miss_own = self._predict_batch(
+                                    pv_func, conv, miss_masks
                                 )
                                 miss_ml = miss_ml.flatten()
+                                if self._has_ownership:
+                                    miss_occ_abs, miss_p1p2_abs = _ownership_relative_to_absolute(miss_own, miss_turns)
                                 for j, i in enumerate(miss_indices):
                                     probs[i]  = miss_probs[j]
                                     d_vals[i] = miss_wdl[j, 0]
@@ -330,8 +404,21 @@ class BatchedMCTS:
                                         p1w_vals[i] = miss_wdl[j, 2]
                                         p2w_vals[i] = miss_wdl[j, 1]
                                     moves_left[i] = miss_ml[j]
+                                    if self._has_ownership:
+                                        ownership_occ[i] = miss_occ_abs[j]
+                                        ownership_p1p2[i] = miss_p1p2_abs[j]
                                     key = leaf_boards[i].tobytes() + leaf_turns[i].item().to_bytes(1, 'little', signed=True)
-                                    self.cache.put(key, (miss_probs[j].copy(), miss_wdl[j].copy(), miss_ml[j].item()))
+                                    if self._has_ownership:
+                                        cache_value = (
+                                            miss_probs[j].copy(),
+                                            miss_wdl[j].copy(),
+                                            miss_ml[j].item(),
+                                            miss_occ_abs[j].copy(),
+                                            miss_p1p2_abs[j].copy(),
+                                        )
+                                    else:
+                                        cache_value = (miss_probs[j].copy(), miss_wdl[j].copy(), miss_ml[j].item())
+                                    self.cache.put(key, cache_value)
                                     self.cache._od[key]['state'] = conv[j:j+1]
                                     self.cache._od[key]['valid_mask'] = miss_masks[j:j+1].copy()
 
@@ -343,7 +430,9 @@ class BatchedMCTS:
                         np.ascontiguousarray(p2w_vals, dtype=np.float32),
                         np.ascontiguousarray(moves_left, dtype=np.float32),
                         is_term,
-                        sym_ids
+                        sym_ids,
+                        np.ascontiguousarray(ownership_occ, dtype=np.float32) if self._has_ownership else None,
+                        np.ascontiguousarray(ownership_p1p2, dtype=np.float32) if self._has_ownership else None,
                     )
                 except BaseException:
                     # NN 推理失败 / KeyboardInterrupt / SystemExit：
@@ -367,10 +456,22 @@ class BatchedMCTS:
         valid_masks = None
         if all('valid_mask' in od[k] for k in keys):
             valid_masks = np.concatenate([od[k]['valid_mask'] for k in keys], axis=0)
-        new_probs, new_wdl, new_ml = pv_func.predict(states, action_mask=valid_masks)
+        new_probs, new_wdl, new_ml, new_own = self._predict_batch(pv_func, states, valid_masks)
         new_ml = new_ml.flatten()
+        if self._has_ownership:
+            turns = states[:, 2, 0, 0].astype(np.int32)
+            new_occ, new_p1p2 = _ownership_relative_to_absolute(new_own, turns)
         for j, k in enumerate(keys):
-            od[k]['value'] = (new_probs[j].copy(), new_wdl[j].copy(), new_ml[j].item())
+            if self._has_ownership:
+                od[k]['value'] = (
+                    new_probs[j].copy(),
+                    new_wdl[j].copy(),
+                    new_ml[j].item(),
+                    new_occ[j].copy(),
+                    new_p1p2[j].copy(),
+                )
+            else:
+                od[k]['value'] = (new_probs[j].copy(), new_wdl[j].copy(), new_ml[j].item())
         return self
 
     def _get_rollout_evaluator(self):
@@ -487,3 +588,8 @@ class BatchedMCTS:
             'P1W':      children[:, :, 6],
             'P2W':      children[:, :, 7],
         }
+
+    def get_root_ownership(self):
+        if not self._has_ownership:
+            return None
+        return self.mcts.get_all_root_ownership()

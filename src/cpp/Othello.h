@@ -265,6 +265,28 @@ namespace AlphaZero
             return std::atan(raw / cfg.score_scale) * (2.0f / 3.14159265f);
         }
 
+        void fill_absolute_ownership(float *occ, float *p1p2) const
+        {
+            for (int i = 0; i < 64; ++i)
+            {
+                if (bb[0] & (1ULL << i))
+                {
+                    occ[i] = 1.0f;
+                    p1p2[i] = 1.0f;
+                }
+                else if (bb[1] & (1ULL << i))
+                {
+                    occ[i] = 1.0f;
+                    p1p2[i] = -1.0f;
+                }
+                else
+                {
+                    occ[i] = 0.0f;
+                    p1p2[i] = 0.0f;
+                }
+            }
+        }
+
         [[nodiscard]] static float compute_aux_utility(
             float child_M, float /*parent_M*/, float /*child_Q*/, const SearchConfig& cfg)
         {

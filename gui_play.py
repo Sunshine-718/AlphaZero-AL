@@ -303,10 +303,17 @@ class AttentionExtractor:
             gate = gate[..., -self._num_heads:]
         self._gate_raw = gate
 
+    @staticmethod
+    def _resolve_attn_module(net):
+        block = getattr(net, 'hidden', None)
+        if isinstance(block, nn.Sequential) and len(block) > 0:
+            return getattr(block[-1], 'attn', None)
+        return None
+
     def attach(self, net):
-        """Register hooks on net.hidden[-1].attn.{q_norm, k_norm, gate_proj/qkvg_proj}."""
+        """Register hooks on the last attention block if the net exposes one."""
         self.detach()
-        attn = getattr(net.hidden[-1], 'attn', None)
+        attn = self._resolve_attn_module(net)
         if attn is None or not hasattr(attn, 'q_norm') or not hasattr(attn, 'k_norm'):
             self._num_heads = 0
             return False
@@ -544,13 +551,22 @@ class BoardWidget(QWidget):
         qp.setBrush(spec)
         qp.drawEllipse(QPointF(cx - rad * 0.2, cy - rad * 0.35), rad * 0.4, rad * 0.3)
 
-    def _ownership_fill_color(self, cls_idx):
-        if cls_idx == 0:
-            return QColor(150, 160, 180)
+    def _ownership_fill_color(self, cls_idx, conf):
+        neutral = np.array([118.0, 126.0, 140.0], dtype=np.float32)
         own_is_red = (self.env.turn == 1)
         if cls_idx == 1:
-            return QColor(C.RED if own_is_red else C.YEL)
-        return QColor(C.YEL if own_is_red else C.RED)
+            target = QColor(C.RED if own_is_red else C.YEL)
+        elif cls_idx == 2:
+            target = QColor(C.YEL if own_is_red else C.RED)
+        else:
+            target = QColor(168, 176, 190)
+
+        amt = float(np.clip(conf, 0.0, 1.0))
+        tgt = np.array([target.red(), target.green(), target.blue()], dtype=np.float32)
+        rgb = neutral + (tgt - neutral) * amt
+        fill = QColor(int(rgb[0]), int(rgb[1]), int(rgb[2]))
+        fill.setAlpha(225)
+        return fill
 
     def _draw_ownership(self, qp):
         if not self.ownership_visible or self.ownership_probs is None:
@@ -573,10 +589,9 @@ class BoardWidget(QWidget):
 
                 cx = self.MARGIN + c * self.CELL + self.CELL - inset
                 cy = self.MARGIN + r * self.CELL + inset
-                fill = self._ownership_fill_color(cls_idx)
+                fill = self._ownership_fill_color(cls_idx, conf)
                 border = QColor(C.CYAN)
-                fill.setAlpha(95 + int(conf * 150))
-                border.setAlpha(110 + int(conf * 135))
+                border.setAlpha(90 + int(conf * 120))
 
                 qp.setBrush(fill)
                 qp.setPen(QPen(border, 1.2 + conf * 0.8))
@@ -2289,7 +2304,9 @@ class Connect4GUI(QWidget):
     def _sync_attn_head_selector(self):
         num_heads = 0
         try:
-            num_heads = int(self.net.hidden[-1].attn.num_heads)
+            attn = self._attn_extractor._resolve_attn_module(self.net)
+            if attn is not None:
+                num_heads = int(attn.num_heads)
         except Exception:
             pass
         self.console.set_attention_head_count(num_heads)
