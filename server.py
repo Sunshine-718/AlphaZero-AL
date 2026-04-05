@@ -1,4 +1,6 @@
 import os
+import shutil
+import tempfile
 import time
 import random
 import torch
@@ -10,7 +12,7 @@ import threading
 import numpy as np
 from src.pipeline import TrainPipeline
 from src.ReplayBuffer import ReplayBuffer
-from flask import Flask, request, jsonify, redirect, send_from_directory
+from flask import Flask, request, jsonify, redirect, send_from_directory, send_file
 import argparse
 import sys
 
@@ -331,6 +333,17 @@ def _load_model_state_dict(path):
     return checkpoint['model_state_dict'] if 'model_state_dict' in checkpoint else checkpoint
 
 
+def _build_weights_archive(current_dir, best_dir, folder_name):
+    """Copy current and best checkpoints into a step-named folder and zip it."""
+    temp_root = tempfile.mkdtemp(prefix='az_weights_')
+    export_root = os.path.join(temp_root, folder_name)
+    os.makedirs(export_root, exist_ok=True)
+    shutil.copytree(current_dir, os.path.join(export_root, 'current'))
+    shutil.copytree(best_dir, os.path.join(export_root, 'best'))
+    archive_path = shutil.make_archive(export_root, 'zip', root_dir=temp_root, base_dir=folder_name)
+    return temp_root, archive_path
+
+
 @app.route('/weights', methods=['GET'])
 def weights():
     global TOTAL_SENT_BYTES
@@ -363,6 +376,30 @@ def weights():
         }
     else:
         return '', 304, {}
+
+
+@app.route('/download', methods=['GET'])
+def download_weights():
+    current_path = pipeline.current
+    best_path = pipeline.best
+    current_model_file = os.path.join(current_path, 'model.pt')
+    best_model_file = os.path.join(best_path, 'model.pt')
+    if not os.path.isdir(current_path) or not os.path.exists(current_model_file):
+        return jsonify({'status': 'error', 'message': 'current weights not found'}), 404
+    if not os.path.isdir(best_path) or not os.path.exists(best_model_file):
+        return jsonify({'status': 'error', 'message': 'best weights not found'}), 404
+
+    step_name = str(getattr(pipeline, 'global_step', 0))
+    temp_root, archive_path = _build_weights_archive(current_path, best_path, step_name)
+
+    response = send_file(
+        archive_path,
+        as_attachment=True,
+        download_name=f'{step_name}.zip',
+        mimetype='application/zip',
+    )
+    response.call_on_close(lambda: shutil.rmtree(temp_root, ignore_errors=True))
+    return response
 
 
 @app.route('/config', methods=['GET'])
