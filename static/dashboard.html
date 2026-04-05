@@ -177,6 +177,12 @@
       cursor: default
     }
 
+    .btn.secondary {
+      background: transparent;
+      color: var(--accent);
+      border: 1px solid var(--accent)
+    }
+
     .toast {
       position: fixed;
       top: 16px;
@@ -368,6 +374,7 @@
         });
       }
       sb.innerHTML += `<button class="btn" id="apply-btn" onclick="applyParams()">Apply Changes</button>`;
+      sb.innerHTML += `<button class="btn secondary" id="download-btn" onclick="downloadWeights()">Download Weights</button>`;
     }
 
     function markChanged(el) {
@@ -407,6 +414,10 @@
         if (j.rejected && Object.keys(j.rejected).length)
           toast('Rejected: ' + Object.keys(j.rejected).join(', '), 'err');
       } catch (e) { toast('Network error', 'err'); }
+    }
+
+    function downloadWeights() {
+      window.location.href = '/download';
     }
 
     function toast(msg, type) {
