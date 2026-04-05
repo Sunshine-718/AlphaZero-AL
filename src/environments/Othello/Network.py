@@ -147,7 +147,8 @@ class MixHead(nn.Module):
         policy_logits = policy_logits.masked_fill(~action_mask, -1e9)
         policy = nn.functional.log_softmax(policy_logits, dim=-1)
         ownership_logits = h[:, 2:5]
-        value = nn.functional.log_softmax(self.value_out(h), dim=-1)
+        value_input = torch.cat((h[:, :2].detach(), h[:, 2:]), dim=1)
+        value = nn.functional.log_softmax(self.value_out(value_input), dim=-1)
         ownership = nn.functional.log_softmax(ownership_logits, dim=1)
         aux = torch.tanh(self.aux_out(ownership_logits).squeeze(-1))
         return policy, value, aux, ownership

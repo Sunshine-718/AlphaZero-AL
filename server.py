@@ -75,9 +75,9 @@ g_aux.add_argument('--mlh_warmup_loss', type=float, default=0,
 g_sp = parser.add_argument_group('Self-play')
 g_sp.add_argument('-t', '--temp', type=float, default=1, help='Self-play temperature')
 g_sp.add_argument('--temp_decay_moves', type=int, default=20,
-                   help='Number of moves to linearly decay temperature to 0 (0=no decay)')
-g_sp.add_argument('--temp_endgame', type=float, default=0.3,
-                   help='Temperature floor (minimum temperature after decay)')
+                   help='Number of opening moves to keep temp before switching to temp_endgame (0=no switch)')
+g_sp.add_argument('--temp_endgame', type=float, default=0.0,
+                   help='Temperature after temp_decay_moves')
 g_sp.add_argument('--actor', type=str, default='current',
                    help='Which weight actors load (best/current)')
 
@@ -93,7 +93,7 @@ g_train.add_argument('--replay_ratio', type=float, default=0.025,
 g_train.add_argument('--n_epochs', type=int, default=2, help='Training epochs per update')
 g_train.add_argument('--policy_lr_scale', type=float, default=1,
                       help='Policy head LR multiplier')
-g_train.add_argument('--dropout', type=float, default=0.1, help='Dropout rate')
+g_train.add_argument('--dropout', type=float, default=0.2, help='Dropout rate')
 g_train.add_argument('--distill_alpha', type=float, default=0.75,
                       help='Distillation weight alpha: loss = (1-alpha)*CE(z) + alpha*KL(root_wdl||student) (0=pure z, 0.75=Lc0-style)')
 g_train.add_argument('--distill_temp', type=float, default=2.0,
@@ -109,7 +109,7 @@ g_train.add_argument('--entropy_lambda', type=float, default=0.05,
                            'policy collapse (0=disabled)')
 g_train.add_argument('--td_steps', type=int, default=10,
                       help='Future-root-WDL consistency: number of steps k for S_{t+k} (0=disabled)')
-g_train.add_argument('--td_alpha', type=float, default=0.5,
+g_train.add_argument('--td_alpha', type=float, default=0.3,
                       help='Future-root-WDL consistency weight: v_loss = (1-alpha)*base + alpha*KL(root_wdl(S_{t+k})||v(S_t)) '
                            '(0=disabled)')
 

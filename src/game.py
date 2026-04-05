@@ -63,16 +63,14 @@ class Game:
 
     @staticmethod
     def _get_temp(step, temp_init, temp_decay_moves, temp_endgame):
-        """lc0-style linear temperature decay with floor.
+        """Step temperature schedule.
 
-        temp(step) = temp_init * max(0, 1 - step / decay_moves)
-        clamped at temp_endgame from below.
-        If decay_moves <= 0, always returns temp_init (no decay).
+        Use temp_init before the cutoff move, then switch to temp_endgame.
+        If temp_decay_moves <= 0, always returns temp_init (no switch).
         """
         if temp_decay_moves <= 0:
             return temp_init
-        t = temp_init * max(0.0, 1.0 - step / temp_decay_moves)
-        return max(t, temp_endgame)
+        return temp_init if step < temp_decay_moves else temp_endgame
 
     def batch_self_play(self, player, n_games, temperature, temp_decay_moves, temp_endgame=0,
                         td_steps=0):

@@ -299,6 +299,20 @@
       { key: 'episode_len', label: 'Ep Length', fmt: 1 },
       { key: 'win_rate', label: 'Win Rate', fmt: 4 },
     ];
+    const PARAM_META = {
+      temp: {
+        label: 'temp',
+        title: 'Self-play temperature before the switch move',
+      },
+      temp_decay_moves: {
+        label: 'temp switch move',
+        title: 'Number of opening moves to keep temp before switching to temp_endgame; 0 disables the switch',
+      },
+      temp_endgame: {
+        label: 'temp after switch',
+        title: 'Self-play temperature after reaching temp_decay_moves',
+      },
+    };
 
     let serverCfg = {};
     let prevMetrics = {};
@@ -344,8 +358,11 @@
         sb.innerHTML += `<div class="group-title">${group}</div>`;
         keys.forEach(k => {
           const v = cfg[k] ?? '';
+          const meta = PARAM_META[k] || {};
+          const label = meta.label || k;
+          const title = meta.title || k;
           sb.innerHTML += `<div class="param-row">
-        <label title="${k}">${k}</label>
+        <label title="${title}">${label}</label>
         ${buildInput(k, v)}
       </div>`;
         });
