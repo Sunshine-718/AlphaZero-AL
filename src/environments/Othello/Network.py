@@ -70,20 +70,18 @@ class PolicyHead(nn.Module):
 class TriHead(nn.Module):
     def __init__(self, in_channels, dropout=0.0):
         super().__init__()
-        self.stem = nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1, bias=False)
-        self.value_out = nn.Sequential(nn.BatchNorm2d(in_channels),
-                                       nn.SiLU(True),
-                                       nn.Dropout(dropout),
-                                       nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=2, bias=False),
+        self.stem = nn.Sequential(nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1, bias=False),
+                                  nn.BatchNorm2d(in_channels),
+                                  nn.SiLU(True),
+                                  nn.Dropout(dropout))
+        self.value_out = nn.Sequential(nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=2, bias=False),
                                        nn.BatchNorm2d(in_channels),
                                        nn.SiLU(True),
                                        nn.Dropout2d(dropout),
-                                       nn.Conv2d(in_channels, in_channels, kernel_size=3, bias=False),
-                                       nn.BatchNorm2d(in_channels),
-                                       nn.SiLU(True),
-                                       nn.Dropout2d(dropout),
+                                       nn.MaxPool2d(3, 3),
                                        nn.Flatten(),
                                        nn.Linear(in_channels, 3))
+        self.ownership_out = nn.Conv2d(in_channels, 3, kernel_size=1, bias=True)
         self.aux_out = nn.Sequential(nn.Flatten(),
                                      nn.SiLU(True),
                                      nn.RMSNorm(3 * 8 * 8, eps=1e-5),
@@ -91,8 +89,8 @@ class TriHead(nn.Module):
 
     def forward(self, x):
         h = self.stem(x)
-        ownership_logit = h[:, :3]
         value = nn.functional.log_softmax(self.value_out(h), dim=-1)
+        ownership_logit = self.ownership_out(h)
         ownership = nn.functional.log_softmax(ownership_logit, dim=1)
         aux = torch.tanh(self.aux_out(ownership_logit).squeeze(-1))
         return value, aux, ownership
@@ -104,62 +102,9 @@ class TriHead(nn.Module):
         nn.init.constant_(self.aux_out[-1].weight, 0)
         if self.aux_out[-1].bias is not None:
             nn.init.constant_(self.aux_out[-1].bias, 0)
-
-
-class MixHead(nn.Module):
-    def __init__(self, in_channels, dropout=0.0):
-        super().__init__()
-        self.stem = nn.Sequential(nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1, bias=False),
-                                  nn.BatchNorm2d(in_channels),
-                                  nn.SiLU(True),
-                                  nn.Dropout(dropout),
-                                  nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1, bias=False))
-        self.value_out = nn.Sequential(nn.BatchNorm2d(in_channels),
-                                       nn.SiLU(True),
-                                       nn.Dropout(dropout),
-                                       nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=2, bias=False),
-                                       nn.BatchNorm2d(in_channels),
-                                       nn.SiLU(True),
-                                       nn.Dropout2d(dropout),
-                                       nn.Conv2d(in_channels, in_channels, kernel_size=3, bias=False),
-                                       nn.BatchNorm2d(in_channels),
-                                       nn.SiLU(True),
-                                       nn.Dropout2d(dropout),
-                                       nn.Flatten(),
-                                       nn.Linear(in_channels, 3))
-
-        self.pass_fc = nn.Sequential(nn.Flatten(),
-                                     nn.SiLU(True),
-                                     nn.RMSNorm(8 * 8, eps=1e-5),
-                                     nn.Linear(8 * 8, 1))
-
-        self.aux_out = nn.Sequential(nn.Flatten(),
-                                     nn.SiLU(True),
-                                     nn.RMSNorm(3 * 8 * 8, eps=1e-5),
-                                     nn.Linear(3 * 8 * 8, 1))
-
-    def forward(self, x, action_mask=None):
-        h = self.stem(x)
-        board_logits = h[:, 0].flatten(start_dim=1)
-        pass_hidden = h[:, 1]
-        pass_logit = self.pass_fc(pass_hidden)
-        policy_logits = torch.cat([board_logits, pass_logit], dim=1)
-        policy_logits = policy_logits.masked_fill(~action_mask, -1e9)
-        policy = nn.functional.log_softmax(policy_logits, dim=-1)
-        ownership_logits = h[:, 2:5]
-        value_input = torch.cat((h[:, :2].detach(), h[:, 2:]), dim=1)
-        value = nn.functional.log_softmax(self.value_out(value_input), dim=-1)
-        ownership = nn.functional.log_softmax(ownership_logits, dim=1)
-        aux = torch.tanh(self.aux_out(ownership_logits).squeeze(-1))
-        return policy, value, aux, ownership
-
-    def reset_output_parameters(self):
-        nn.init.constant_(self.value_out[-1].weight, 0)
-        if self.value_out[-1].bias is not None:
-            nn.init.constant_(self.value_out[-1].bias, 0)
-        nn.init.constant_(self.aux_out[-1].weight, 0)
-        if self.aux_out[-1].bias is not None:
-            nn.init.constant_(self.aux_out[-1].bias, 0)
+        nn.init.constant_(self.ownership_out.weight, 0)
+        if self.ownership_out.bias is not None:
+            nn.init.constant_(self.ownership_out.bias, 0)
 
 class CNN(Base):
     aux_target_offset = 64
@@ -200,21 +145,21 @@ class CNN(Base):
             nn.Dropout2d(dropout)
         )
 
-        self.mix_head = MixHead(h_dim, dropout)
+        self.policy_head = PolicyHead(h_dim, out_dim, dropout)
+        self.tri_head = TriHead(h_dim, dropout)
 
         self.apply(self.init_weights)
-        self.mix_head.reset_output_parameters()
+        self.policy_head.reset_output_parameters()
+        self.tri_head.reset_output_parameters()
 
         self.opt = torch.optim.AdamW(
             [
                 {'params': self.stem.parameters()},
-                {'params': self.mix_head.stem.parameters()},
-                {'params': self.mix_head.value_out.parameters()},
-                {'params': self.mix_head.aux_out.parameters()},
+                {'params': self.tri_head.parameters()},
                 {'params': self.piece_emb.parameters(), 'weight_decay': 0},
                 {'params': self.pos_emb.parameters(), 'weight_decay': 0},
                 {'params': self.legal_emb.parameters(), 'weight_decay': 0},
-                {'params': self.mix_head.pass_fc.parameters(), 'lr': lr * policy_lr_scale},
+                {'params': self.policy_head.parameters(), 'lr': lr * policy_lr_scale},
             ],
             lr=lr,
             weight_decay=1e-2,
@@ -272,7 +217,9 @@ class CNN(Base):
         action_mask = self._normalize_action_mask(action_mask, x.device)
         x = self._embed_state(x, action_mask=action_mask)
         hidden = self.stem(x)
-        return self.mix_head(hidden, action_mask=action_mask)
+        log_prob = self.policy_head(hidden, action_mask)
+        value, aux, ownership = self.tri_head(hidden)
+        return log_prob, value, aux, ownership
 
     @torch.no_grad()
     def policy(self, state, action_mask):
