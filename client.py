@@ -32,7 +32,7 @@ parser.add_argument('--host', '-H', type=str, default='127.0.0.1', help='Server 
 parser.add_argument('--port', '-P', '-p', type=int, default=7718, help='Server port')
 parser.add_argument('-d', '--device', type=str,
                     default='cuda' if torch.cuda.is_available() else 'cpu', help='Device')
-parser.add_argument('-B', '--batch_size', type=int, default=100,
+parser.add_argument('-B', '--batch_size', type=int, default=30,
                     help='Number of parallel self-play games')
 parser.add_argument('--cache_size', type=int, default=0,
                     help='Transposition table size (0=disabled)')
