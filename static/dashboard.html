@@ -308,6 +308,8 @@
 
     let serverCfg = {};
     let prevMetrics = {};
+    let metricDeltas = {};
+    let lastMetricStep = null;
 
     function fmtBytes(b) {
       if (b == null) return '—';
@@ -444,22 +446,29 @@
         document.getElementById('hd-recv').textContent = fmtBytes(m.total_received_bytes);
         document.getElementById('hd-sent').textContent = fmtBytes(m.total_sent_bytes);
 
+        const metricStep = m.global_step ?? null;
+        const isNewMetricStep = metricStep !== null && metricStep !== lastMetricStep;
         METRIC_CARDS.forEach(c => {
           const v = m[c.key];
           const el = document.getElementById('mv-' + c.key);
           const sub = document.getElementById('ms-' + c.key);
           if (v != null) {
             el.textContent = Number(v).toFixed(c.fmt);
-            const prev = prevMetrics[c.key];
-            if (prev != null) {
-              const delta = v - prev;
+            if (isNewMetricStep && prevMetrics[c.key] != null) {
+              metricDeltas[c.key] = v - prevMetrics[c.key];
+            }
+            const delta = metricDeltas[c.key];
+            if (delta != null) {
               const sign = delta >= 0 ? '+' : '';
               sub.textContent = sign + delta.toFixed(c.fmt);
               sub.style.color = delta < 0 ? 'var(--accent)' : (delta > 0 ? 'var(--alert)' : 'var(--text2)');
             }
           }
         });
-        prevMetrics = { ...m };
+        if (isNewMetricStep) {
+          prevMetrics = { ...m };
+          lastMetricStep = metricStep;
+        }
       } catch (e) { }
     }
 
