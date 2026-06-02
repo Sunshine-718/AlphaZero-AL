@@ -44,7 +44,7 @@ class PolicyHead(nn.Module):
         self.stem = nn.Sequential(nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1, bias=False),
                                   nn.BatchNorm2d(in_channels),
                                   nn.SiLU(True),
-                                  nn.Dropout(dropout))
+                                  nn.Dropout2d(dropout))
         self.board_out = nn.Conv2d(in_channels, 1, kernel_size=1, bias=True)
         self.pass_norm = nn.RMSNorm(in_channels, eps=1e-5)
         self.pass_fc = nn.Linear(in_channels, 1)
@@ -73,7 +73,7 @@ class TriHead(nn.Module):
         self.stem = nn.Sequential(nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1, bias=False),
                                   nn.BatchNorm2d(in_channels),
                                   nn.SiLU(True),
-                                  nn.Dropout(dropout))
+                                  nn.Dropout2d(dropout))
         self.value_out = nn.Sequential(nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=2, bias=False),
                                        nn.BatchNorm2d(in_channels),
                                        nn.SiLU(True),
