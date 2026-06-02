@@ -109,7 +109,7 @@ class TriHead(nn.Module):
 class CNN(Base):
     aux_target_offset = 64
     score_scale = 8.0
-    ownership_loss_weight = 1.0
+    ownership_loss_weight = 0.1
     ownership_class_order = ('empty', 'own', 'opp')
 
     def __init__(
