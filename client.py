@@ -86,7 +86,55 @@ if args.no_symmetry:
     _USER_OVERRIDES.add('use_symmetry')
 
 
-def print_config(cfg):
+def _default_server_config():
+    """Local fallback matching server.py defaults for offline --config."""
+    return {
+        'env': 'Connect4',
+        'model': 'CNN',
+        'n_playout': 200,
+        'c_init': 1.4,
+        'c_base': 1000,
+        'fpu_reduction': 0.2,
+        'vl_batch': 4,
+        'use_symmetry': True,
+        'value_decay': 1.0,
+        'dirichlet_alpha': 0.3,
+        'noise_eps': 0.25,
+        'noise_steps': 0,
+        'noise_eps_min': 0.1,
+        'mlh_slope': 0.1,
+        'mlh_cap': 0.2,
+        'score_utility_factor': 0.15,
+        'score_scale': 8.0,
+        'temp': 1,
+        'temp_decay_moves': 20,
+        'temp_endgame': 0.0,
+        'td_steps': 10,
+    }
+
+
+def _apply_user_overrides_to_config(cfg):
+    """用户手动设置的 CLI 参数覆盖 config 值。"""
+    for arg_name, cfg_key in _ARG_TO_CFG.items():
+        val = getattr(args, arg_name)
+        if val is not None:
+            cfg[cfg_key] = val
+    if args.no_symmetry:
+        cfg['use_symmetry'] = False
+    return cfg
+
+
+def _fetch_server_config_once(server_url, timeout=1):
+    try:
+        r = requests.get(f'{server_url}/config', timeout=timeout)
+        if r.status_code == 200:
+            return r.json()
+    except requests.exceptions.RequestException:
+        return None
+    return None
+
+
+def print_config(cfg, default_source="server"):
     from rich.console import Console
     from rich.table import Table
     from rich.panel import Panel
@@ -141,7 +189,7 @@ def print_config(cfg):
             table.add_section()
         first = True
         for key, val in params.items():
-            source = "[bold magenta]CLI[/bold magenta]" if key in _USER_OVERRIDES else "server"
+            source = "[bold magenta]CLI[/bold magenta]" if key in _USER_OVERRIDES else default_source
             table.add_row(group_name if first else "", key, str(val), source)
             first = False
 
@@ -222,10 +270,7 @@ class Actor:
 
     def _apply_user_overrides(self):
         """用户手动设置的 CLI 参数覆盖 server 值。"""
-        for arg_name, cfg_key in _ARG_TO_CFG.items():
-            val = getattr(args, arg_name)
-            if val is not None:
-                self.cfg[cfg_key] = val
+        _apply_user_overrides_to_config(self.cfg)
         if args.no_symmetry:
             self.cfg['use_symmetry'] = False
         if _USER_OVERRIDES:
@@ -349,6 +394,17 @@ class Actor:
 
 
 if __name__ == '__main__':
+    if args.config:
+        server_url = f'http://{args.host}:{args.port}'
+        cfg = _fetch_server_config_once(server_url)
+        source = "server"
+        if cfg is None:
+            cfg = _default_server_config()
+            source = "local"
+        _apply_user_overrides_to_config(cfg)
+        print_config(cfg, default_source=source)
+        raise SystemExit(0)
+
     pipeline = Actor()
     print(f"Client started on device: {args.device}")
     retry_count = 0
