@@ -41,7 +41,11 @@ class PolicyHead(nn.Module):
     def __init__(self, in_channels, out_dim, dropout=0.0):
         super().__init__()
         assert out_dim == 65
-        self.stem = nn.Sequential(nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1, bias=False),
+        self.stem = nn.Sequential(nn.Conv2d(in_channels, in_channels, kernel_size=3, bias=False),
+                                  nn.BatchNorm2d(in_channels),
+                                  nn.SiLU(True),
+                                  nn.Dropout2d(dropout),
+                                  nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1, bias=False),
                                   nn.BatchNorm2d(in_channels),
                                   nn.SiLU(True),
                                   nn.Dropout2d(dropout))
@@ -70,21 +74,21 @@ class PolicyHead(nn.Module):
 class DualHead(nn.Module):
     def __init__(self, in_channels, dropout=0.0):
         super().__init__()
-        self.stem = nn.Sequential(nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1, bias=False),
-                                  nn.BatchNorm2d(in_channels),
-                                  nn.SiLU(True),
-                                  nn.Dropout2d(dropout))
-        self.value_out = nn.Sequential(nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=2, bias=False),
-                                       nn.BatchNorm2d(in_channels),
+        self.stem = nn.Sequential(nn.Conv2d(in_channels, 8, kernel_size=3, bias=False),
+                                  nn.BatchNorm2d(8),
+                                  nn.SiLU(True))
+        self.value_out = nn.Sequential(nn.Conv2d(8, 8, kernel_size=3, stride=2, bias=False),
+                                       nn.BatchNorm2d(8),
                                        nn.SiLU(True),
                                        nn.Dropout2d(dropout),
-                                       nn.MaxPool2d(3, 3),
                                        nn.Flatten(),
-                                       nn.Linear(in_channels, 3))
+                                       nn.Linear(8 * 3 * 3, 3))
         self.aux_out = nn.Sequential(nn.Flatten(),
+                                     nn.Linear(8 * 8 * 8, 8 * 8 * 8),
+                                     nn.RMSNorm(8 * 8 * 8, eps=1e-5),
                                      nn.SiLU(True),
-                                     nn.RMSNorm(in_channels * 8 * 8, eps=1e-5),
-                                     nn.Linear(in_channels * 8 * 8, 1))
+                                     nn.Dropout(dropout),
+                                     nn.Linear(8 * 8 * 8, 1))
 
     def forward(self, x):
         h = self.stem(x)
@@ -99,6 +103,7 @@ class DualHead(nn.Module):
         nn.init.constant_(self.aux_out[-1].weight, 0)
         if self.aux_out[-1].bias is not None:
             nn.init.constant_(self.aux_out[-1].bias, 0)
+
 
 class CNN(Base):
     aux_target_offset = 64
@@ -131,7 +136,7 @@ class CNN(Base):
             nn.BatchNorm2d(h_dim),
             nn.SiLU(inplace=True),
             *[ResidualBlock(h_dim, dropout=dropout) for _ in range(num_res_blocks)],
-            nn.Conv2d(h_dim, h_dim, kernel_size=3, bias=False),
+            nn.Conv2d(h_dim, h_dim, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(h_dim),
             nn.SiLU(True),
             nn.Dropout2d(dropout)
