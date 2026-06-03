@@ -108,7 +108,7 @@ def _default_server_config():
         'score_scale': 8.0,
         'temp': 1,
         'temp_decay_moves': 20,
-        'temp_endgame': 0.0,
+        'temp_endgame': 0.3,
         'td_steps': 10,
     }
 
