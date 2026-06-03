@@ -55,7 +55,7 @@ class PolicyHead(nn.Module):
         pass_feat = self.pass_norm(x.mean(dim=(2, 3)))
         pass_logit = self.pass_fc(pass_feat)
         logits = torch.cat([board_logits, pass_logit], dim=1)
-        logits = logits.masked_fill(~action_mask, -1e9)
+        # logits = logits.masked_fill(~action_mask, -1e9)
         return nn.functional.log_softmax(logits, dim=-1)
 
     def reset_output_parameters(self):
