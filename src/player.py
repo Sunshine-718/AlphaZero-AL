@@ -44,8 +44,7 @@ class NetworkPlayer(Player):
 
     def get_action(self, env, *args, **kwargs):
         valid = env.valid_move()
-        mask = np.asarray(env.valid_mask(), dtype=bool)[None, :]
-        probs = self.net.policy(env.current_state(), action_mask=mask)
+        probs = self.net.policy(env.current_state())
         action_probs = tuple(zip(valid, probs.flatten()[valid]))
         actions, probs = list(zip(*action_probs))
         probs = np.array(probs, dtype=np.float32)

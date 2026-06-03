@@ -40,42 +40,43 @@ class ResidualBlock(nn.Module):
 class PolicyHead(nn.Module):
     def __init__(self, in_channels, out_dim, dropout=0.0):
         super().__init__()
-        assert out_dim == 65
-        self.proj = nn.Sequential(nn.Conv2d(in_channels, in_channels, kernel_size=3, bias=False),
-                                  nn.BatchNorm2d(in_channels),
-                                  nn.SiLU(True),
-                                  nn.Dropout2d(dropout))
-        self.board_out = nn.Conv2d(in_channels, 1, kernel_size=1, bias=True)
-        self.pass_norm = nn.RMSNorm(in_channels, eps=1e-5)
-        self.pass_fc = nn.Linear(in_channels, 1)
+        hidden_channels = 5
+        flat_dim = hidden_channels * 10 * 10
+        self.conv = nn.Conv2d(in_channels, hidden_channels, kernel_size=1, bias=True)
+        self.norm = nn.RMSNorm(flat_dim, eps=1e-5)
+        self.fc = nn.Linear(flat_dim, out_dim)
+        self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x, action_mask):
-        x = self.proj(x)
-        board_logits = self.board_out(x).flatten(start_dim=1)
-        pass_feat = self.pass_norm(x.mean(dim=(2, 3)))
-        pass_logit = self.pass_fc(pass_feat)
-        logits = torch.cat([board_logits, pass_logit], dim=1)
-        logits = logits.masked_fill(~action_mask, -1e9)
+    def forward(self, x, action_mask=None):
+        x = self.conv(x)
+        x = nn.functional.silu(x)
+        x = torch.flatten(x, start_dim=1)
+        x = self.dropout(self.norm(x))
+        logits = self.fc(x)
+        if action_mask is not None:
+            logits = logits.masked_fill(~action_mask, -1e9)
         return nn.functional.log_softmax(logits, dim=-1)
 
 
 class DualHead(nn.Module):
     def __init__(self, in_channels, dropout=0.0):
         super().__init__()
-        self.stem = nn.Sequential(nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=2, bias=False),
-                                  nn.BatchNorm2d(in_channels),
-                                  nn.SiLU(True),
-                                  nn.Dropout2d(dropout),
-                                  nn.Conv2d(in_channels, in_channels, kernel_size=4, bias=False),
-                                  nn.BatchNorm2d(in_channels),
-                                  nn.SiLU(True),
-                                  nn.Dropout2d(dropout),
-                                  nn.Flatten())
-        self.value_out = nn.Linear(in_channels, 3)
-        self.aux_out = nn.Linear(in_channels, 1)
+        hidden_channels = 5
+        flat_dim = hidden_channels * 10 * 10
+        self.conv = nn.Conv2d(in_channels, hidden_channels, kernel_size=1, bias=True)
+        self.norm = nn.RMSNorm(flat_dim, eps=1e-5)
+        self.fc = nn.Linear(flat_dim, flat_dim)
+        self.out_norm = nn.RMSNorm(flat_dim, eps=1e-5)
+        self.value_out = nn.Linear(flat_dim, 3)
+        self.aux_out = nn.Linear(flat_dim, 1)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        h = self.stem(x)
+        x = self.conv(x)
+        x = nn.functional.silu(x)
+        x = torch.flatten(x, start_dim=1)
+        x = self.dropout(self.norm(x))
+        h = self.out_norm(nn.functional.silu(self.fc(x)))
         value = nn.functional.log_softmax(self.value_out(h), dim=-1)
         aux = torch.tanh(self.aux_out(h).squeeze(-1))
         return value, aux
@@ -102,9 +103,8 @@ class CNN(Base):
         self.device = device
         self.n_actions = out_dim
 
-        self.piece_emb = nn.Embedding(2, embed_dim)
+        self.piece_emb = nn.Embedding(3, embed_dim)
         self.pos_emb = nn.Embedding(10, embed_dim)
-        self.legal_emb = nn.Embedding(2, embed_dim)
         self.register_buffer('orbit_map', torch.tensor(_ORBIT_MAP, dtype=torch.long))
 
         self.hidden = nn.Sequential(
@@ -118,10 +118,12 @@ class CNN(Base):
         self.dual_head = DualHead(h_dim, dropout)
 
         self.apply(self.init_weights)
-        nn.init.constant_(self.policy_head.board_out.weight, 0)
-        nn.init.constant_(self.policy_head.pass_fc.weight, 0)
+        nn.init.constant_(self.policy_head.fc.weight, 0)
+        nn.init.constant_(self.policy_head.fc.bias, 0)
         nn.init.constant_(self.dual_head.value_out.weight, 0)
+        nn.init.constant_(self.dual_head.value_out.bias, 0)
         nn.init.constant_(self.dual_head.aux_out.weight, 0)
+        nn.init.constant_(self.dual_head.aux_out.bias, 0)
 
         self.opt = torch.optim.AdamW(
             [
@@ -129,7 +131,6 @@ class CNN(Base):
                 {'params': self.dual_head.parameters()},
                 {'params': self.piece_emb.parameters(), 'weight_decay': 0},
                 {'params': self.pos_emb.parameters(), 'weight_decay': 0},
-                {'params': self.legal_emb.parameters(), 'weight_decay': 0},
                 {'params': self.policy_head.parameters(), 'lr': lr * policy_lr_scale},
             ],
             lr=lr,
@@ -160,7 +161,7 @@ class CNN(Base):
     @staticmethod
     def _normalize_action_mask(action_mask, device):
         if action_mask is None:
-            raise ValueError('Othello CNN requires action_mask from the environment.')
+            return None
         if isinstance(action_mask, np.ndarray):
             action_mask = torch.from_numpy(action_mask)
         if action_mask.ndim == 1:
@@ -172,42 +173,38 @@ class CNN(Base):
             state = torch.from_numpy(state)
         return state.to(self.device, dtype=torch.float32)
 
-    def _embed_state(self, state, action_mask):
+    def _embed_state(self, state):
         batch_size = state.size(0)
         own = state[:, 0].view(batch_size, 64) > 0.5
         opp = state[:, 1].view(batch_size, 64) > 0.5
-        empty = ~(own | opp)
-        x = self.pos_emb(self.orbit_map).unsqueeze(0).expand(batch_size, -1, -1).clone()
-        x = x + own.unsqueeze(-1) * self.piece_emb.weight[0]
-        x = x + opp.unsqueeze(-1) * self.piece_emb.weight[1]
-        board_legal = action_mask[:, :64].to(dtype=torch.long)
-        x = x + empty.unsqueeze(-1) * self.legal_emb(board_legal)
+        piece_id = own.long() + (opp.long() << 1)
+        x = self.piece_emb(piece_id) + self.pos_emb(self.orbit_map).unsqueeze(0)
         return x.transpose(1, 2).reshape(batch_size, self.embed_dim, 8, 8)
 
-    def forward(self, x, action_mask):
+    def forward(self, x, action_mask=None):
         action_mask = self._normalize_action_mask(action_mask, x.device)
-        x = self._embed_state(x, action_mask=action_mask)
+        x = self._embed_state(x)
         hidden = self.hidden(x)
         log_prob = self.policy_head(hidden, action_mask)
         value, aux = self.dual_head(hidden)
         return log_prob, value, aux
 
     @torch.no_grad()
-    def policy(self, state, action_mask):
+    def policy(self, state, action_mask=None):
         state = self._to_state_tensor(state)
         action_mask = self._normalize_action_mask(action_mask, state.device)
         with torch.autocast(self.device, dtype=torch.bfloat16, enabled=self.device != 'cpu'):
             return self(state, action_mask=action_mask)[0].exp().cpu().numpy()
 
     @torch.no_grad()
-    def value(self, state, action_mask):
+    def value(self, state, action_mask=None):
         state = self._to_state_tensor(state)
         action_mask = self._normalize_action_mask(action_mask, state.device)
         with torch.autocast(self.device, dtype=torch.bfloat16, enabled=self.device != 'cpu'):
             return self(state, action_mask=action_mask)[1].exp().cpu().numpy()
 
     @torch.no_grad()
-    def predict(self, state, action_mask):
+    def predict(self, state, action_mask=None):
         tensor = torch.from_numpy(state) if isinstance(state, np.ndarray) else state
         if self.device != 'cpu':
             tensor = tensor.pin_memory().to(self.device, dtype=torch.float32, non_blocking=True)
