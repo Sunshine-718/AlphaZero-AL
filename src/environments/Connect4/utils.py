@@ -49,12 +49,11 @@ def inspect(net, board=None):
 
 def augment(batch):
     (state, prob, winner, steps_to_end, aux_target, root_wdl,
-     valid_mask, future_root_wdl, ownership_target) = batch
+     valid_mask, future_root_wdl) = batch
 
     state_flipped = torch.flip(state, dims=[3])
     prob_flipped = torch.flip(prob, dims=[1])
     valid_mask_flipped = torch.flip(valid_mask, dims=[1])
-    ownership_target_flipped = torch.flip(ownership_target, dims=[2])
 
     state = torch.cat([state, state_flipped], dim=0)
     prob = torch.cat([prob, prob_flipped], dim=0)
@@ -64,9 +63,8 @@ def augment(batch):
     root_wdl = torch.cat([root_wdl, root_wdl], dim=0)
     valid_mask = torch.cat([valid_mask, valid_mask_flipped], dim=0)
     future_root_wdl = torch.cat([future_root_wdl, future_root_wdl], dim=0)
-    ownership_target = torch.cat([ownership_target, ownership_target_flipped], dim=0)
     return (state, prob, winner, steps_to_end, aux_target, root_wdl,
-            valid_mask, future_root_wdl, ownership_target)
+            valid_mask, future_root_wdl)
 
 
 def print_row(action, probX, probO, max_X, max_O):

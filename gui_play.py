@@ -74,7 +74,6 @@ class Def:
     score_scale = 8.0
     reuse_tree = True
     no_search = False
-    ownership_threshold = 0.55
     time_budget = 0.0
 
 # Game modes
@@ -420,11 +419,6 @@ class BoardWidget(QWidget):
         self.attn_head = -1        # -1=mean, 0..H-1=specific head, 'gate'=gate overlay
         self.attn_visible = False
 
-        # Ownership overlay
-        self.ownership_probs = None
-        self.ownership_visible = False
-        self.ownership_threshold = Def.ownership_threshold
-
     def _board(self):
         state = self.env.current_state()
         turn = 1 if state[0, 2, 0, 0] >= 0 else -1
@@ -439,7 +433,6 @@ class BoardWidget(QWidget):
         self._draw_grid(qp)
         self._draw_pieces(qp)
         self._draw_attention(qp)
-        self._draw_ownership(qp)
         self._draw_last_move(qp)
         self._draw_win_glow(qp)
         self._draw_overlay(qp)
@@ -550,52 +543,6 @@ class BoardWidget(QWidget):
         spec.setColorAt(1, QColor(255, 255, 255, 0))
         qp.setBrush(spec)
         qp.drawEllipse(QPointF(cx - rad * 0.2, cy - rad * 0.35), rad * 0.4, rad * 0.3)
-
-    def _ownership_fill_color(self, cls_idx, conf):
-        neutral = np.array([118.0, 126.0, 140.0], dtype=np.float32)
-        own_is_red = (self.env.turn == 1)
-        if cls_idx == 1:
-            target = QColor(C.RED if own_is_red else C.YEL)
-        elif cls_idx == 2:
-            target = QColor(C.YEL if own_is_red else C.RED)
-        else:
-            target = QColor(168, 176, 190)
-
-        amt = float(np.clip(conf, 0.0, 1.0))
-        tgt = np.array([target.red(), target.green(), target.blue()], dtype=np.float32)
-        rgb = neutral + (tgt - neutral) * amt
-        fill = QColor(int(rgb[0]), int(rgb[1]), int(rgb[2]))
-        fill.setAlpha(225)
-        return fill
-
-    def _draw_ownership(self, qp):
-        if not self.ownership_visible or self.ownership_probs is None:
-            return
-        probs = self.ownership_probs
-        if probs.ndim != 3 or probs.shape != (6, 7, 3):
-            return
-
-        badge_r = min(7.0, self.CELL * 0.08)
-        inset = self.CELL * 0.22
-        threshold = float(np.clip(self.ownership_threshold, 0.0, 1.0))
-
-        for r in range(6):
-            for c in range(7):
-                cell_probs = probs[r, c]
-                cls_idx = int(np.argmax(cell_probs))
-                conf = float(cell_probs[cls_idx])
-                if conf < threshold:
-                    continue
-
-                cx = self.MARGIN + c * self.CELL + self.CELL - inset
-                cy = self.MARGIN + r * self.CELL + inset
-                fill = self._ownership_fill_color(cls_idx, conf)
-                border = QColor(C.CYAN)
-                border.setAlpha(90 + int(conf * 120))
-
-                qp.setBrush(fill)
-                qp.setPen(QPen(border, 1.2 + conf * 0.8))
-                qp.drawEllipse(QPointF(cx, cy), badge_r, badge_r)
 
     def _attention_query_index(self):
         if self.hover_col < 0:
@@ -1854,25 +1801,6 @@ class ParameterConsole(QWidget):
         attn_row.addStretch()
         lay.addLayout(attn_row)
 
-        own_sep = _sep()
-        lay.addWidget(own_sep)
-        own_info = QLabel(f"<font color='{C.DIM}' style='font-family:Consolas;font-size:10px;'>"
-                          f"Ownership Overlay</font>")
-        own_info.setTextFormat(Qt.RichText)
-        lay.addWidget(own_info)
-
-        own_row = QHBoxLayout()
-        self.ownership_check = QCheckBox("Show")
-        self.ownership_check.setChecked(False)
-        self.ownership_check.setToolTip("Overlay ownership badges on the board")
-        own_row.addWidget(self.ownership_check)
-        own_row.addStretch()
-        lay.addLayout(own_row)
-
-        self.ownership_thresh_sl = _make_slider(
-            lay, "thr", 0, 1, 0.05, Def.ownership_threshold,
-            tooltip="Hide ownership badges below this confidence")
-
         lay.addStretch()
         self.tabs.addTab(w, "Aux")
 
@@ -1916,8 +1844,6 @@ class ParameterConsole(QWidget):
         self.mlh_cap_sl.setValue(int(Def.mlh_cap * self.mlh_cap_sl._scale))
         self.score_factor_sl.setValue(int(Def.score_utility_factor * self.score_factor_sl._scale))
         self.score_scale_sl.setValue(int(Def.score_scale * self.score_scale_sl._scale))
-        self.ownership_check.setChecked(False)
-        self.ownership_thresh_sl.setValue(int(Def.ownership_threshold * self.ownership_thresh_sl._scale))
         self.attn_head_cb.setCurrentIndex(0)
 
 
@@ -2284,21 +2210,11 @@ class Connect4GUI(QWidget):
         self.log_btn.clicked.connect(self._toggle_log)
         self.console.attn_check.stateChanged.connect(self._on_attn_toggle)
         self.console.attn_head_cb.currentIndexChanged.connect(self._on_attn_head_changed)
-        self.console.ownership_check.stateChanged.connect(self._on_ownership_toggle)
-        self.console.ownership_thresh_sl.valueChanged.connect(self._on_ownership_threshold_changed)
 
         self._start_game()
 
     def _on_attn_toggle(self, state):
         self.board.attn_visible = bool(state)
-        self.board.update()
-
-    def _on_ownership_toggle(self, state):
-        self.board.ownership_visible = bool(state)
-        self.board.update()
-
-    def _on_ownership_threshold_changed(self, _value):
-        self.board.ownership_threshold = _sv(self.console.ownership_thresh_sl)
         self.board.update()
 
     def _sync_attn_head_selector(self):
@@ -2324,22 +2240,6 @@ class Connect4GUI(QWidget):
         else:
             self.board.attn_head = -1
         self.board.update()
-
-    def _extract_ownership_overlay(self, ownership_log_prob):
-        if ownership_log_prob is None or ownership_log_prob.ndim != 4 or ownership_log_prob.shape[1] != 3:
-            return None
-
-        probs = ownership_log_prob.detach().float().exp().cpu().numpy()
-        num_views = min(len(_SYM_IDS), probs.shape[0])
-        acc = None
-        for i in range(num_views):
-            inv = np.empty((6, 7, 3), dtype=np.float32)
-            for cls_idx in range(3):
-                inv[:, :, cls_idx] = apply_sym_board(probs[i, cls_idx], _SYM_IDS[i], 'Connect4')
-            acc = inv if acc is None else (acc + inv)
-        if acc is None:
-            return None
-        return acc / float(num_views)
 
     def closeEvent(self, event):
         self._attn_extractor.detach()
@@ -2457,7 +2357,6 @@ class Connect4GUI(QWidget):
         self._attn_net = self.net
         self.board.attn_weights = None
         self.board.gate_scores = None
-        self.board.ownership_probs = None
         self._sync_attn_head_selector()
 
         p = self.az_player
@@ -2723,9 +2622,6 @@ class Connect4GUI(QWidget):
         self.board.scanning = False
         self.board.scan_y = -1
         self.board.overlay_data = None
-        self.board.ownership_probs = None
-        self.board.ownership_visible = self.console.ownership_check.isChecked()
-        self.board.ownership_threshold = _sv(self.console.ownership_thresh_sl)
         self.board.update()
 
         self.status.set_result("")
@@ -2799,12 +2695,7 @@ class Connect4GUI(QWidget):
                 outputs = net(t, action_mask=mask_t)
             finally:
                 self._attn_extractor.end_capture()
-            _, vl, sl, *extras = outputs
-            ownership_log_prob = None
-            for extra in extras:
-                if torch.is_tensor(extra) and extra.ndim == 4 and extra.shape[1] == 3:
-                    ownership_log_prob = extra
-                    break
+            _, vl, sl = outputs
 
             vp = vl[0].exp().cpu().tolist()
             draw_pct = vp[0] * 100
@@ -2820,7 +2711,6 @@ class Connect4GUI(QWidget):
 
             self.board.attn_weights = self._attn_extractor.get_weights()
             self.board.gate_scores = self._attn_extractor.get_gate_scores()
-            self.board.ownership_probs = self._extract_ownership_overlay(ownership_log_prob)
             self.board.update()
 
     def _update_status_mcts(self, stats_0):

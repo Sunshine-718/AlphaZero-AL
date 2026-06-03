@@ -67,7 +67,7 @@ class PolicyHead(nn.Module):
             nn.init.constant_(self.pass_fc.bias, 0)
 
 
-class TriHead(nn.Module):
+class DualHead(nn.Module):
     def __init__(self, in_channels, dropout=0.0):
         super().__init__()
         self.stem = nn.Sequential(nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1, bias=False),
@@ -81,19 +81,16 @@ class TriHead(nn.Module):
                                        nn.MaxPool2d(3, 3),
                                        nn.Flatten(),
                                        nn.Linear(in_channels, 3))
-        self.ownership_out = nn.Conv2d(in_channels, 3, kernel_size=1, bias=True)
         self.aux_out = nn.Sequential(nn.Flatten(),
                                      nn.SiLU(True),
-                                     nn.RMSNorm(3 * 8 * 8, eps=1e-5),
-                                     nn.Linear(3 * 8 * 8, 1))
+                                     nn.RMSNorm(in_channels * 8 * 8, eps=1e-5),
+                                     nn.Linear(in_channels * 8 * 8, 1))
 
     def forward(self, x):
         h = self.stem(x)
         value = nn.functional.log_softmax(self.value_out(h), dim=-1)
-        ownership_logit = self.ownership_out(h)
-        ownership = nn.functional.log_softmax(ownership_logit, dim=1)
-        aux = torch.tanh(self.aux_out(ownership_logit).squeeze(-1))
-        return value, aux, ownership
+        aux = torch.tanh(self.aux_out(h).squeeze(-1))
+        return value, aux
 
     def reset_output_parameters(self):
         nn.init.constant_(self.value_out[-1].weight, 0)
@@ -102,15 +99,10 @@ class TriHead(nn.Module):
         nn.init.constant_(self.aux_out[-1].weight, 0)
         if self.aux_out[-1].bias is not None:
             nn.init.constant_(self.aux_out[-1].bias, 0)
-        nn.init.constant_(self.ownership_out.weight, 0)
-        if self.ownership_out.bias is not None:
-            nn.init.constant_(self.ownership_out.bias, 0)
 
 class CNN(Base):
     aux_target_offset = 64
     score_scale = 8.0
-    ownership_loss_weight = 0.1
-    ownership_class_order = ('empty', 'own', 'opp')
 
     def __init__(
         self,
@@ -146,16 +138,16 @@ class CNN(Base):
         )
 
         self.policy_head = PolicyHead(h_dim, out_dim, dropout)
-        self.tri_head = TriHead(h_dim, dropout)
+        self.dual_head = DualHead(h_dim, dropout)
 
         self.apply(self.init_weights)
         self.policy_head.reset_output_parameters()
-        self.tri_head.reset_output_parameters()
+        self.dual_head.reset_output_parameters()
 
         self.opt = torch.optim.AdamW(
             [
                 {'params': self.stem.parameters()},
-                {'params': self.tri_head.parameters()},
+                {'params': self.dual_head.parameters()},
                 {'params': self.piece_emb.parameters(), 'weight_decay': 0},
                 {'params': self.pos_emb.parameters(), 'weight_decay': 0},
                 {'params': self.legal_emb.parameters(), 'weight_decay': 0},
@@ -218,8 +210,8 @@ class CNN(Base):
         x = self._embed_state(x, action_mask=action_mask)
         hidden = self.stem(x)
         log_prob = self.policy_head(hidden, action_mask)
-        value, aux, ownership = self.tri_head(hidden)
-        return log_prob, value, aux, ownership
+        value, aux = self.dual_head(hidden)
+        return log_prob, value, aux
 
     @torch.no_grad()
     def policy(self, state, action_mask):
@@ -236,15 +228,7 @@ class CNN(Base):
             return self(state, action_mask=action_mask)[1].exp().cpu().numpy()
 
     @torch.no_grad()
-    def ownership(self, state, action_mask):
-        state = self._to_state_tensor(state)
-        action_mask = self._normalize_action_mask(action_mask, state.device)
-        with torch.autocast(self.device, dtype=torch.bfloat16, enabled=self.device != 'cpu'):
-            ownership_log_prob = self(state, action_mask=action_mask)[3]
-        return ownership_log_prob.exp().permute(0, 2, 3, 1).cpu().numpy()
-
-    @torch.no_grad()
-    def predict(self, state, action_mask, return_ownership=False):
+    def predict(self, state, action_mask):
         tensor = torch.from_numpy(state) if isinstance(state, np.ndarray) else state
         if self.device != 'cpu':
             tensor = tensor.pin_memory().to(self.device, dtype=torch.float32, non_blocking=True)
@@ -252,7 +236,7 @@ class CNN(Base):
             tensor = tensor.to(self.device, dtype=torch.float32)
         action_mask = self._normalize_action_mask(action_mask, tensor.device)
         with torch.autocast(self.device, dtype=torch.bfloat16, enabled=self.device != 'cpu'):
-            log_prob, value_log_prob, aux_scalar, ownership_log_prob = self(tensor, action_mask=action_mask)
+            log_prob, value_log_prob, aux_scalar = self(tensor, action_mask=action_mask)
         wdl = value_log_prob.exp()
 
         disc_diff = aux_scalar * float(self.aux_target_offset)
@@ -263,18 +247,10 @@ class CNN(Base):
             policy = log_prob.float().exp().to('cpu', non_blocking=True)
             value = wdl.float().to('cpu', non_blocking=True)
             utility = expected_utility.float().view(-1, 1).to('cpu', non_blocking=True)
-            ownership = None
-            if return_ownership:
-                ownership = ownership_log_prob.float().exp().permute(0, 2, 3, 1).to('cpu', non_blocking=True)
             torch.cuda.synchronize()
-            if return_ownership:
-                return policy.numpy(), value.numpy(), utility.numpy(), ownership.numpy()
             return policy.numpy(), value.numpy(), utility.numpy()
-        result = (
+        return (
             log_prob.exp().cpu().numpy(),
             wdl.cpu().numpy(),
             expected_utility.cpu().view(-1, 1).numpy(),
         )
-        if return_ownership:
-            return result + (ownership_log_prob.exp().permute(0, 2, 3, 1).cpu().numpy(),)
-        return result

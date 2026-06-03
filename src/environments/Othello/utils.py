@@ -62,33 +62,21 @@ def _apply_sym_policy(policy, sym_id):
     return torch.cat([result, pass_part], dim=1)
 
 
-def _apply_sym_board_target(board_target, sym_id):
-    if sym_id == 0:
-        return board_target
-    perm = _build_perm(sym_id)
-    flat = board_target.view(board_target.shape[0], 64)
-    result = torch.zeros_like(flat)
-    result[:, perm] = flat
-    return result.view_as(board_target)
-
-
 def augment(batch):
     """Apply the four legal Othello symmetries that preserve the initial setup."""
     (state, prob, winner, steps_to_end, aux_target, root_wdl,
-     valid_mask, future_root_wdl, ownership_target) = batch
+     valid_mask, future_root_wdl) = batch
 
     states_all = [state]
     probs_all = [prob]
     masks_all = [valid_mask]
     future_all = [future_root_wdl]
-    ownership_all = [ownership_target]
 
     for sym_id in (2, 6, 7):
         states_all.append(_apply_sym_state(state, sym_id))
         probs_all.append(_apply_sym_policy(prob, sym_id))
         masks_all.append(_apply_sym_policy(valid_mask.float(), sym_id).bool())
         future_all.append(future_root_wdl)
-        ownership_all.append(_apply_sym_board_target(ownership_target, sym_id))
 
     state = torch.cat(states_all, dim=0)
     prob = torch.cat(probs_all, dim=0)
@@ -99,9 +87,8 @@ def augment(batch):
 
     valid_mask = torch.cat(masks_all, dim=0)
     future_root_wdl = torch.cat(future_all, dim=0)
-    ownership_target = torch.cat(ownership_all, dim=0)
     return (state, prob, winner, steps_to_end, aux_target, root_wdl,
-            valid_mask, future_root_wdl, ownership_target)
+            valid_mask, future_root_wdl)
 
 
 def inspect(net, board=None):

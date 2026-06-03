@@ -15,7 +15,7 @@
 - **多 GPU DDP** &mdash; 通过 `torchrun` 进行数据并行训练；单 GPU 时直接 `python server.py` 即可
 - **辅助 Utility** &mdash; Connect4 使用 LC0 风格 Moves Left Head (MLH)，Othello 支持 KataGo 风格 score utility，并支持 warmup 激活
 - **动作策略头** &mdash; Connect4 输出 7 列动作，Othello 输出 64 个落子动作 + pass
-- **WDL / Auxiliary / Ownership 头** &mdash; 3 分类价值预测；Connect4 辅助头预测剩余步数，Othello 辅助头预测分差 utility 并带 ownership 监督
+- **WDL / Auxiliary 头** &mdash; 3 分类价值预测；Connect4 辅助头预测剩余步数，Othello 辅助头预测分差 utility
 - **Value Decay、Root-WDL 蒸馏与 TD 一致性** &mdash; 游戏长度折扣、根节点 WDL 软目标、未来 root-WDL consistency、policy surprise weighting 和熵正则
 - **置换表** &mdash; LRU 缓存神经网络评估结果，加速搜索
 - **PyQt5 图形界面** &mdash; 可视化对弈，支持落子动画、胜率显示和预测剩余步数
@@ -231,7 +231,7 @@ AlphaZero-AL/
 ├── src/
 │   ├── cpp/
 │   │   ├── GameContext.h       # MCTSGame concept + ValidMoves<N>
-│   │   ├── MCTSNode.h          # 节点结构体（WDL, M, ownership, prior, noise）
+│   │   ├── MCTSNode.h          # 节点结构体（WDL, M, prior, noise）
 │   │   ├── MCTS.h              # 单树 MCTS（模拟 + 反向传播 + 节点统计）
 │   │   ├── BatchedMCTS.h       # 批量封装（OpenMP 并行）
 │   │   ├── Connect4.h          # Connect4 bitboard 游戏逻辑
@@ -250,7 +250,7 @@ AlphaZero-AL/
 │   │   │   ├── Network.py      # Connect4 CNN（embedding + residual + attention + policy/WDL/aux）
 │   │   │   └── utils.py        # Connect4 数据增强、棋盘检查
 │   │   ├── Othello/
-│   │   │   ├── Network.py      # Othello CNN（policy/WDL/score/ownership）
+│   │   │   ├── Network.py      # Othello CNN（policy/WDL/score）
 │   │   │   └── utils.py        # Othello 数据增强
 │   │   └── Gomoku/
 │   │       └── __init__.py     # Gomoku 环境入口

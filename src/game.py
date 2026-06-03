@@ -29,16 +29,6 @@ class Game:
             return diff * int(terminal_env.turn)
         return 0
 
-    @staticmethod
-    def _make_ownership_target(terminal_board, player):
-        own = (terminal_board == player).astype(np.int8)
-        opp = (terminal_board == -player).astype(np.int8)
-        rel = own - opp  # channel0 - channel1 in relative perspective
-        target = np.zeros_like(rel, dtype=np.int8)  # 0=empty, 1=own, 2=opp
-        target[rel > 0] = 1
-        target[rel < 0] = 2
-        return target
-
     def play(self, player1, player2, show=1):
         self.env.reset()
         players = [None, player1, player2]
@@ -127,15 +117,6 @@ class Game:
                     winner_z = np.full(T, winner, dtype=np.int32)
                     steps_to_end = np.arange(T, 0, -1, dtype=np.int32)
                     aux_targets = self._make_aux_targets(traj['players'], env, steps_to_end)
-                    terminal_board = np.asarray(env.board, dtype=np.int8)
-                    ownership_targets = [
-                        self._make_ownership_target(terminal_board, player)
-                        for player in traj['players']
-                    ]
-                    terminal_ownership_target = self._make_ownership_target(
-                        terminal_board,
-                        int(env.turn),
-                    )
 
                     k = td_steps
                     zero_wdl = np.zeros(3, dtype=np.float32)
@@ -151,13 +132,12 @@ class Game:
                             states, traj['probs'], winner_z,
                             steps_to_end, aux_targets, traj['root_wdls'],
                             traj['valid_masks'], future_root_wdls,
-                            ownership_targets,
                         ))
                     else:
                         play_data = list(zip(
                             states, traj['probs'], winner_z,
                             steps_to_end, aux_targets, traj['root_wdls'],
-                            traj['valid_masks'], ownership_targets,
+                            traj['valid_masks'],
                         ))
 
                     zero_prob = np.zeros_like(traj['probs'][0])
@@ -173,7 +153,6 @@ class Game:
                     ]
                     if k > 0:
                         terminal_tuple.append(zero_wdl)
-                    terminal_tuple.append(terminal_ownership_target)
                     play_data.append(tuple(terminal_tuple))
                     completed_data[i] = (winner, tuple(play_data))
                     player.mcts.reset_env(i)

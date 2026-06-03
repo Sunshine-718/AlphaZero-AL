@@ -70,11 +70,6 @@ namespace AlphaZero
         MCTS(const SearchConfig &config)
             : config_(&config), pool_(2048)
         {
-            if constexpr (requires(const Game &g, float *occ, float *p1p2)
-                          { g.fill_absolute_ownership(occ, p1p2); })
-            {
-                pool_.enable_ownership(Game::Traits::BOARD_SIZE);
-            }
             reset();
         }
 
@@ -383,42 +378,13 @@ namespace AlphaZero
          * 从叶节点沿 parent 链向上累加 WDL 和 M。
          * WDL 使用绝对视角累加，不翻转。Q 按需从 mean_wdl() 计算。
          */
-        void update_node_ownership(MCTSNode &node, int32_t idx,
-                                   const float *ownership_occ,
-                                   const float *ownership_p1p2)
-        {
-            if (!pool_.has_ownership() || ownership_occ == nullptr || ownership_p1p2 == nullptr)
-                return;
-
-            const int cells = pool_.ownership_cells();
-            uint16_t *occ_q = pool_.ownership_occ_ptr(idx);
-            int16_t *p1p2_q = pool_.ownership_p1p2_ptr(idx);
-            int old_n = node.n_visits;
-            float alpha = 1.0f / static_cast<float>(old_n + 1);
-
-            for (int i = 0; i < cells; ++i)
-            {
-                float occ_avg = (old_n == 0)
-                    ? ownership_occ[i]
-                    : dequantize_unit_float(occ_q[i]) + (ownership_occ[i] - dequantize_unit_float(occ_q[i])) * alpha;
-                float p1p2_avg = (old_n == 0)
-                    ? ownership_p1p2[i]
-                    : dequantize_signed_float(p1p2_q[i]) + (ownership_p1p2[i] - dequantize_signed_float(p1p2_q[i])) * alpha;
-                occ_q[i] = quantize_unit_float(occ_avg);
-                p1p2_q[i] = quantize_signed_float(p1p2_avg);
-            }
-        }
-
-        void propagate(WDLValue leaf_wdl, float moves_left,
-                       const float *ownership_occ = nullptr,
-                       const float *ownership_p1p2 = nullptr)
+        void propagate(WDLValue leaf_wdl, float moves_left)
         {
             int32_t idx = current_leaf_idx;
             float ml = moves_left;
             while (idx != -1)
             {
                 MCTSNode &node = pool_.node(idx);
-                update_node_ownership(node, idx, ownership_occ, ownership_p1p2);
                 node.n_visits++;
                 node.W_d   += leaf_wdl.d;
                 node.W_p1w += leaf_wdl.p1w;
@@ -438,26 +404,12 @@ namespace AlphaZero
         /**
          * 反向传播：展开叶节点并更新路径统计量。
          */
-        void backprop(std::span<const float> policy_logits, WDLValue wdl, float moves_left, bool is_terminal,
-                      const float *ownership_occ = nullptr, const float *ownership_p1p2 = nullptr)
+        void backprop(std::span<const float> policy_logits, WDLValue wdl, float moves_left, bool is_terminal)
         {
             if (current_leaf_idx == -1) return;
-            std::array<float, Game::Traits::BOARD_SIZE> term_occ{};
-            std::array<float, Game::Traits::BOARD_SIZE> term_p1p2{};
-            if constexpr (requires(const Game &g, float *occ, float *p1p2)
-                          { g.fill_absolute_ownership(occ, p1p2); })
-            {
-                if (is_terminal)
-                {
-                    sim_env.fill_absolute_ownership(term_occ.data(), term_p1p2.data());
-                    ownership_occ = term_occ.data();
-                    ownership_p1p2 = term_p1p2.data();
-                }
-            }
             if (!is_terminal)
                 expand_leaf(policy_logits);
-            propagate(wdl, is_terminal ? sim_env.terminal_aux(*config_) : moves_left,
-                      ownership_occ, ownership_p1p2);
+            propagate(wdl, is_terminal ? sim_env.terminal_aux(*config_) : moves_left);
         }
 
         // ======== Virtual Loss 方法 ========
@@ -637,9 +589,7 @@ namespace AlphaZero
          * @param k 第 k 次 VL 模拟（0-indexed）
          */
         void backprop_vl(int k, std::span<const float> policy_logits,
-                         WDLValue wdl, float moves_left, bool is_terminal,
-                         const float *ownership_occ = nullptr,
-                         const float *ownership_p1p2 = nullptr)
+                         WDLValue wdl, float moves_left, bool is_terminal)
         {
             // 恢复第 k 次模拟的叶节点状态
             current_leaf_idx = vl_leaf_indices_[k];
@@ -647,18 +597,6 @@ namespace AlphaZero
             sim_env = vl_envs_[k];
 
             if (current_leaf_idx == -1) return;
-            std::array<float, Game::Traits::BOARD_SIZE> term_occ{};
-            std::array<float, Game::Traits::BOARD_SIZE> term_p1p2{};
-            if constexpr (requires(const Game &g, float *occ, float *p1p2)
-                          { g.fill_absolute_ownership(occ, p1p2); })
-            {
-                if (is_terminal)
-                {
-                    sim_env.fill_absolute_ownership(term_occ.data(), term_p1p2.data());
-                    ownership_occ = term_occ.data();
-                    ownership_p1p2 = term_p1p2.data();
-                }
-            }
 
             if (!is_terminal)
             {
@@ -667,8 +605,7 @@ namespace AlphaZero
                     expand_leaf(policy_logits);
                 // 若已被之前的 backprop_vl 展开，跳过展开
             }
-            propagate(wdl, is_terminal ? sim_env.terminal_aux(*config_) : moves_left,
-                      ownership_occ, ownership_p1p2);
+            propagate(wdl, is_terminal ? sim_env.terminal_aux(*config_) : moves_left);
         }
 
         // ======== 统计查询 ========
@@ -735,28 +672,5 @@ namespace AlphaZero
             }
         }
 
-        void get_root_ownership(float *out) const
-        {
-            const int cells = Game::Traits::BOARD_SIZE;
-            std::fill(out, out + cells * 3, 0.0f);
-            if (!pool_.has_ownership()) return;
-
-            const MCTSNode &root = pool_.node(root_idx_);
-            if (root.n_visits <= 0) return;
-
-            const uint16_t *occ_q = pool_.ownership_occ_ptr(root_idx_);
-            const int16_t *p1p2_q = pool_.ownership_p1p2_ptr(root_idx_);
-            for (int i = 0; i < cells; ++i)
-            {
-                float occ = dequantize_unit_float(occ_q[i]);
-                float p1p2 = dequantize_signed_float(p1p2_q[i]);
-                float p1 = std::clamp((occ + p1p2) * 0.5f, 0.0f, 1.0f);
-                float p2 = std::clamp((occ - p1p2) * 0.5f, 0.0f, 1.0f);
-                float empty = std::clamp(1.0f - occ, 0.0f, 1.0f);
-                out[i * 3 + 0] = empty;
-                out[i * 3 + 1] = p1;
-                out[i * 3 + 2] = p2;
-            }
-        }
     };
 }
